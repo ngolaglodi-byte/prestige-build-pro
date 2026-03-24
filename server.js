@@ -54,9 +54,11 @@ function cors(res) { res.setHeader('Access-Control-Allow-Origin','*'); res.setHe
 function getBody(req) { return new Promise(r=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{r(JSON.parse(b))}catch{r({})}})}); }
 
 // ─── STREAM CLAUDE ───
-function streamClaude(messages, res, onDone) {
+function streamClaude(messages, res, onDone, brief) {
   if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
-  const systemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
+  const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
+  const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
+  const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
   const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   const r = https.request(opts, apiRes => {
@@ -99,6 +101,12 @@ const server = http.createServer(async (req, res) => {
   cors(res);
   if (req.method==='OPTIONS') { res.writeHead(200); res.end(); return; }
   const url = req.url.split('?')[0];
+
+  // Health check endpoint for proxy monitoring
+  if (url==='/health' && req.method==='GET') {
+    json(res,200,{status:'ok',timestamp:new Date().toISOString(),service:'prestige-build-pro'});
+    return;
+  }
 
   // Serve compiled preview files
   if (url.startsWith('/preview/')) {
@@ -143,12 +151,13 @@ const server = http.createServer(async (req, res) => {
     const userMsg=ai?ai.buildProfessionalPrompt(message,project,savedApis):message;
     const messages=ai?ai.buildConversationContext(project,history,userMsg):[{role:'user',content:userMsg}];
     if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'user',message);
+    const brief = project?.brief || message;
     streamClaude(messages, res, full=>{
       if (project_id) {
         db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
         db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
       }
-    }); return;
+    }, brief); return;
   }
 
   // ─── COMPILE ───
