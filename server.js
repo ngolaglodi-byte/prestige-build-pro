@@ -194,7 +194,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url==='/api/projects' && req.method==='POST') {
     const {title,client_name,project_type,brief,subdomain,domain,apis}=await getBody(req);
-    const info=db.prepare('INSERT INTO projects (user_id,title,client_name,project_type,brief,subdomain,domain,apis,status) VALUES (?,?,?,?,?,?,?,?,'draft')').run(user.id,title,client_name,project_type,brief,subdomain,domain,JSON.stringify(apis||[]));
+    const info=db.prepare("INSERT INTO projects (user_id,title,client_name,project_type,brief,subdomain,domain,apis,status) VALUES (?,?,?,?,?,?,?,?,'draft')").run(user.id,title,client_name,project_type,brief,subdomain,domain,JSON.stringify(apis||[]));
     json(res,200,{id:info.lastInsertRowid,title,status:'draft'}); return;
   }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='GET') {
@@ -252,8 +252,8 @@ const server = http.createServer(async (req, res) => {
     json(res,200,{
       total:user.role==='admin'?q('SELECT COUNT(*) as c FROM projects'):q('SELECT COUNT(*) as c FROM projects WHERE user_id=?',user.id),
       published:user.role==='admin'?q('SELECT COUNT(*) as c FROM projects WHERE is_published=1'):q('SELECT COUNT(*) as c FROM projects WHERE user_id=? AND is_published=1',user.id),
-      draft:user.role==='admin'?q('SELECT COUNT(*) as c FROM projects WHERE status='draft''):q('SELECT COUNT(*) as c FROM projects WHERE user_id=? AND status='draft'',user.id),
-      agents:user.role==='admin'?q('SELECT COUNT(*) as c FROM users WHERE role="agent"'):0
+      draft:user.role==='admin'?q("SELECT COUNT(*) as c FROM projects WHERE status='draft'"):q("SELECT COUNT(*) as c FROM projects WHERE user_id=? AND status='draft'",user.id),
+      agents:user.role==='admin'?q("SELECT COUNT(*) as c FROM users WHERE role='agent'"):0
     }); return;
   }
 
