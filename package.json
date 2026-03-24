@@ -1,0 +1,18 @@
+{
+  "name": "prestige-build-pro",
+  "version": "1.0.0",
+  "description": "Prestige Build Pro — Prestige Technologie Compagnie",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
