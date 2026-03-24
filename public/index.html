@@ -308,14 +308,16 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
             <div class="msg msg-s">Bienvenue ! Décrivez votre projet ou demandez des modifications.</div>
           </div>
           <div class="chat-input-area">
-            <div class="chat-sugs">
-              <span class="sug" onclick="useSug(this)">Ajouter une page contact</span>
-              <span class="sug" onclick="useSug(this)">Changer les couleurs</span>
-              <span class="sug" onclick="useSug(this)">Optimiser mobile</span>
-              <span class="sug" onclick="useSug(this)">Intégrer Stripe</span>
+            <div class="chat-sugs" id="chat-sugs">
+              <span class="sug" onclick="useSug(this)">/couleurs</span>
+              <span class="sug" onclick="useSug(this)">/mobile</span>
+              <span class="sug" onclick="useSug(this)">/contact</span>
+              <span class="sug" onclick="useSug(this)">/stripe</span>
+              <span class="sug" onclick="useSug(this)">/seo</span>
+              <span class="sug" onclick="useSug(this)">/ajouter-page</span>
             </div>
             <div class="chat-input-row">
-              <textarea class="chat-input" id="chat-input" placeholder="Demandez une modification..." rows="1" oninput="autoResize(this)" onkeydown="chatKey(event)"></textarea>
+              <textarea class="chat-input" id="chat-input" placeholder="Tapez / pour les commandes rapides..." rows="1" oninput="autoResize(this);handleChatInput(this)" onkeydown="chatKey(event)"></textarea>
               <button class="btn-send" id="btn-send" onclick="sendMsg()">
                 <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="var(--b800)" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
               </button>
@@ -404,8 +406,63 @@ function showToast(msg,type='info'){
 function setLB(pct){document.getElementById('lb').style.width=pct+'%';}
 function toggleLang(){lang=lang==='fr'?'en':'fr';localStorage.setItem('pbp-lang',lang);}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,100)+'px';}
-function useSug(el){document.getElementById('chat-input').value=el.textContent;}
+function useSug(el){
+  const cmd=el.textContent;
+  const input=document.getElementById('chat-input');
+  if(cmd.startsWith('/')){
+    const expanded=expandCommand(cmd);
+    input.value=expanded;
+  } else {
+    input.value=cmd;
+  }
+  input.focus();
+}
 function chatKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg();}}
+
+// ── QUICK COMMANDS ──
+const QUICK_COMMANDS={
+  '/couleurs':'Change la palette de couleurs du site. Propose 3 options avec des couleurs modernes et harmonieuses.',
+  '/mobile':'Optimise le design pour mobile. Améliore la navigation tactile, les tailles de boutons et la lisibilité sur petit écran.',
+  '/contact':'Ajoute une page contact professionnelle avec formulaire (nom, email, message), coordonnées, horaires et carte Google Maps.',
+  '/stripe':'Intègre Stripe pour les paiements en ligne. Ajoute un bouton d\'achat/don et un formulaire de paiement sécurisé.',
+  '/seo':'Optimise le SEO : balises meta, titres h1-h6, attributs alt, données structurées, sitemap.',
+  '/ajouter-page':'Ajoute une nouvelle page au site. Demande-moi quel type de page tu souhaites (à propos, services, équipe, etc.).'
+};
+function expandCommand(cmd){return QUICK_COMMANDS[cmd]||cmd;}
+function handleChatInput(el){
+  const v=el.value;
+  const sugsEl=document.getElementById('chat-sugs');
+  if(v.startsWith('/')){
+    const filtered=Object.keys(QUICK_COMMANDS).filter(c=>c.startsWith(v));
+    if(filtered.length>0){
+      sugsEl.innerHTML=filtered.map(c=>`<span class="sug" onclick="useSug(this)">${c}</span>`).join('');
+    }
+  } else if(v.length===0){
+    updateContextualSuggestions();
+  }
+}
+function updateContextualSuggestions(){
+  const sugsEl=document.getElementById('chat-sugs');
+  const brief=(currentProject?.brief||'').toLowerCase();
+  let sugs=['/couleurs','/mobile','/contact','/stripe','/seo','/ajouter-page'];
+  
+  // Contextual suggestions based on project type
+  if(brief.includes('restaurant')||brief.includes('cafe')||brief.includes('bistro')||brief.includes('cuisine')){
+    sugs=['Ajouter le menu','Modifier les horaires','Section réservation','/couleurs','/mobile'];
+  } else if(brief.includes('boutique')||brief.includes('e-commerce')||brief.includes('shop')||brief.includes('vente')){
+    sugs=['Ajouter un produit','Modifier le panier','/stripe','Promotions','/mobile'];
+  } else if(brief.includes('medecin')||brief.includes('sante')||brief.includes('clinique')||brief.includes('hopital')){
+    sugs=['Prise de RDV','Équipe médicale','Urgences visibles','/contact','/mobile'];
+  } else if(brief.includes('portfolio')||brief.includes('creatif')||brief.includes('designer')||brief.includes('artiste')){
+    sugs=['Ajouter un projet','Galerie photos','Bio artistique','/contact','/mobile'];
+  } else if(brief.includes('hotel')||brief.includes('voyage')||brief.includes('tourisme')){
+    sugs=['Chambres','Réservation','Services','Galerie','/mobile'];
+  } else if(brief.includes('dashboard')||brief.includes('admin')||brief.includes('gestion')){
+    sugs=['Ajouter un graphique','Tableau de données','Filtres','Export CSV','/mobile'];
+  }
+  
+  sugsEl.innerHTML=sugs.map(s=>`<span class="sug" onclick="useSug(this)">${s}</span>`).join('');
+}
 
 // ── AUTH ──
 async function doLogin(){
@@ -534,6 +591,7 @@ async function openProject(id){
     pb.textContent=p.is_published?'Publié ✓':'Publier';
   }
   renderSidebar(allProjects);
+  updateContextualSuggestions();
   setView('editor');
 }
 function newProject(){
@@ -548,6 +606,7 @@ function newProject(){
   document.querySelectorAll('.chip.sel').forEach(c=>c.classList.remove('sel'));
   selectedTypes=[];
   if(me.role==='admin') document.getElementById('btn-pub').style.display='none';
+  updateContextualSuggestions();
   showBrief();
   setView('editor');
 }
@@ -595,6 +654,7 @@ async function streamGenerate(message){
   document.getElementById('btn-send').disabled=true;
   document.getElementById('btn-gen').disabled=true;
   showGeneratingAnim();
+  addStatusMsg('🔄 Prestige AI analyse votre demande...','warning');
   const aiDiv=document.createElement('div');
   aiDiv.className='msg msg-a streaming';
   aiDiv.textContent='';
@@ -619,12 +679,18 @@ async function streamGenerate(message){
         try{
           const d=JSON.parse(line.slice(6));
           if(d.type==='delta'){fullCode+=d.content;aiDiv.textContent+=d.content;aiDiv.scrollIntoView({block:'nearest'});codeEl.textContent=fullCode;codeEl.scrollTop=codeEl.scrollHeight;}
-          if(d.type==='done'){aiDiv.classList.remove('streaming');if(currentProject)await api('/api/projects/'+currentProject.id,'PUT',{generated_code:fullCode,status:'ready'});loadProjects();autoCompileAndPreview(fullCode);}
-          if(d.type==='error'){aiDiv.classList.remove('streaming');aiDiv.style.color='#f87171';showPreviewError(d.content);}
+          if(d.type==='done'){
+            aiDiv.classList.remove('streaming');
+            addStatusMsg('✅ Code généré ! Compilation en cours...','success');
+            if(currentProject)await api('/api/projects/'+currentProject.id,'PUT',{generated_code:fullCode,status:'ready'});
+            loadProjects();
+            autoCompileAndPreview(fullCode);
+          }
+          if(d.type==='error'){aiDiv.classList.remove('streaming');aiDiv.style.color='#f87171';addStatusMsg('❌ '+d.content,'error');showPreviewError(d.content);}
         }catch{}
       }
     }
-  }catch(e){showPreviewError(e.message);}
+  }catch(e){addStatusMsg('❌ Erreur: '+e.message,'error');showPreviewError(e.message);}
   isGenerating=false;
   document.getElementById('btn-send').disabled=false;
   document.getElementById('btn-gen').disabled=false;
@@ -635,6 +701,18 @@ function addChatMsg(role,content){
   d.textContent=content;
   const c=document.getElementById('chat-msgs');
   c.appendChild(d);c.scrollTop=99999;
+  return d;
+}
+function addStatusMsg(content,type='info'){
+  const d=document.createElement('div');
+  d.className='msg msg-s';
+  if(type==='success')d.style.cssText='background:rgba(74,222,128,.08);border-color:rgba(74,222,128,.2);color:#4ade80;';
+  if(type==='warning')d.style.cssText='background:rgba(212,168,32,.08);border-color:rgba(212,168,32,.2);color:#D4A820;';
+  if(type==='error')d.style.cssText='background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#f87171;';
+  d.textContent=content;
+  const c=document.getElementById('chat-msgs');
+  c.appendChild(d);c.scrollTop=99999;
+  return d;
 }
 function clearChat(){document.getElementById('chat-msgs').innerHTML='<div class="msg msg-s">Chat effacé.</div>';}
 
@@ -676,7 +754,7 @@ async function autoCompileAndPreview(code){
   if(btn){btn.disabled=true;btn.textContent='⏳ En cours...';}
   try{
     const r=await api('/api/compile','POST',{project_id:currentProject.id});
-    if(r.error){showPreviewError(r.error);if(btn){btn.disabled=false;btn.textContent='⚡ Compiler';}return;}
+    if(r.error){addStatusMsg('❌ '+r.error,'error');showPreviewError(r.error);if(btn){btn.disabled=false;btn.textContent='⚡ Compiler';}return;}
     const buildId=r.buildId;
     if(buildPollInterval)clearInterval(buildPollInterval);
     buildPollInterval=setInterval(async()=>{
@@ -688,16 +766,18 @@ async function autoCompileAndPreview(code){
         if(b.status==='done'){
           clearInterval(buildPollInterval);
           if(btn){btn.disabled=false;btn.textContent='⚡ Recompiler';}
+          addStatusMsg('🎉 Projet prêt ! Preview disponible.','success');
           setTimeout(()=>loadCompiledPreview(b.url),300);
           loadProjects();
         }else if(b.status==='error'){
           clearInterval(buildPollInterval);
           if(btn){btn.disabled=false;btn.textContent='⚡ Compiler';}
+          addStatusMsg('⚠️ Ajustement nécessaire','warning');
           showPreviewError(b.message);
         }
       }catch(e){clearInterval(buildPollInterval);showPreviewError(e.message);}
     },1200);
-  }catch(e){showPreviewError(e.message);if(btn){btn.disabled=false;btn.textContent='⚡ Compiler';}}
+  }catch(e){addStatusMsg('❌ '+e.message,'error');showPreviewError(e.message);if(btn){btn.disabled=false;btn.textContent='⚡ Compiler';}}
 }
 async function compileProject(){
   const code=document.getElementById('code-display').textContent;

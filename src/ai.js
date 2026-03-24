@@ -1,5 +1,352 @@
 // ─── PROFESSIONAL AI SYSTEM FOR PRESTIGE BUILD PRO ───
 
+// ─── SECTOR PROFILES (INVISIBLE TEMPLATES) ───
+const SECTOR_PROFILES = {
+  health: {
+    keywords: ['hôpital', 'clinique', 'médecin', 'santé', 'cabinet médical', 'dentiste', 'pharmacie', 'médical', 'soins', 'patient'],
+    prompt: `## PROFIL SANTÉ DÉTECTÉ
+Tu génères un site pour le secteur médical/santé. Applique automatiquement :
+
+**Design :**
+- Couleurs apaisantes : blanc dominant, bleu médical (#0077B6), vert menthe (#2EC4B6)
+- Typographie claire : Nunito, Open Sans ou Inter
+- Espaces généreux, design épuré inspirant confiance
+
+**Sections indispensables :**
+- Header avec logo, numéro d'urgence visible, bouton RDV
+- Hero rassurant avec photo d'équipe ou établissement
+- Présentation de l'équipe médicale avec photos et spécialités
+- Services médicaux avec icônes explicites
+- Prise de rendez-vous en ligne (formulaire ou intégration Doctolib)
+- Horaires et urgences bien visibles
+- Certifications et accréditations
+- Témoignages patients
+- Contact avec carte et infos d'accès
+
+**Accessibilité WCAG :**
+- Contraste suffisant, police lisible min 16px
+- Navigation clavier, attributs aria
+- Textes alternatifs sur images`
+  },
+  restaurant: {
+    keywords: ['restaurant', 'café', 'bistro', 'traiteur', 'cuisine', 'pizzeria', 'brasserie', 'gastronomie', 'chef', 'menu'],
+    prompt: `## PROFIL RESTAURANT / FOOD DÉTECTÉ
+Tu génères un site pour la restauration. Applique automatiquement :
+
+**Design :**
+- Ambiance chaleureuse : couleurs terre (marron, crème, or)
+- Typographie élégante : Playfair Display pour titres, Lato pour texte
+- Grande photo hero appétissante occupant l'écran
+
+**Sections indispensables :**
+- Header avec logo, bouton réservation, horaires
+- Hero plein écran avec photo signature du restaurant
+- Menu interactif organisé par catégories
+- Galerie photos des plats en grille attractive
+- À propos du chef et de l'établissement
+- Réservation en ligne (formulaire avec date/heure/couverts)
+- Horaires d'ouverture bien visibles
+- Localisation avec carte Google Maps
+- Avis clients TripAdvisor/Google style
+
+**Ambiance visuelle :**
+- Photos haute qualité des plats
+- Animations subtiles au scroll
+- Icônes food élégantes`
+  },
+  ecommerce: {
+    keywords: ['boutique', 'vente', 'produits', 'shop', 'magasin', 'e-commerce', 'acheter', 'panier', 'commande', 'livraison'],
+    prompt: `## PROFIL E-COMMERCE DÉTECTÉ
+Tu génères une boutique en ligne. Applique automatiquement :
+
+**Design :**
+- Design moderne et clean
+- Mise en avant des produits
+- CTA visibles : Ajouter au panier, Acheter maintenant
+
+**Sections indispensables :**
+- Header avec logo, recherche, panier, compte
+- Hero promotionnel avec produit vedette
+- Catalogue produits avec filtres (catégorie, prix, taille)
+- Fiches produits détaillées (images, description, prix, variantes)
+- Panier persistant avec récapitulatif
+- Checkout simplifié avec Stripe
+- Avis clients par produit
+- Section promotions et nouveautés
+- Footer avec CGV, livraison, retours
+
+**Fonctionnalités :**
+- Filtres dynamiques
+- Zoom sur images produit
+- Indicateur stock
+- Produits similaires`
+  },
+  corporate: {
+    keywords: ['entreprise', 'société', 'services', 'b2b', 'consulting', 'conseil', 'cabinet', 'agence', 'industrie', 'groupe'],
+    prompt: `## PROFIL CORPORATE / ENTREPRISE DÉTECTÉ
+Tu génères un site d'entreprise professionnel. Applique automatiquement :
+
+**Design :**
+- Style sobre et professionnel
+- Couleurs corporate : bleu marine, gris, touches d'accent
+- Typographie business : Poppins, Roboto
+
+**Sections indispensables :**
+- Header avec logo, navigation, bouton contact
+- Hero impactant avec proposition de valeur
+- Services détaillés avec icônes et descriptions
+- Chiffres clés animés (clients, projets, années)
+- Équipe dirigeante avec photos et LinkedIn
+- Témoignages clients B2B
+- Logos clients de référence
+- Actualités / Blog
+- Formulaire de contact business
+- Footer complet avec mentions légales
+
+**Ton :**
+- Professionnel mais accessible
+- Chiffres et résultats concrets
+- Call-to-action clairs`
+  },
+  saas: {
+    keywords: ['application', 'logiciel', 'plateforme', 'saas', 'startup', 'tech', 'solution', 'outil', 'software', 'cloud'],
+    prompt: `## PROFIL SAAS / TECH DÉTECTÉ
+Tu génères une landing page SaaS moderne. Applique automatiquement :
+
+**Design :**
+- Style moderne tech : gradients subtils, glassmorphism
+- Couleurs vives : violet, bleu électrique, accents néon
+- Typographie moderne : Inter, DM Sans
+
+**Sections indispensables :**
+- Header sticky avec logo, features, pricing, CTA "Essayer gratuit"
+- Hero avec headline percutante, sous-titre, CTA et visual produit
+- Section features avec icônes Lucide et descriptions
+- Démonstration interactive ou vidéo
+- Pricing avec 3 tiers (Free, Pro, Enterprise)
+- Intégrations (logos partenaires)
+- Témoignages avec photos et entreprises
+- FAQ technique accordéon
+- CTA final "Commencer maintenant"
+
+**Animations :**
+- Fade-in au scroll
+- Hover effects sur cards
+- Curseur personnalisé (optionnel)`
+  },
+  education: {
+    keywords: ['école', 'formation', 'cours', 'université', 'académie', 'apprentissage', 'enseignement', 'étudiant', 'professeur', 'diplôme'],
+    prompt: `## PROFIL ÉDUCATION DÉTECTÉ
+Tu génères un site éducatif. Applique automatiquement :
+
+**Design :**
+- Couleurs inspirantes : bleu savoir, orange dynamique, blanc
+- Typographie lisible : Nunito, Source Sans Pro
+- Interface intuitive et accessible
+
+**Sections indispensables :**
+- Header avec logo, formations, connexion espace élève
+- Hero motivant avec accroche et bouton inscription
+- Catalogue des formations avec filtres
+- Fiches formation (durée, niveau, objectifs, programme)
+- Profils formateurs avec expertise
+- Témoignages étudiants avec résultats
+- Calendrier des sessions
+- Processus d'inscription étape par étape
+- Certifications et reconnaissances
+- Blog éducatif / ressources
+
+**Fonctionnalités :**
+- Recherche de formations
+- Inscription en ligne
+- Espace membre`
+  },
+  realestate: {
+    keywords: ['immobilier', 'agence', 'appartements', 'maisons', 'location', 'achat', 'vente immobilière', 'logement', 'propriété', 'bien'],
+    prompt: `## PROFIL IMMOBILIER DÉTECTÉ
+Tu génères un site immobilier. Applique automatiquement :
+
+**Design :**
+- Style premium : noir, or, blanc
+- Photos immobilières plein format
+- Typographie élégante : Cormorant Garamond, Montserrat
+
+**Sections indispensables :**
+- Header avec logo, recherche rapide, espace propriétaire
+- Hero avec barre de recherche avancée (localisation, type, budget)
+- Biens en vedette avec photos, prix, caractéristiques
+- Filtres avancés (surface, chambres, parking, etc.)
+- Fiches propriétés complètes avec galerie, plan, caractéristiques
+- Carte interactive des biens
+- Profils agents avec contact direct
+- Estimation en ligne
+- Guides acheteur/vendeur/locataire
+
+**Fonctionnalités :**
+- Recherche avec filtres
+- Favoris
+- Alertes email`
+  },
+  hotel: {
+    keywords: ['hôtel', 'resort', 'chambre', 'voyage', 'tourisme', 'hébergement', 'réservation', 'séjour', 'vacances', 'spa'],
+    prompt: `## PROFIL HÔTELLERIE / TOURISME DÉTECTÉ
+Tu génères un site hôtelier. Applique automatiquement :
+
+**Design :**
+- Ambiance luxueuse : couleurs chaudes, or, beige
+- Photos plein écran inspirantes
+- Typographie élégante : Libre Baskerville, Raleway
+
+**Sections indispensables :**
+- Header avec logo, langues, bouton réservation
+- Hero immersif avec vidéo ou slider des lieux
+- Moteur de réservation (dates, chambres, personnes)
+- Présentation des chambres avec galerie et tarifs
+- Services et équipements (spa, restaurant, piscine)
+- Galerie photos immersive
+- Localisation et activités à proximité
+- Avis guests
+- Offres spéciales et packages
+
+**Expérience :**
+- Navigation fluide
+- Lazy loading images
+- Disponibilités en temps réel`
+  },
+  portfolio: {
+    keywords: ['portfolio', 'photographe', 'designer', 'artiste', 'créatif', 'freelance', 'studio', 'création', 'graphiste', 'illustrateur'],
+    prompt: `## PROFIL CRÉATIF / PORTFOLIO DÉTECTÉ
+Tu génères un portfolio créatif. Applique automatiquement :
+
+**Design :**
+- Design minimal mettant en valeur les œuvres
+- Fond neutre : blanc, noir ou gris clair
+- Typographie design : Playfair Display, Helvetica Neue
+
+**Sections indispensables :**
+- Header minimal avec logo/nom et navigation
+- Hero impactant avec une œuvre signature
+- Galerie projets en grille avec hover effects
+- Fiches projet avec images, contexte, processus
+- À propos avec photo et biographie
+- Process créatif / méthode de travail
+- Clients et collaborations
+- Contact avec formulaire de brief
+
+**Effets visuels :**
+- Transitions smooth entre pages
+- Curseur personnalisé
+- Animations au scroll subtiles
+- Lightbox pour images`
+  },
+  nonprofit: {
+    keywords: ['association', 'ong', 'humanitaire', 'bénévolat', 'don', 'solidarité', 'fondation', 'caritative', 'aide', 'cause'],
+    prompt: `## PROFIL ONG / ASSOCIATION DÉTECTÉ
+Tu génères un site associatif. Applique automatiquement :
+
+**Design :**
+- Couleurs engagées selon la cause
+- Photos émotionnelles de terrain
+- Design accessible et chaleureux
+
+**Sections indispensables :**
+- Header avec logo, mission, bouton don
+- Hero émotionnel avec appel à l'action
+- Mission et valeurs de l'association
+- Impact et chiffres (personnes aidées, projets)
+- Projets en cours avec avancement
+- Comment aider (don, bénévolat, parrainage)
+- Formulaire de don sécurisé Stripe
+- Équipe et bénévoles
+- Actualités / Blog
+- Transparence financière (rapports)
+
+**Appels à l'action :**
+- Boutons don visibles
+- Formulaires d'engagement
+- Partage social`
+  },
+  dashboard: {
+    keywords: ['dashboard', 'admin', 'gestion', 'back-office', 'erp', 'tableau de bord', 'analytics', 'statistiques', 'crm', 'interne'],
+    prompt: `## PROFIL DASHBOARD / APP INTERNE DÉTECTÉ
+Tu génères une interface admin/dashboard. Applique automatiquement :
+
+**Design :**
+- Interface fonctionnelle : sidebar + contenu principal
+- Couleurs sobres : gris, bleu, accents pour actions
+- Composants UI clairs : cards, tables, boutons
+
+**Sections indispensables :**
+- Sidebar navigation avec icônes
+- Header avec recherche, notifications, profil
+- Dashboard avec KPIs en cards
+- Graphiques interactifs (Chart.js ou Recharts)
+- Tableaux de données avec tri et pagination
+- Formulaires CRUD complets
+- Gestion utilisateurs et rôles
+- Paramètres et configuration
+- Export de données (CSV, PDF)
+
+**Fonctionnalités :**
+- State management
+- Filtres et recherche
+- Actions groupées
+- Notifications toast`
+  },
+  fitness: {
+    keywords: ['sport', 'fitness', 'salle de sport', 'coach', 'nutrition', 'musculation', 'entraînement', 'gym', 'crossfit', 'yoga'],
+    prompt: `## PROFIL FITNESS / SPORT DÉTECTÉ
+Tu génères un site fitness. Applique automatiquement :
+
+**Design :**
+- Style énergique : noir, couleurs vives (orange, vert)
+- Photos dynamiques de personnes en action
+- Typographie forte : Bebas Neue, Oswald
+
+**Sections indispensables :**
+- Header avec logo, planning, espace membre
+- Hero motivant avec CTA "Commencer"
+- Planning des cours interactif
+- Présentation des activités (CrossFit, Yoga, etc.)
+- Profils coachs avec spécialités
+- Formules d'abonnement avec prix
+- Galerie transformations avant/après
+- Témoignages membres
+- Blog nutrition/santé
+- Contact et localisation
+
+**Énergie visuelle :**
+- Animations dynamiques
+- Compteurs animés
+- Progress bars`
+  }
+};
+
+// ─── DETECT SECTOR FROM BRIEF ───
+function detectSectorProfile(brief) {
+  if (!brief) return null;
+  const b = brief.toLowerCase();
+  
+  // Score each sector by counting keyword matches
+  let bestMatch = null;
+  let highestScore = 0;
+  
+  for (const [sector, profile] of Object.entries(SECTOR_PROFILES)) {
+    let score = 0;
+    for (const keyword of profile.keywords) {
+      if (b.includes(keyword)) {
+        score++;
+      }
+    }
+    if (score > highestScore) {
+      highestScore = score;
+      bestMatch = profile.prompt;
+    }
+  }
+  
+  return highestScore > 0 ? bestMatch : null;
+}
+
 const SYSTEM_PROMPT = `Tu es l'IA de développement professionnel de Prestige Technologie Compagnie — une agence spécialisée dans la numérisation d'entreprises.
 
 ## TON IDENTITÉ
@@ -88,15 +435,28 @@ npm run build
 - [Suggestion 1]
 - [Suggestion 2]
 
-## RÈGLES ABSOLUES
+## RÈGLES ABSOLUES DE QUALITÉ
 - Génère TOUJOURS du code complet et fonctionnel, jamais des exemples partiels
 - Chaque fichier doit être prêt pour la production
 - Utilise Tailwind CSS pour le style quand c'est du React
 - Le code doit être commenté en français
-- Adapte le style visuel au secteur d'activité du client
-- Si tu construis un site pour un restaurant, il doit être chaleureux
-- Si tu construis pour une fintech, il doit être sobre et professionnel
-- Si tu construis pour une startup tech, il peut être moderne et créatif`;
+
+## QUALITÉ DU CODE GÉNÉRÉ
+- **Responsive mobile-first** : breakpoints 320px, 768px, 1024px, 1440px
+- **Animations subtiles** : fade-in au scroll, hover effects, transitions fluides (transition-all duration-300)
+- **Typographie professionnelle** : Google Fonts appropriées au secteur (inclure le lien)
+- **Palette cohérente** : maximum 3 couleurs harmonieuses définies en variables CSS ou Tailwind config
+- **Performance** : lazy loading des images, code optimisé
+- **Accessibilité** : attributs aria-*, contraste suffisant, navigation clavier
+- **Contenu réel** : textes, prix, horaires, noms d'équipe fictifs mais réalistes et convaincants — JAMAIS de "Lorem ipsum"
+
+## STYLE VISUEL
+- Adapte le style au secteur d'activité du client
+- Restaurant → ambiance chaleureuse, couleurs terre
+- Fintech/Corporate → sobre et professionnel
+- Startup/Tech → moderne et créatif
+- Santé → épuré, bleu confiance
+- E-commerce → focus produits, CTA visibles`;
 
 // ─── CONVERSATION CONTEXT BUILDER ───
 function buildConversationContext(project, messages, userMessage) {
@@ -187,6 +547,8 @@ function buildProfessionalPrompt(userMessage, project, availableApis) {
 
 module.exports = {
   SYSTEM_PROMPT,
+  SECTOR_PROFILES,
+  detectSectorProfile,
   buildConversationContext,
   analyzeBrief,
   buildProfessionalPrompt
