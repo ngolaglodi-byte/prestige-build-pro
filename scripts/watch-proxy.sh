@@ -50,8 +50,22 @@ restart_container() {
 
 # Reload Caddy if needed
 reload_caddy() {
-  log "Reloading Caddy..."
-  docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null || systemctl reload caddy 2>/dev/null
+  log "Attempting to reload Caddy..."
+  
+  # Try Docker first
+  if docker exec caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null; then
+    log "Caddy reloaded via Docker."
+    return 0
+  fi
+  
+  # Try systemd
+  if systemctl reload caddy 2>/dev/null; then
+    log "Caddy reloaded via systemctl."
+    return 0
+  fi
+  
+  log "Warning: Could not reload Caddy via Docker or systemctl."
+  return 1
 }
 
 # Main check

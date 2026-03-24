@@ -327,15 +327,24 @@ function detectSectorProfile(brief) {
   if (!brief) return null;
   const b = brief.toLowerCase();
   
+  // Score each sector by counting keyword matches
+  let bestMatch = null;
+  let highestScore = 0;
+  
   for (const [sector, profile] of Object.entries(SECTOR_PROFILES)) {
+    let score = 0;
     for (const keyword of profile.keywords) {
       if (b.includes(keyword)) {
-        return profile.prompt;
+        score++;
       }
+    }
+    if (score > highestScore) {
+      highestScore = score;
+      bestMatch = profile.prompt;
     }
   }
   
-  return null;
+  return highestScore > 0 ? bestMatch : null;
 }
 
 const SYSTEM_PROMPT = `Tu es l'IA de développement professionnel de Prestige Technologie Compagnie — une agence spécialisée dans la numérisation d'entreprises.

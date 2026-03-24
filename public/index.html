@@ -447,14 +447,18 @@ function updateContextualSuggestions(){
   let sugs=['/couleurs','/mobile','/contact','/stripe','/seo','/ajouter-page'];
   
   // Contextual suggestions based on project type
-  if(brief.includes('restaurant')||brief.includes('café')){
+  if(brief.includes('restaurant')||brief.includes('cafe')||brief.includes('bistro')||brief.includes('cuisine')){
     sugs=['Ajouter le menu','Modifier les horaires','Section réservation','/couleurs','/mobile'];
-  } else if(brief.includes('boutique')||brief.includes('e-commerce')){
+  } else if(brief.includes('boutique')||brief.includes('e-commerce')||brief.includes('shop')||brief.includes('vente')){
     sugs=['Ajouter un produit','Modifier le panier','/stripe','Promotions','/mobile'];
-  } else if(brief.includes('médecin')||brief.includes('santé')){
+  } else if(brief.includes('medecin')||brief.includes('sante')||brief.includes('clinique')||brief.includes('hopital')){
     sugs=['Prise de RDV','Équipe médicale','Urgences visibles','/contact','/mobile'];
-  } else if(brief.includes('portfolio')||brief.includes('créatif')){
+  } else if(brief.includes('portfolio')||brief.includes('creatif')||brief.includes('designer')||brief.includes('artiste')){
     sugs=['Ajouter un projet','Galerie photos','Bio artistique','/contact','/mobile'];
+  } else if(brief.includes('hotel')||brief.includes('voyage')||brief.includes('tourisme')){
+    sugs=['Chambres','Réservation','Services','Galerie','/mobile'];
+  } else if(brief.includes('dashboard')||brief.includes('admin')||brief.includes('gestion')){
+    sugs=['Ajouter un graphique','Tableau de données','Filtres','Export CSV','/mobile'];
   }
   
   sugsEl.innerHTML=sugs.map(s=>`<span class="sug" onclick="useSug(this)">${s}</span>`).join('');
