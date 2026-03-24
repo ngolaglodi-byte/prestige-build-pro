@@ -8,6 +8,10 @@ const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
+const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
+
+// Ensure previews directory exists
+if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
 let compiler, ai;
 try { compiler = require('./src/compiler'); } catch(e) {}
@@ -96,6 +100,304 @@ function serveBuilt(res, buildId, filePath) {
   res.end(fs.readFileSync(full));
 }
 
+// ─── PREVIEW ENGINE ───
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.jsx': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf'
+};
+
+// Extract files from Claude's multi-file code output
+function parseMultiFileCode(code) {
+  const files = {};
+  if (!code) return files;
+
+  // Pattern 1: ### filename.ext + code block
+  const pattern1 = /###\s+([^\n]+\.[\w]+)\n```(?:\w+)?\n([\s\S]*?)```/g;
+  let m;
+  while ((m = pattern1.exec(code)) !== null) {
+    files[m[1].trim()] = m[2];
+  }
+
+  // Pattern 2: ## filename.ext + code block
+  const pattern2 = /##\s+([^\n]+\.[\w]+)\n```(?:\w+)?\n([\s\S]*?)```/g;
+  while ((m = pattern2.exec(code)) !== null) {
+    if (!files[m[1].trim()]) files[m[1].trim()] = m[2];
+  }
+
+  // Pattern 3: **filename.ext** or `filename.ext` + code block
+  const pattern3 = /(?:\*\*|`)([^*`\n]+\.[\w]+)(?:\*\*|`)\s*\n```(?:\w+)?\n([\s\S]*?)```/g;
+  while ((m = pattern3.exec(code)) !== null) {
+    if (!files[m[1].trim()]) files[m[1].trim()] = m[2];
+  }
+
+  // If no multi-file found, treat as single file
+  if (Object.keys(files).length === 0) {
+    // Check for complete HTML document
+    const htmlMatch = code.match(/<!DOCTYPE[\s\S]*?<\/html>/i);
+    if (htmlMatch) {
+      files['index.html'] = htmlMatch[0];
+    } else {
+      // Extract from single code block
+      const single = code.match(/```(?:html|jsx?|tsx?|vue)?\n([\s\S]*?)```/);
+      if (single) {
+        const content = single[1];
+        if (content.includes('<!DOCTYPE') || content.includes('<html')) {
+          files['index.html'] = content;
+        } else {
+          files['App.jsx'] = content;
+        }
+      }
+    }
+  }
+
+  return files;
+}
+
+// Detect framework/type from code
+function detectFramework(code) {
+  const c = code.toLowerCase();
+  if (c.includes('react.createelement') || c.includes('reactdom') || c.includes('usestate(') || c.includes('useeffect(')) return 'react-cdn';
+  if (c.includes('vue.createapp') || c.includes('v-bind') || c.includes('v-model') || c.includes('@click')) return 'vue-cdn';
+  if (c.includes('from "react"') || c.includes("from 'react'")) return 'react';
+  if (c.includes('from "vue"') || c.includes("from 'vue'")) return 'vue';
+  if (c.includes('<!doctype') || c.includes('<html')) return 'html';
+  return 'html';
+}
+
+// Wrap React CDN code in HTML
+function wrapReactCDN(jsxCode) {
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Preview</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+${jsxCode}
+
+const rootElement = document.getElementById('root');
+const root = ReactDOM.createRoot(rootElement);
+root.render(<App />);
+  </script>
+</body>
+</html>`;
+}
+
+// Wrap Vue CDN code in HTML
+function wrapVueCDN(vueCode) {
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Preview</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+${vueCode}
+  </script>
+</body>
+</html>`;
+}
+
+// Save preview files for a project
+function savePreviewFiles(projectId, code) {
+  const previewDir = path.join(PREVIEWS_DIR, String(projectId));
+  
+  // Clean existing directory
+  if (fs.existsSync(previewDir)) {
+    fs.rmSync(previewDir, { recursive: true, force: true });
+  }
+  fs.mkdirSync(previewDir, { recursive: true });
+
+  const files = parseMultiFileCode(code);
+  const framework = detectFramework(code);
+  
+  // Determine main HTML content
+  let mainHtml = files['index.html'];
+  
+  if (!mainHtml) {
+    // Generate HTML based on framework
+    if (framework === 'react-cdn' && files['App.jsx']) {
+      mainHtml = wrapReactCDN(files['App.jsx']);
+    } else if (framework === 'vue-cdn') {
+      const vueCode = files['App.vue'] || files['app.js'] || Object.values(files)[0];
+      if (vueCode) mainHtml = wrapVueCDN(vueCode);
+    } else if (Object.keys(files).length > 0) {
+      // Try to use first JSX file as React CDN
+      const jsxFile = Object.entries(files).find(([k]) => k.endsWith('.jsx') || k.endsWith('.js'));
+      if (jsxFile) {
+        mainHtml = wrapReactCDN(jsxFile[1]);
+      }
+    }
+    
+    // Fallback: extract raw HTML from code if still nothing
+    if (!mainHtml) {
+      const htmlMatch = code.match(/<!DOCTYPE[\s\S]*?<\/html>/i);
+      if (htmlMatch) {
+        mainHtml = htmlMatch[0];
+      } else {
+        // Last resort: create minimal HTML
+        mainHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Preview</title></head><body><pre>${escapeHtml(code.substring(0, 2000))}</pre></body></html>`;
+      }
+    }
+  }
+
+  // Inject error console script into HTML
+  mainHtml = injectErrorConsole(mainHtml);
+
+  // Write index.html
+  fs.writeFileSync(path.join(previewDir, 'index.html'), mainHtml);
+
+  // Write other files (CSS, JS, etc.)
+  for (const [filename, content] of Object.entries(files)) {
+    if (filename === 'index.html') continue;
+    const filePath = path.join(previewDir, filename);
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+  }
+
+  return { success: true, dir: previewDir, framework, fileCount: Object.keys(files).length + 1 };
+}
+
+// Inject error console script
+function injectErrorConsole(html) {
+  const errorScript = `
+<script>
+(function() {
+  const errors = [];
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  
+  function notifyParent(type, msg) {
+    try {
+      window.parent.postMessage({ type: 'preview-console', level: type, message: String(msg) }, '*');
+    } catch(e) {}
+  }
+  
+  console.error = function(...args) {
+    notifyParent('error', args.join(' '));
+    originalError.apply(console, args);
+  };
+  
+  console.warn = function(...args) {
+    notifyParent('warn', args.join(' '));
+    originalWarn.apply(console, args);
+  };
+  
+  window.onerror = function(msg, url, line, col, error) {
+    notifyParent('error', msg + ' (line ' + line + ')');
+    return false;
+  };
+  
+  window.onunhandledrejection = function(e) {
+    notifyParent('error', 'Promise rejected: ' + (e.reason?.message || e.reason || 'Unknown'));
+  };
+})();
+</script>`;
+
+  // Insert before </head> or at start of <body>
+  if (html.includes('</head>')) {
+    return html.replace('</head>', errorScript + '</head>');
+  } else if (html.includes('<body')) {
+    return html.replace(/<body([^>]*)>/, '<body$1>' + errorScript);
+  } else {
+    return errorScript + html;
+  }
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Serve preview files for a project
+function servePreview(res, projectId, filePath) {
+  const previewDir = path.join(PREVIEWS_DIR, String(projectId));
+  
+  if (!fs.existsSync(previewDir)) {
+    res.writeHead(404);
+    res.end('Preview not found. Generate code first.');
+    return;
+  }
+
+  const clean = (filePath || 'index.html').replace(/\.\./g, '').replace(/^\//, '') || 'index.html';
+  const fullPath = path.join(previewDir, clean);
+
+  if (!fs.existsSync(fullPath)) {
+    // Try index.html fallback (SPA support)
+    const indexPath = path.join(previewDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.writeHead(200, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
+      res.end(fs.readFileSync(indexPath));
+      return;
+    }
+    res.writeHead(404);
+    res.end('File not found');
+    return;
+  }
+
+  const ext = path.extname(fullPath);
+  const contentType = MIME_TYPES[ext] || 'text/plain';
+  
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-cache'
+  });
+  res.end(fs.readFileSync(fullPath));
+}
+
+// Clean old previews (older than 24 hours)
+function cleanOldPreviews() {
+  try {
+    if (!fs.existsSync(PREVIEWS_DIR)) return;
+    const dirs = fs.readdirSync(PREVIEWS_DIR);
+    const now = Date.now();
+    dirs.forEach(dir => {
+      const full = path.join(PREVIEWS_DIR, dir);
+      try {
+        const stat = fs.statSync(full);
+        if (now - stat.mtimeMs > 86400000) { // 24 hours
+          fs.rmSync(full, { recursive: true, force: true });
+        }
+      } catch(e) {}
+    });
+  } catch(e) {}
+}
+// Clean old previews every hour
+setInterval(cleanOldPreviews, 3600000);
+
 // ─── SERVER ───
 const server = http.createServer(async (req, res) => {
   cors(res);
@@ -108,10 +410,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Serve compiled preview files
+  // Preview refresh endpoint (no auth required for simplicity, but validates project exists)
+  if (url.match(/^\/api\/preview\/\d+\/refresh$/) && req.method==='POST') {
+    const projectId = parseInt(url.split('/')[3]);
+    const body = await getBody(req);
+    const code = body.code;
+    if (!code) {
+      json(res, 400, { error: 'Code required' });
+      return;
+    }
+    try {
+      const result = savePreviewFiles(projectId, code);
+      json(res, 200, { success: true, previewUrl: `/preview/${projectId}/`, framework: result.framework });
+    } catch(e) {
+      json(res, 500, { error: e.message });
+    }
+    return;
+  }
+
+  // Serve preview files - supports both project_id (new) and build_id (legacy)
   if (url.startsWith('/preview/')) {
     const parts = url.split('/').filter(Boolean);
-    serveBuilt(res, parts[1], parts.slice(2).join('/'));
+    const id = parts[1];
+    const filePath = parts.slice(2).join('/');
+    
+    // Check if it's a numeric project ID (new preview system)
+    if (/^\d+$/.test(id)) {
+      servePreview(res, id, filePath);
+      return;
+    }
+    
+    // Otherwise, use legacy build system
+    serveBuilt(res, id, filePath);
     return;
   }
 
@@ -156,6 +486,13 @@ const server = http.createServer(async (req, res) => {
       if (project_id) {
         db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
         db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
+        // Auto-save preview files after generation
+        try {
+          const previewResult = savePreviewFiles(project_id, full);
+          res.write(`data: ${JSON.stringify({type:'preview_ready',previewUrl:`/preview/${project_id}/`,framework:previewResult.framework})}\n\n`);
+        } catch(e) {
+          console.error('Preview save error:', e.message);
+        }
       }
     }, brief); return;
   }

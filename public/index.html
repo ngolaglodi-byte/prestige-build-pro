@@ -163,6 +163,26 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .toast.success{background:#0F6E56;border:1px solid #1D9E75;color:#9FE1CB;}
 .toast.error{background:#A32D2D;border:1px solid #E24B4A;color:#F09595;}
 .toast.info{background:var(--b800);border:1px solid var(--b600);color:var(--b200);}
+/* Error Console */
+.error-console{position:absolute;bottom:0;left:0;right:0;max-height:120px;background:rgba(13,17,32,.95);border-top:1px solid rgba(239,68,68,.3);overflow-y:auto;font-family:'DM Mono',monospace;font-size:11px;display:none;z-index:10;}
+.error-console.show{display:block;}
+.error-console-header{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:rgba(239,68,68,.1);border-bottom:1px solid rgba(239,68,68,.15);position:sticky;top:0;}
+.error-console-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#f87171;}
+.error-console-close{background:none;border:none;color:#f87171;cursor:pointer;font-size:12px;padding:2px 6px;}
+.error-console-msgs{padding:6px 10px;}
+.error-item{padding:4px 0;color:#fca5a5;border-bottom:1px solid rgba(239,68,68,.08);display:flex;gap:6px;}
+.error-item:last-child{border-bottom:none;}
+.error-level{font-size:9px;padding:1px 4px;border-radius:3px;text-transform:uppercase;flex-shrink:0;}
+.error-level.error{background:rgba(239,68,68,.2);color:#f87171;}
+.error-level.warn{background:rgba(234,179,8,.2);color:#fbbf24;}
+.error-msg{word-break:break-word;flex:1;}
+/* Fullscreen Modal */
+.fullscreen-modal{position:fixed;inset:0;background:rgba(2,8,24,.98);z-index:999;display:none;flex-direction:column;}
+.fullscreen-modal.show{display:flex;}
+.fullscreen-header{height:40px;background:rgba(13,17,32,.95);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 14px;flex-shrink:0;}
+.fullscreen-title{font-size:13px;font-weight:500;color:var(--b200);}
+.fullscreen-actions{display:flex;gap:6px;align-items:center;}
+.fullscreen-frame{flex:1;width:100%;height:100%;border:none;background:#fff;}
 @media(max-width:1024px){.chat-panel{display:none;}.code-panel{flex:1;}}
 </style>
 </head>
@@ -285,10 +305,11 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
             <div id="urlbar" style="flex:1;background:rgba(10,31,92,.4);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:11px;color:var(--b300);font-family:'DM Mono',monospace;display:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">preview</div>
             <div class="panel-acts">
               <button class="btn-xs" onclick="toggleCodePanel()" id="btn-show-code" title="Afficher le code" aria-label="Afficher le code" style="display:none;">⛶</button>
+              <button class="btn-xs" onclick="toggleErrorConsole()" id="btn-errors" title="Console d'erreurs" style="display:none;color:#f87171;">⚠</button>
               <button class="btn-xs" onclick="prevBack()">←</button>
               <button class="btn-xs" onclick="prevFwd()">→</button>
               <button class="btn-xs" onclick="refreshPreview()">↺</button>
-              <button class="btn-xs" onclick="openFull()">⛶</button>
+              <button class="btn-xs" onclick="openFullscreen()" title="Plein écran">⛶</button>
             </div>
           </div>
           <div class="prev-wrap" id="prev-wrap">
@@ -297,6 +318,14 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
               <p>Le preview apparaîtra ici</p>
             </div>
             <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
+            <!-- Error Console -->
+            <div class="error-console" id="error-console">
+              <div class="error-console-header">
+                <span class="error-console-title">Console</span>
+                <button class="error-console-close" onclick="clearErrorConsole()">Effacer</button>
+              </div>
+              <div class="error-console-msgs" id="error-console-msgs"></div>
+            </div>
           </div>
         </div>
         <div class="chat-panel">
@@ -385,6 +414,22 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
   </div>
 </div>
 
+<!-- Fullscreen Preview Modal -->
+<div class="fullscreen-modal" id="fullscreen-modal">
+  <div class="fullscreen-header">
+    <span class="fullscreen-title" id="fullscreen-title">Preview</span>
+    <div class="fullscreen-actions">
+      <button class="btn-xs" onclick="setFullscreenDevice('desktop')" id="fs-dev-d" style="padding:3px 6px;">🖥</button>
+      <button class="btn-xs" onclick="setFullscreenDevice('tablet')" id="fs-dev-t" style="padding:3px 6px;">📱</button>
+      <button class="btn-xs" onclick="setFullscreenDevice('mobile')" id="fs-dev-m" style="padding:3px 6px;">📲</button>
+      <button class="btn-xs" onclick="closeFullscreen()" style="margin-left:8px;">✕ Fermer</button>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;background:#0a0f1e;overflow:hidden;" id="fullscreen-wrap">
+    <iframe id="fullscreen-frame" class="fullscreen-frame"></iframe>
+  </div>
+</div>
+
 <script>
 // ── STATE ──
 let token=localStorage.getItem('pbp-token')||'';
@@ -396,6 +441,9 @@ let selectedTypes=[];
 let isGenerating=false;
 let currentDevice='desktop';
 let buildPollInterval=null;
+let previewErrors=[];
+let currentPreviewUrl=null;
+let fullscreenDevice='desktop';
 
 // ── UTILS ──
 function showToast(msg,type='info'){
@@ -561,6 +609,8 @@ async function openProject(id){
   const p=await api('/api/projects/'+id);
   setLB(100);setTimeout(()=>setLB(0),500);
   currentProject=p;
+  currentPreviewUrl=null; // Reset preview URL
+  clearErrorConsole(); // Clear any previous errors
   document.getElementById('tb-proj').textContent=p.title||p.client_name||'Sans titre';
   document.getElementById('bp-title').value=p.title||'';
   document.getElementById('bp-client').value=p.client_name||'';
@@ -568,10 +618,26 @@ async function openProject(id){
   document.getElementById('bp-brief').value=p.brief||'';
   if(p.generated_code){
     document.getElementById('code-display').textContent=p.generated_code;
-    if(p.build_url&&p.build_status==='done') loadCompiledPreview(p.build_url);
-    else autoCompileAndPreview(p.generated_code);
+    // Try instant preview first, then fallback to compiled preview
+    const previewUrl = `/preview/${p.id}/`;
+    // Check if preview exists by trying to load it
+    try {
+      const checkResp = await fetch(previewUrl + 'index.html', { method: 'HEAD' });
+      if (checkResp.ok) {
+        loadLivePreview(previewUrl, 'auto');
+      } else if(p.build_url&&p.build_status==='done') {
+        loadCompiledPreview(p.build_url);
+      } else {
+        loadProjectPreview(p.id, p.generated_code);
+      }
+    } catch(e) {
+      if(p.build_url&&p.build_status==='done') loadCompiledPreview(p.build_url);
+      else loadProjectPreview(p.id, p.generated_code);
+    }
   } else {
     document.getElementById('code-display').innerHTML='<div class="code-ph">Aucun code généré — cliquez "Nouveau" pour commencer.</div>';
+    document.getElementById('preview-frame').style.display='none';
+    document.getElementById('prev-ph').style.display='flex';
   }
   const chatEl=document.getElementById('chat-msgs');
   chatEl.innerHTML=`<div class="msg msg-s">Projet: ${p.title||p.client_name}</div>`;
@@ -596,6 +662,8 @@ async function openProject(id){
 }
 function newProject(){
   currentProject=null;
+  currentPreviewUrl=null;
+  clearErrorConsole();
   document.getElementById('tb-proj').textContent='Nouveau projet';
   document.getElementById('code-display').innerHTML='<div class="code-ph">Remplissez le brief et cliquez "Générer le projet".</div>';
   document.getElementById('preview-frame').style.display='none';
@@ -679,12 +747,20 @@ async function streamGenerate(message){
         try{
           const d=JSON.parse(line.slice(6));
           if(d.type==='delta'){fullCode+=d.content;aiDiv.textContent+=d.content;aiDiv.scrollIntoView({block:'nearest'});codeEl.textContent=fullCode;codeEl.scrollTop=codeEl.scrollHeight;}
+          if(d.type==='preview_ready'){
+            // Server auto-saved preview files, load directly
+            addStatusMsg('✅ Preview prêt !','success');
+            loadLivePreview(d.previewUrl, d.framework);
+          }
           if(d.type==='done'){
             aiDiv.classList.remove('streaming');
-            addStatusMsg('✅ Code généré ! Compilation en cours...','success');
+            addStatusMsg('✅ Code généré !','success');
             if(currentProject)await api('/api/projects/'+currentProject.id,'PUT',{generated_code:fullCode,status:'ready'});
             loadProjects();
-            autoCompileAndPreview(fullCode);
+            // Auto-refresh preview if not already loaded by preview_ready event
+            if(!currentPreviewUrl || !currentPreviewUrl.includes('/preview/' + currentProject?.id + '/')) {
+              autoCompileAndPreview(fullCode);
+            }
           }
           if(d.type==='error'){aiDiv.classList.remove('streaming');aiDiv.style.color='#f87171';addStatusMsg('❌ '+d.content,'error');showPreviewError(d.content);}
         }catch{}
@@ -720,6 +796,7 @@ function clearChat(){document.getElementById('chat-msgs').innerHTML='<div class=
 function showGeneratingAnim(){
   const frame=document.getElementById('preview-frame');
   document.getElementById('prev-ph').style.display='none';
+  clearErrorConsole();
   frame.removeAttribute('src');
   frame.style.display='block';
   frame.srcdoc=`<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:system-ui,sans-serif;background:#0a0f1e;display:flex;align-items:center;justify-content:center;height:100vh;}.w{text-align:center;padding:20px;}.logo{width:52px;height:52px;background:linear-gradient(135deg,#1a2744,#D4A820);border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;}.logo svg{animation:spin 3s linear infinite;}@keyframes spin{to{transform:rotate(360deg)}}h3{font-size:15px;font-weight:600;color:#e2e8f0;margin-bottom:6px;}p{font-size:12px;color:#475569;margin-bottom:22px;}.dots{display:flex;justify-content:center;gap:6px;}.dot{width:7px;height:7px;border-radius:50%;background:#D4A820;animation:b .8s ease-in-out infinite;}.dot:nth-child(2){animation-delay:.15s;opacity:.7;}.dot:nth-child(3){animation-delay:.3s;opacity:.5;}@keyframes b{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}</style></head><body><div class="w"><div class="logo"><svg width="26" height="26" fill="none" viewBox="0 0 24 24" stroke="white" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg></div><h3>Prestige AI conçoit votre projet</h3><p>Génération du code en cours...</p><div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div></div></body></html>`;
@@ -747,8 +824,96 @@ function cleanErr(msg){
   if(m.includes('timeout'))return'La construction a pris trop de temps. Réessayez.';
   return'Le projet nécessite un ajustement. Décrivez les changements dans le chat.';
 }
+
+// Load preview directly from project ID (new instant preview system)
+async function loadProjectPreview(projectId, code) {
+  if (!projectId) return;
+  clearErrorConsole();
+  
+  // Save preview files via API
+  try {
+    const r = await fetch('/api/preview/' + projectId + '/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await r.json();
+    
+    if (data.success) {
+      currentPreviewUrl = data.previewUrl;
+      loadLivePreview(data.previewUrl, data.framework);
+    } else {
+      // Fallback to legacy compile
+      autoCompileAndPreview(code);
+    }
+  } catch(e) {
+    // Fallback to legacy compile
+    autoCompileAndPreview(code);
+  }
+}
+
+// Load live preview from URL
+function loadLivePreview(previewUrl, framework) {
+  const frame = document.getElementById('preview-frame');
+  document.getElementById('prev-ph').style.display = 'none';
+  frame.removeAttribute('srcdoc');
+  frame.style.display = 'block';
+  
+  // Add timestamp to prevent caching
+  const url = previewUrl + '?t=' + Date.now();
+  frame.src = url;
+  currentPreviewUrl = previewUrl;
+  
+  setDevice(currentDevice);
+  
+  const ub = document.getElementById('urlbar');
+  if (ub) { ub.style.display = 'block'; ub.textContent = previewUrl; }
+  
+  const tl = document.getElementById('prev-type');
+  if (tl) {
+    const typeLabel = framework === 'react-cdn' ? 'React CDN' : 
+                      framework === 'vue-cdn' ? 'Vue CDN' : 
+                      framework === 'html' ? 'HTML' : '✓ Live';
+    tl.textContent = typeLabel;
+    tl.style.display = 'inline';
+  }
+}
+
+// Hot reload preview (refresh without full page reload)
+function hotReloadPreview() {
+  if (!currentPreviewUrl || !currentProject?.id) return;
+  const frame = document.getElementById('preview-frame');
+  if (frame.src && !frame.src.includes('about:')) {
+    // Just reload the iframe with cache bust
+    frame.src = currentPreviewUrl + '?t=' + Date.now();
+  }
+}
+
 async function autoCompileAndPreview(code){
   if(!currentProject?.id||!code||code.length<100)return;
+  
+  // Try instant preview first
+  try {
+    const r = await fetch('/api/preview/' + currentProject.id + '/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ code })
+    });
+    const data = await r.json();
+    
+    if (data.success) {
+      currentPreviewUrl = data.previewUrl;
+      loadLivePreview(data.previewUrl, data.framework);
+      addStatusMsg('✅ Preview prêt !', 'success');
+      document.getElementById('btn-compile').textContent = '⚡ Compiler';
+      document.getElementById('btn-compile').disabled = false;
+      return;
+    }
+  } catch(e) {
+    console.log('Instant preview failed, falling back to compile:', e);
+  }
+  
+  // Fallback to full compilation
   showBuildingAnim(currentProject.title);
   const btn=document.getElementById('btn-compile');
   if(btn){btn.disabled=true;btn.textContent='⏳ En cours...';}
@@ -793,26 +958,131 @@ function loadCompiledPreview(buildUrl){
   frame.removeAttribute('srcdoc');
   frame.style.display='block';
   frame.src=buildUrl;
+  currentPreviewUrl = buildUrl;
   setDevice(currentDevice);
   const ub=document.getElementById('urlbar');
   if(ub){ub.style.display='block';ub.textContent=buildUrl;}
   const tl=document.getElementById('prev-type');
-  if(tl){tl.textContent='✓ En direct';tl.style.display='inline';}
+  if(tl){tl.textContent='✓ Compilé';tl.style.display='inline';}
   frame.onload=()=>{
     try{const loc=frame.contentWindow?.location;if(loc&&ub)ub.textContent=loc.pathname||(loc.hash||'')||buildUrl;}catch{}
   };
 }
 function refreshPreview(){
-  const code=document.getElementById('code-display').textContent;
-  if(code&&code.length>50)autoCompileAndPreview(code);
+  if (currentPreviewUrl && currentProject?.id) {
+    // Hot reload using instant preview
+    const code = document.getElementById('code-display').textContent;
+    if (code && code.length > 50) {
+      loadProjectPreview(currentProject.id, code);
+    }
+  } else {
+    const code=document.getElementById('code-display').textContent;
+    if(code&&code.length>50)autoCompileAndPreview(code);
+  }
 }
+
+// Error Console Functions
+function addPreviewError(level, message) {
+  previewErrors.push({ level, message, time: new Date() });
+  if (previewErrors.length > 50) previewErrors.shift();
+  
+  const container = document.getElementById('error-console-msgs');
+  const item = document.createElement('div');
+  item.className = 'error-item';
+  item.innerHTML = `<span class="error-level ${level}">${level}</span><span class="error-msg">${escapeHtmlChars(message)}</span>`;
+  container.appendChild(item);
+  container.scrollTop = container.scrollHeight;
+  
+  // Show error button indicator
+  const btn = document.getElementById('btn-errors');
+  if (btn) {
+    btn.style.display = 'inline-block';
+    btn.textContent = '⚠ ' + previewErrors.length;
+  }
+  
+  // Auto-show console on error
+  if (level === 'error') {
+    document.getElementById('error-console').classList.add('show');
+  }
+}
+
+function escapeHtmlChars(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function toggleErrorConsole() {
+  const console = document.getElementById('error-console');
+  console.classList.toggle('show');
+}
+
+function clearErrorConsole() {
+  previewErrors = [];
+  document.getElementById('error-console-msgs').innerHTML = '';
+  document.getElementById('error-console').classList.remove('show');
+  const btn = document.getElementById('btn-errors');
+  if (btn) { btn.style.display = 'none'; btn.textContent = '⚠'; }
+}
+
+// Listen for preview console messages
+window.addEventListener('message', function(event) {
+  if (event.data && event.data.type === 'preview-console') {
+    addPreviewError(event.data.level, event.data.message);
+  }
+});
+
+// Fullscreen Preview
+function openFullscreen() {
+  const modal = document.getElementById('fullscreen-modal');
+  const frame = document.getElementById('fullscreen-frame');
+  const title = document.getElementById('fullscreen-title');
+  
+  title.textContent = currentProject?.title || 'Preview';
+  
+  // Copy current preview URL to fullscreen frame
+  if (currentPreviewUrl) {
+    frame.src = currentPreviewUrl + '?t=' + Date.now();
+  } else {
+    // Try to use preview frame src
+    const previewFrame = document.getElementById('preview-frame');
+    if (previewFrame.src && !previewFrame.src.includes('about:')) {
+      frame.src = previewFrame.src;
+    }
+  }
+  
+  setFullscreenDevice(fullscreenDevice);
+  modal.classList.add('show');
+}
+
+function closeFullscreen() {
+  document.getElementById('fullscreen-modal').classList.remove('show');
+  document.getElementById('fullscreen-frame').src = 'about:blank';
+}
+
+function setFullscreenDevice(device) {
+  fullscreenDevice = device;
+  ['d','t','m'].forEach(d => {
+    const btn = document.getElementById('fs-dev-'+d);
+    if (btn) btn.style.background = device === ({'d':'desktop','t':'tablet','m':'mobile'}[d]) ? 'rgba(212,168,32,.2)' : 'transparent';
+  });
+  
+  const wrap = document.getElementById('fullscreen-wrap');
+  const frame = document.getElementById('fullscreen-frame');
+  
+  if (device === 'desktop') {
+    wrap.style.padding = '0';
+    frame.style.cssText = 'width:100%;height:100%;border:none;background:#fff;';
+  } else if (device === 'tablet') {
+    wrap.style.padding = '20px';
+    frame.style.cssText = 'width:768px;max-width:100%;height:100%;border:6px solid #1e293b;border-radius:12px;background:#fff;';
+  } else {
+    wrap.style.padding = '20px';
+    frame.style.cssText = 'width:390px;max-width:calc(100% - 40px);height:844px;max-height:calc(100% - 40px);border:10px solid #1e293b;border-radius:38px;background:#fff;';
+  }
+}
+
+// Legacy openFull for backward compatibility
 function openFull(){
-  const frame=document.getElementById('preview-frame');
-  if(frame.src&&!frame.src.includes('about:')){window.open(frame.src,'_blank');return;}
-  const code=document.getElementById('code-display').textContent;
-  if(!code||code.length<50)return;
-  const htmlMatch=code.match(/<!DOCTYPE[\s\S]*?<\/html>/i);
-  if(htmlMatch){const w=window.open('','_blank');w.document.write(htmlMatch[0]);w.document.close();}
+  openFullscreen();
 }
 function prevBack(){try{document.getElementById('preview-frame').contentWindow.history.back();}catch{}}
 function prevFwd(){try{document.getElementById('preview-frame').contentWindow.history.forward();}catch{}}
