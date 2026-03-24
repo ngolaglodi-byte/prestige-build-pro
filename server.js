@@ -47,11 +47,20 @@ const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userNam
 
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
-if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true }); } catch(e) {} }
+const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
+const PUBLIC_URL = process.env.PUBLIC_URL || '';
+if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SITES_DIR:', e.message); } }
 
 // ─── SCREENSHOTS DIRECTORY FOR VERSION HISTORY ───
 const SCREENSHOTS_DIR = process.env.SCREENSHOTS_DIR || '/data/screenshots';
-if (!fs.existsSync(SCREENSHOTS_DIR)) { try { fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true }); } catch(e) {} }
+if (!fs.existsSync(SCREENSHOTS_DIR)) { try { fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SCREENSHOTS_DIR:', e.message); } }
+
+// ─── PATH VALIDATION HELPER ───
+function isPathSafe(basePath, targetPath) {
+  const resolvedBase = path.resolve(basePath);
+  const resolvedTarget = path.resolve(targetPath);
+  return resolvedTarget.startsWith(resolvedBase + path.sep) || resolvedTarget === resolvedBase;
+}
 
 // ─── AUTH ───
 function signToken(p) {
@@ -242,7 +251,7 @@ function injectTrackingScript(html, projectId, subdomain) {
 <script>
 (function() {
   const PID = '${projectId}';
-  const API = '${process.env.PUBLIC_URL || ''}/api/track/' + PID;
+  const API = '${PUBLIC_URL || (typeof window !== 'undefined' ? window.location.origin : '')}/api/track/' + PID;
   let startTime = Date.now();
   
   function track(type, data) {
@@ -850,7 +859,6 @@ const server = http.createServer(async (req, res) => {
     if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
     
     const subdomain = p.subdomain || `project-${id}`;
-    const siteDir = path.join(SITES_DIR, subdomain);
     
     // Copy preview files to sites directory
     try {
@@ -864,6 +872,15 @@ const server = http.createServer(async (req, res) => {
         }
       }
       
+      // Validate subdomain to prevent path traversal
+      const safeSubdomain = subdomain.replace(/[^a-zA-Z0-9-]/g, '');
+      const siteDir = path.join(SITES_DIR, safeSubdomain);
+      
+      // Verify the site directory is within SITES_DIR (prevent path traversal)
+      if (!isPathSafe(SITES_DIR, siteDir)) {
+        json(res, 400, { error: 'Subdomain invalide.' }); return;
+      }
+      
       // Create site directory and copy files
       if (fs.existsSync(siteDir)) {
         fs.rmSync(siteDir, { recursive: true, force: true });
@@ -873,6 +890,9 @@ const server = http.createServer(async (req, res) => {
       // Copy all files from preview to site
       const copyRecursive = (src, dest) => {
         if (!fs.existsSync(src)) return;
+        // Verify paths are safe
+        if (!isPathSafe(previewDir, src) || !isPathSafe(siteDir, dest)) return;
+        
         const stat = fs.statSync(src);
         if (stat.isDirectory()) {
           fs.mkdirSync(dest, { recursive: true });
@@ -883,7 +903,7 @@ const server = http.createServer(async (req, res) => {
           let content = fs.readFileSync(src);
           // Inject tracking script into HTML files
           if (src.endsWith('.html')) {
-            content = injectTrackingScript(content.toString(), id, subdomain);
+            content = injectTrackingScript(content.toString(), id, safeSubdomain);
           }
           fs.writeFileSync(dest, content);
         }
@@ -891,16 +911,16 @@ const server = http.createServer(async (req, res) => {
       copyRecursive(previewDir, siteDir);
       
       // Update project status
-      db.prepare("UPDATE projects SET is_published=1,status='published',subdomain=?,updated_at=datetime('now') WHERE id=?").run(subdomain, id);
-      db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié sur ${subdomain}.prestige-build.dev !`,'success');
+      db.prepare("UPDATE projects SET is_published=1,status='published',subdomain=?,updated_at=datetime('now') WHERE id=?").run(safeSubdomain, id);
+      db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié sur ${safeSubdomain}.${PUBLISH_DOMAIN} !`,'success');
       
       // Generate publish URL
-      const publishedUrl = `https://${subdomain}.prestige-build.dev`;
+      const publishedUrl = `https://${safeSubdomain}.${PUBLISH_DOMAIN}`;
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(publishedUrl)}`;
       
       json(res,200,{
         ok: true, 
-        subdomain,
+        subdomain: safeSubdomain,
         url: publishedUrl,
         qrCode: qrCodeUrl,
         localPath: siteDir
