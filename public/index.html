@@ -444,8 +444,12 @@ let buildPollInterval=null;
 let previewErrors=[];
 let currentPreviewUrl=null;
 let fullscreenDevice='desktop';
+const MAX_PREVIEW_ERRORS = 50;
 
 // ── UTILS ──
+function getProjectPreviewUrl(projectId) {
+  return `/preview/${projectId}/`;
+}
 function showToast(msg,type='info'){
   const el=document.getElementById('toast');
   el.textContent=msg; el.className='toast show '+type;
@@ -619,7 +623,7 @@ async function openProject(id){
   if(p.generated_code){
     document.getElementById('code-display').textContent=p.generated_code;
     // Try instant preview first, then fallback to compiled preview
-    const previewUrl = `/preview/${p.id}/`;
+    const previewUrl = getProjectPreviewUrl(p.id);
     // Check if preview exists by trying to load it
     try {
       const checkResp = await fetch(previewUrl + 'index.html', { method: 'HEAD' });
@@ -984,7 +988,7 @@ function refreshPreview(){
 // Error Console Functions
 function addPreviewError(level, message) {
   previewErrors.push({ level, message, time: new Date() });
-  if (previewErrors.length > 50) previewErrors.shift();
+  if (previewErrors.length > MAX_PREVIEW_ERRORS) previewErrors.shift();
   
   const container = document.getElementById('error-console-msgs');
   const item = document.createElement('div');

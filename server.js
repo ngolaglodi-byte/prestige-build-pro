@@ -10,6 +10,10 @@ const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('he
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
 const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
 
+// Preview system constants
+const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
 // Ensure previews directory exists
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
@@ -388,15 +392,15 @@ function cleanOldPreviews() {
       const full = path.join(PREVIEWS_DIR, dir);
       try {
         const stat = fs.statSync(full);
-        if (now - stat.mtimeMs > 86400000) { // 24 hours
+        if (now - stat.mtimeMs > PREVIEW_RETENTION_MS) {
           fs.rmSync(full, { recursive: true, force: true });
         }
       } catch(e) {}
     });
   } catch(e) {}
 }
-// Clean old previews every hour
-setInterval(cleanOldPreviews, 3600000);
+// Clean old previews periodically
+setInterval(cleanOldPreviews, CLEANUP_INTERVAL_MS);
 
 // ─── SERVER ───
 const server = http.createServer(async (req, res) => {
