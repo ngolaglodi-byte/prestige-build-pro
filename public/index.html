@@ -183,6 +183,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .fullscreen-title{font-size:13px;font-weight:500;color:var(--b200);}
 .fullscreen-actions{display:flex;gap:6px;align-items:center;}
 .fullscreen-frame{flex:1;width:100%;height:100%;border:none;background:#fff;}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.05);opacity:0.9;}}
 @media(max-width:1024px){.chat-panel{display:none;}.code-panel{flex:1;}}
 </style>
 </head>
@@ -218,7 +219,12 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
     <button class="tb-btn admin-only" id="btn-admin" onclick="openAdmin()" style="display:none;">Administration</button>
     <div class="tb-sep"></div>
     <span class="tb-project" id="tb-proj">Aucun projet ouvert</span>
+    <div class="tb-sep" id="collab-sep" style="display:none;"></div>
+    <span id="collab-indicator" style="display:none;font-size:12px;color:var(--gold);padding:4px 10px;background:rgba(212,168,32,.1);border-radius:6px;"></span>
     <div class="tb-right">
+      <button class="tb-btn admin-only" id="btn-presentation" onclick="openPresentationMode()" style="display:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;border:none;">🎬 Présentation</button>
+      <button class="tb-btn" id="btn-history" onclick="openVersionHistory()" style="display:none;">⏱ Historique</button>
+      <button class="tb-btn" id="btn-analytics" onclick="openAnalytics()" style="display:none;">📊 Analytics</button>
       <button class="tb-btn" onclick="toggleLang()">FR/EN</button>
       <span class="role-pill" id="role-pill"></span>
       <span style="font-size:13px;color:var(--b300);" id="user-name"></span>
@@ -275,8 +281,21 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
         <div class="bg1" style="margin-bottom:12px;">
           <div class="bf"><label>APIs & intégrations</label><input id="bp-apis" placeholder="ex: Stripe, Google Maps, Twilio..."/></div>
         </div>
+        <div class="bg1" style="margin-bottom:12px;">
+          <div class="bf">
+            <label>📷 Importer une maquette (optionnel)</label>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:4px;">
+              <input type="file" id="bp-image" accept="image/*" style="display:none;" onchange="handleImageUpload(this)"/>
+              <button type="button" class="btn-xs" style="padding:8px 14px;" onclick="document.getElementById('bp-image').click()">📷 Importer une image</button>
+              <span id="bp-image-name" style="font-size:12px;color:var(--b300);"></span>
+              <button type="button" class="btn-xs" id="bp-image-clear" style="display:none;color:#f87171;" onclick="clearImageUpload()">✕</button>
+            </div>
+            <p style="font-size:11px;color:var(--b400);margin-top:4px;">Maquette papier, screenshot, wireframe — l'IA reproduira le design fidèlement.</p>
+          </div>
+        </div>
         <div style="display:flex;gap:8px;">
           <button class="btn-p" id="btn-gen" onclick="startGeneration()">Générer le projet</button>
+          <button class="btn-p" id="btn-gen-image" style="display:none;background:linear-gradient(135deg,#6366f1,#8b5cf6);" onclick="startImageGeneration()">🖼 Générer depuis l'image</button>
           <button style="padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--b200);cursor:pointer;font-family:'Outfit',sans-serif;font-size:13px;" onclick="hideBrief()">Annuler</button>
         </div>
       </div>
@@ -429,6 +448,141 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
     <iframe id="fullscreen-frame" class="fullscreen-frame"></iframe>
   </div>
 </div>
+
+<!-- VERSION HISTORY MODAL -->
+<div class="modal-bg" id="history-modal">
+  <div class="modal" style="max-width:900px;">
+    <div class="modal-hdr">
+      <h2>⏱ Historique des versions</h2>
+      <button class="btn-close" onclick="closeVersionHistory()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="versions-list" style="display:flex;flex-direction:column;gap:12px;"></div>
+      <div id="versions-empty" style="text-align:center;padding:40px;color:var(--b300);">Aucune version enregistrée.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ANALYTICS MODAL -->
+<div class="modal-bg" id="analytics-modal">
+  <div class="modal" style="max-width:1000px;">
+    <div class="modal-hdr">
+      <h2>📊 Analytics du projet</h2>
+      <button class="btn-close" onclick="closeAnalytics()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px;">
+        <div style="background:rgba(74,222,128,.08);border:1px solid rgba(74,222,128,.2);border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:#4ade80;" id="analytics-views">0</div>
+          <div style="font-size:11px;color:var(--b300);text-transform:uppercase;letter-spacing:1px;">Visites</div>
+        </div>
+        <div style="background:rgba(212,168,32,.08);border:1px solid rgba(212,168,32,.2);border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:var(--gold);" id="analytics-clicks">0</div>
+          <div style="font-size:11px;color:var(--b300);text-transform:uppercase;letter-spacing:1px;">Clics</div>
+        </div>
+        <div style="background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:#6366f1;" id="analytics-forms">0</div>
+          <div style="font-size:11px;color:var(--b300);text-transform:uppercase;letter-spacing:1px;">Formulaires</div>
+        </div>
+        <div style="background:rgba(236,72,153,.08);border:1px solid rgba(236,72,153,.2);border-radius:10px;padding:16px;text-align:center;">
+          <div style="font-size:28px;font-weight:700;color:#ec4899;" id="analytics-time">0s</div>
+          <div style="font-size:11px;color:var(--b300);text-transform:uppercase;letter-spacing:1px;">Temps moyen</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;">
+        <div>
+          <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--b200);">Visites par jour</h3>
+          <canvas id="analytics-chart" height="200"></canvas>
+        </div>
+        <div>
+          <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--b200);">Pages populaires</h3>
+          <div id="analytics-pages" style="display:flex;flex-direction:column;gap:8px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PRESENTATION MODE (OPENS IN NEW WINDOW) -->
+<div class="fullscreen-modal" id="presentation-modal">
+  <div id="presentation-container" style="width:100%;height:100%;display:flex;flex-direction:column;background:#0a0f1e;">
+    <!-- Intro Screen -->
+    <div id="pres-intro" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;">
+      <div style="width:100px;height:100px;background:linear-gradient(135deg,var(--b800),var(--gold));border-radius:24px;display:flex;align-items:center;justify-content:center;animation:pulse 2s infinite;">
+        <span style="font-size:48px;">🏗️</span>
+      </div>
+      <h1 style="font-size:32px;font-weight:700;background:linear-gradient(90deg,var(--gold),var(--gold2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Prestige Technologie Compagnie</h1>
+      <p style="font-size:18px;color:var(--b300);" id="pres-project-name">Présentation du projet</p>
+      <div style="margin-top:30px;">
+        <button class="btn-p" style="font-size:16px;padding:14px 32px;" onclick="startPresentation()">▶ Démarrer la présentation</button>
+      </div>
+    </div>
+    <!-- Content Screen -->
+    <div id="pres-content" style="flex:1;display:none;flex-direction:column;">
+      <div style="height:50px;background:rgba(13,17,32,.95);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 20px;">
+        <span style="font-size:14px;font-weight:500;color:var(--gold);" id="pres-section-title">Section</span>
+        <div style="display:flex;gap:10px;align-items:center;">
+          <button class="btn-xs" onclick="prevPresentationSection()">← Précédent</button>
+          <span id="pres-progress" style="font-size:12px;color:var(--b300);">1/5</span>
+          <button class="btn-xs" onclick="nextPresentationSection()">Suivant →</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--b300);margin-left:10px;">
+            <input type="checkbox" id="pres-auto" checked onchange="toggleAutoPresentation()"/> Auto
+          </label>
+          <button class="btn-xs" onclick="closePresentationMode()" style="margin-left:10px;">✕ Fermer</button>
+        </div>
+      </div>
+      <div style="flex:1;display:flex;">
+        <iframe id="pres-frame" style="flex:1;border:none;background:#fff;"></iframe>
+      </div>
+      <div style="height:80px;background:rgba(13,17,32,.95);border-top:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;gap:16px;">
+        <div style="width:60px;height:60px;background:linear-gradient(135deg,var(--b700),var(--gold));border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;">💬</div>
+        <div style="flex:1;">
+          <p style="font-size:14px;color:var(--b100);line-height:1.6;" id="pres-narration">Bienvenue dans votre projet...</p>
+        </div>
+      </div>
+    </div>
+    <!-- Conclusion Screen -->
+    <div id="pres-conclusion" style="flex:1;display:none;flex-direction:column;align-items:center;justify-content:center;gap:24px;">
+      <div style="width:80px;height:80px;background:linear-gradient(135deg,#4ade80,#22c55e);border-radius:20px;display:flex;align-items:center;justify-content:center;">
+        <span style="font-size:40px;">✅</span>
+      </div>
+      <h1 style="font-size:28px;font-weight:700;color:var(--b100);">Votre projet est prêt !</h1>
+      <p style="font-size:16px;color:var(--b300);text-align:center;max-width:500px;">Approuvez ce projet pour le mettre en ligne et le rendre accessible à vos clients.</p>
+      <div style="display:flex;gap:12px;margin-top:20px;">
+        <button class="btn-p" style="font-size:16px;padding:14px 28px;background:linear-gradient(135deg,#4ade80,#22c55e);" onclick="approveFromPresentation()">✓ Approuver et publier</button>
+        <button class="btn-xs" style="padding:14px 28px;" onclick="closePresentationMode()">Fermer</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PUBLISH SUCCESS MODAL -->
+<div class="modal-bg" id="publish-modal">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-hdr">
+      <h2>🎉 Projet publié !</h2>
+      <button class="btn-close" onclick="closePublishModal()">✕</button>
+    </div>
+    <div class="modal-body" style="text-align:center;">
+      <div style="margin-bottom:20px;">
+        <img id="publish-qr" src="" alt="QR Code" style="width:180px;height:180px;border-radius:12px;border:4px solid var(--gold);"/>
+      </div>
+      <div style="margin-bottom:16px;">
+        <p style="font-size:12px;color:var(--b300);margin-bottom:6px;">URL du site client</p>
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
+          <input type="text" id="publish-url" readonly style="background:rgba(10,31,92,.5);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:14px;color:var(--gold);text-align:center;width:100%;"/>
+          <button class="btn-xs" onclick="copyPublishUrl()" style="flex-shrink:0;">📋 Copier</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:center;">
+        <button class="btn-p" onclick="openPublishedSite()">🌐 Ouvrir le site</button>
+        <button class="btn-xs" onclick="sendToClient()">📧 Envoyer au client</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
 <script>
 // ── STATE ──
@@ -663,6 +817,20 @@ async function openProject(id){
   renderSidebar(allProjects);
   updateContextualSuggestions();
   setView('editor');
+  
+  // Show new feature buttons when project is open
+  document.getElementById('btn-history').style.display = 'inline-block';
+  if (me.role === 'admin' && p.is_published) {
+    document.getElementById('btn-analytics').style.display = 'inline-block';
+  } else {
+    document.getElementById('btn-analytics').style.display = 'none';
+  }
+  if (me.role === 'admin') {
+    document.getElementById('btn-presentation').style.display = 'inline-block';
+  }
+  
+  // Connect to SSE for real-time collaboration
+  connectProjectSSE(id);
 }
 function newProject(){
   currentProject=null;
@@ -1182,6 +1350,477 @@ async function delApiKey(id){if(!confirm('Supprimer cette API ?'))return;await a
 async function loadAdminProjects(){
   const projs=await api('/api/projects');
   document.getElementById('admin-proj-tbody').innerHTML=(projs||[]).map(p=>`<tr><td style="font-weight:500;">${p.title||'—'}</td><td>${p.client_name||'—'}</td><td style="color:var(--b300);">${p.agent_name||'—'}</td><td><span class="badge ${p.is_published?'b-pub':p.status==='ready'?'b-ready':'b-draft'}">${p.is_published?'Publié':p.status==='ready'?'Prêt':'Brouillon'}</span></td><td style="color:var(--b300);font-size:12px;">${(p.updated_at||'').substring(0,10)}</td><td><button class="btn-xs" onclick="openProject(${p.id});closeAdmin();setView('editor')">Ouvrir</button>${!p.is_published?`<button class="btn-xs" style="color:#4ade80;border-color:rgba(74,222,128,.3);margin-left:4px;" onclick="pubProjectById(${p.id})">Publier</button>`:''}<button class="btn-d" style="margin-left:4px;" onclick="delProjectById(${p.id})">Suppr.</button></td></tr>`).join('');
+}
+
+// ── IMAGE UPLOAD FOR AI GENERATION ──
+let uploadedImageData = null;
+let uploadedImageType = null;
+
+function handleImageUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  
+  if (!file.type.startsWith('image/')) {
+    showToast('Fichier image requis.', 'error');
+    return;
+  }
+  
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('Image trop grande (max 10MB).', 'error');
+    return;
+  }
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const base64 = e.target.result.split(',')[1];
+    uploadedImageData = base64;
+    uploadedImageType = file.type;
+    
+    document.getElementById('bp-image-name').textContent = file.name;
+    document.getElementById('bp-image-clear').style.display = 'inline-block';
+    document.getElementById('btn-gen-image').style.display = 'inline-block';
+    showToast('Image prête ! Cliquez "Générer depuis l\'image".', 'success');
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearImageUpload() {
+  uploadedImageData = null;
+  uploadedImageType = null;
+  document.getElementById('bp-image').value = '';
+  document.getElementById('bp-image-name').textContent = '';
+  document.getElementById('bp-image-clear').style.display = 'none';
+  document.getElementById('btn-gen-image').style.display = 'none';
+}
+
+async function startImageGeneration() {
+  if (!uploadedImageData) {
+    showToast('Importez une image d\'abord.', 'error');
+    return;
+  }
+  
+  const title = document.getElementById('bp-title').value.trim();
+  const client = document.getElementById('bp-client').value.trim();
+  
+  // Create project if needed
+  if (!currentProject) {
+    const p = await api('/api/projects', 'POST', {
+      title: title || client || 'Projet depuis image',
+      client_name: client,
+      project_type: selectedTypes.join(', '),
+      brief: 'Design reproduit depuis une image importée',
+      subdomain: document.getElementById('bp-sub').value
+    });
+    currentProject = { id: p.id, title: p.title };
+  }
+  
+  hideBrief();
+  document.getElementById('tb-proj').textContent = title || client || 'Projet';
+  addChatMsg('user', '🖼 Génération depuis l\'image importée...');
+  showGeneratingAnim();
+  
+  isGenerating = true;
+  document.getElementById('btn-send').disabled = true;
+  document.getElementById('btn-gen').disabled = true;
+  
+  const aiDiv = document.createElement('div');
+  aiDiv.className = 'msg msg-a streaming';
+  aiDiv.textContent = '';
+  const chat = document.getElementById('chat-msgs');
+  chat.appendChild(aiDiv);
+  
+  let fullCode = '';
+  const codeEl = document.getElementById('code-display');
+  
+  try {
+    const r = await fetch('/api/generate/image', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: currentProject.id,
+        image_base64: uploadedImageData,
+        media_type: uploadedImageType,
+        prompt: `Reproduis fidèlement ce design. Titre: ${title}, Client: ${client}`
+      })
+    });
+    
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (d.type === 'delta') {
+            fullCode += d.content;
+            aiDiv.textContent += d.content;
+            codeEl.textContent = fullCode;
+          }
+          if (d.type === 'preview_ready') {
+            addStatusMsg('✅ Preview prêt !', 'success');
+            loadLivePreview(d.previewUrl, d.framework);
+          }
+          if (d.type === 'done') {
+            aiDiv.classList.remove('streaming');
+            addStatusMsg('✅ Design reproduit depuis l\'image !', 'success');
+            loadProjects();
+            clearImageUpload();
+          }
+          if (d.type === 'error') {
+            aiDiv.classList.remove('streaming');
+            addStatusMsg('❌ ' + d.content, 'error');
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    addStatusMsg('❌ Erreur: ' + e.message, 'error');
+  }
+  
+  isGenerating = false;
+  document.getElementById('btn-send').disabled = false;
+  document.getElementById('btn-gen').disabled = false;
+}
+
+// ── VERSION HISTORY ──
+async function openVersionHistory() {
+  if (!currentProject) {
+    showToast('Ouvrez un projet d\'abord.', 'error');
+    return;
+  }
+  
+  document.getElementById('history-modal').classList.add('show');
+  document.getElementById('versions-list').innerHTML = '<div style="text-align:center;padding:20px;color:var(--b300);">Chargement...</div>';
+  document.getElementById('versions-empty').style.display = 'none';
+  
+  const versions = await api('/api/projects/' + currentProject.id + '/versions');
+  const listEl = document.getElementById('versions-list');
+  
+  if (!versions || versions.length === 0) {
+    listEl.innerHTML = '';
+    document.getElementById('versions-empty').style.display = 'block';
+    return;
+  }
+  
+  listEl.innerHTML = versions.map(v => `
+    <div style="background:rgba(10,31,92,.4);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;align-items:center;gap:14px;">
+      <div style="width:50px;height:50px;background:linear-gradient(135deg,var(--b700),var(--gold));border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:var(--b900);">v${v.version_number}</div>
+      <div style="flex:1;">
+        <div style="font-size:14px;font-weight:500;color:var(--b100);">${v.message || 'Version ' + v.version_number}</div>
+        <div style="font-size:12px;color:var(--b300);">${v.author_name || 'Agent'} • ${(v.created_at || '').substring(0, 16).replace('T', ' à ')}</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-xs" onclick="previewVersion(${v.id})">👁 Voir</button>
+        <button class="btn-xs" style="color:#4ade80;border-color:rgba(74,222,128,.3);" onclick="restoreVersion(${v.id}, ${v.version_number})">↩ Restaurer</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function closeVersionHistory() {
+  document.getElementById('history-modal').classList.remove('show');
+}
+
+async function previewVersion(versionId) {
+  const version = await api('/api/projects/' + currentProject.id + '/versions/' + versionId);
+  if (version && version.generated_code) {
+    document.getElementById('code-display').textContent = version.generated_code;
+    showToast('Code de la version affiché (non appliqué).', 'info');
+  }
+}
+
+async function restoreVersion(versionId, versionNumber) {
+  if (!confirm(`Restaurer la version ${versionNumber} ? Cela créera une nouvelle version.`)) return;
+  
+  const r = await api('/api/projects/' + currentProject.id + '/versions/' + versionId + '/restore', 'POST');
+  if (r.ok) {
+    showToast(r.message || 'Version restaurée !', 'success');
+    closeVersionHistory();
+    openProject(currentProject.id);
+  } else {
+    showToast(r.error || 'Erreur lors de la restauration.', 'error');
+  }
+}
+
+// ── ANALYTICS ──
+let analyticsChart = null;
+
+async function openAnalytics() {
+  if (!currentProject) {
+    showToast('Ouvrez un projet publié d\'abord.', 'error');
+    return;
+  }
+  
+  if (me.role !== 'admin') {
+    showToast('Analytics réservés aux admins.', 'error');
+    return;
+  }
+  
+  document.getElementById('analytics-modal').classList.add('show');
+  
+  try {
+    const data = await api('/api/projects/' + currentProject.id + '/analytics');
+    
+    document.getElementById('analytics-views').textContent = data.totalViews || 0;
+    document.getElementById('analytics-clicks').textContent = data.totalClicks || 0;
+    document.getElementById('analytics-forms').textContent = data.totalForms || 0;
+    document.getElementById('analytics-time').textContent = (data.avgTimeSpent || 0) + 's';
+    
+    // Render pages list
+    const pagesEl = document.getElementById('analytics-pages');
+    if (data.topPages && data.topPages.length > 0) {
+      pagesEl.innerHTML = data.topPages.map(p => `
+        <div style="display:flex;justify-content:space-between;padding:8px 12px;background:rgba(10,31,92,.4);border-radius:6px;">
+          <span style="font-size:13px;color:var(--b200);">${p.page || '/'}</span>
+          <span style="font-size:12px;color:var(--gold);font-weight:600;">${p.count}</span>
+        </div>
+      `).join('');
+    } else {
+      pagesEl.innerHTML = '<div style="text-align:center;color:var(--b400);font-size:12px;padding:20px;">Pas de données</div>';
+    }
+    
+    // Render chart
+    const ctx = document.getElementById('analytics-chart').getContext('2d');
+    if (analyticsChart) analyticsChart.destroy();
+    
+    const labels = (data.viewsByDay || []).map(d => d.date).reverse();
+    const values = (data.viewsByDay || []).map(d => d.count).reverse();
+    
+    analyticsChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Visites',
+          data: values,
+          borderColor: '#D4A820',
+          backgroundColor: 'rgba(212,168,32,.1)',
+          fill: true,
+          tension: 0.4
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { color: 'rgba(212,168,32,.1)' }, ticks: { color: '#6b7280' } },
+          y: { grid: { color: 'rgba(212,168,32,.1)' }, ticks: { color: '#6b7280' }, beginAtZero: true }
+        }
+      }
+    });
+  } catch (e) {
+    showToast('Erreur lors du chargement des analytics.', 'error');
+  }
+}
+
+function closeAnalytics() {
+  document.getElementById('analytics-modal').classList.remove('show');
+}
+
+// ── PRESENTATION MODE ──
+let presentationSections = [];
+let currentPresSection = 0;
+let autoPlayInterval = null;
+
+function openPresentationMode() {
+  if (!currentProject || !currentPreviewUrl) {
+    showToast('Ouvrez un projet avec preview d\'abord.', 'error');
+    return;
+  }
+  
+  document.getElementById('presentation-modal').classList.add('show');
+  document.getElementById('pres-project-name').textContent = currentProject.title || 'Votre projet';
+  
+  // Reset state
+  document.getElementById('pres-intro').style.display = 'flex';
+  document.getElementById('pres-content').style.display = 'none';
+  document.getElementById('pres-conclusion').style.display = 'none';
+  
+  // Define presentation sections
+  presentationSections = [
+    { title: 'Page d\'accueil', narration: 'Voici la page d\'accueil de votre site. Elle présente votre activité de manière impactante et professionnelle.' },
+    { title: 'À propos', narration: 'Cette section présente votre entreprise, votre histoire et vos valeurs aux visiteurs.' },
+    { title: 'Services', narration: 'Vos services sont mis en valeur avec des descriptions claires et des visuels attractifs.' },
+    { title: 'Contact', narration: 'Le formulaire de contact permet à vos clients de vous joindre facilement.' }
+  ];
+  currentPresSection = 0;
+}
+
+function startPresentation() {
+  document.getElementById('pres-intro').style.display = 'none';
+  document.getElementById('pres-content').style.display = 'flex';
+  
+  const frame = document.getElementById('pres-frame');
+  frame.src = currentPreviewUrl + '?t=' + Date.now();
+  
+  updatePresentationSection();
+  
+  if (document.getElementById('pres-auto').checked) {
+    autoPlayInterval = setInterval(nextPresentationSection, 8000);
+  }
+}
+
+function updatePresentationSection() {
+  const section = presentationSections[currentPresSection];
+  document.getElementById('pres-section-title').textContent = section.title;
+  document.getElementById('pres-narration').textContent = section.narration;
+  document.getElementById('pres-progress').textContent = `${currentPresSection + 1}/${presentationSections.length}`;
+}
+
+function nextPresentationSection() {
+  currentPresSection++;
+  if (currentPresSection >= presentationSections.length) {
+    if (autoPlayInterval) clearInterval(autoPlayInterval);
+    document.getElementById('pres-content').style.display = 'none';
+    document.getElementById('pres-conclusion').style.display = 'flex';
+    return;
+  }
+  updatePresentationSection();
+}
+
+function prevPresentationSection() {
+  if (currentPresSection > 0) {
+    currentPresSection--;
+    updatePresentationSection();
+  }
+}
+
+function toggleAutoPresentation() {
+  if (document.getElementById('pres-auto').checked) {
+    autoPlayInterval = setInterval(nextPresentationSection, 8000);
+  } else {
+    if (autoPlayInterval) clearInterval(autoPlayInterval);
+  }
+}
+
+function closePresentationMode() {
+  if (autoPlayInterval) clearInterval(autoPlayInterval);
+  document.getElementById('presentation-modal').classList.remove('show');
+}
+
+async function approveFromPresentation() {
+  if (!currentProject || me.role !== 'admin') return;
+  closePresentationMode();
+  await publishProject();
+}
+
+// ── PUBLISH WITH MODAL ──
+let publishedData = null;
+
+async function publishProject(){
+  if(!currentProject||me.role!=='admin')return;
+  if(!confirm('Publier ce projet ?'))return;
+  
+  const r=await api('/api/projects/'+currentProject.id+'/publish','POST');
+  if(r.ok){
+    publishedData = r;
+    showPublishModal(r);
+    document.getElementById('btn-pub').textContent='Publié ✓';
+    document.getElementById('btn-pub').disabled=true;
+    loadProjects();
+    loadStats();
+  } else {
+    showToast(r.error || 'Erreur lors de la publication.', 'error');
+  }
+}
+
+function showPublishModal(data) {
+  document.getElementById('publish-url').value = data.url;
+  document.getElementById('publish-qr').src = data.qrCode;
+  document.getElementById('publish-modal').classList.add('show');
+}
+
+function closePublishModal() {
+  document.getElementById('publish-modal').classList.remove('show');
+}
+
+function copyPublishUrl() {
+  const url = document.getElementById('publish-url').value;
+  navigator.clipboard.writeText(url).then(() => showToast('URL copiée !', 'success'));
+}
+
+function openPublishedSite() {
+  const url = document.getElementById('publish-url').value;
+  window.open(url, '_blank');
+}
+
+function sendToClient() {
+  const url = document.getElementById('publish-url').value;
+  const subject = encodeURIComponent(`Votre site est prêt ! - ${currentProject?.title || 'Projet'}`);
+  const body = encodeURIComponent(`Bonjour,\n\nVotre site web est maintenant en ligne !\n\nAccédez-y ici : ${url}\n\nCordialement,\nPrestige Technologie Compagnie`);
+  window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+  showToast('Client email ouvert.', 'success');
+}
+
+// ── REAL-TIME COLLABORATION ──
+let projectSSE = null;
+
+function connectProjectSSE(projectId) {
+  if (projectSSE) projectSSE.close();
+  
+  projectSSE = new EventSource('/api/projects/' + projectId + '/stream?token=' + token);
+  
+  projectSSE.onmessage = function(event) {
+    try {
+      const data = JSON.parse(event.data);
+      
+      switch (data.type) {
+        case 'connected':
+          console.log('Connected to project SSE');
+          break;
+        case 'user_joined':
+          updateCollabIndicator(`👤 ${data.userName} a rejoint`);
+          break;
+        case 'user_left':
+          updateCollabIndicator(`👤 ${data.userName} a quitté`);
+          setTimeout(() => hideCollabIndicator(), 3000);
+          break;
+        case 'user_action':
+          if (data.action === 'generating') {
+            updateCollabIndicator(`✨ ${data.userName} génère du code...`);
+          }
+          break;
+        case 'code_updated':
+          updateCollabIndicator(`📝 ${data.message}`);
+          addStatusMsg(`${data.message}`, 'info');
+          // Refresh preview
+          if (data.previewUrl) {
+            loadLivePreview(data.previewUrl, 'auto');
+          }
+          break;
+        case 'version_restored':
+          updateCollabIndicator(`↩ ${data.userName} a restauré la version ${data.versionNumber}`);
+          openProject(currentProject.id);
+          break;
+      }
+    } catch (e) {}
+  };
+  
+  projectSSE.onerror = function() {
+    console.log('SSE connection lost, reconnecting...');
+    setTimeout(() => connectProjectSSE(projectId), 5000);
+  };
+}
+
+function updateCollabIndicator(text) {
+  const indicator = document.getElementById('collab-indicator');
+  const sep = document.getElementById('collab-sep');
+  indicator.textContent = text;
+  indicator.style.display = 'inline';
+  sep.style.display = 'block';
+}
+
+function hideCollabIndicator() {
+  document.getElementById('collab-indicator').style.display = 'none';
+  document.getElementById('collab-sep').style.display = 'none';
 }
 
 // ── INIT ──
