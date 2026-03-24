@@ -85,6 +85,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .chip.sel{background:var(--b600);border-color:var(--gold);color:var(--white);}
 .split-view{display:flex;flex:1;overflow:hidden;}
 .code-panel{flex:1;display:flex;flex-direction:column;border-right:1px solid var(--border);min-width:0;}
+.code-panel.hidden{display:none;}
 .panel-hdr{height:34px;background:rgba(2,8,24,.8);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:6px;flex-shrink:0;}
 .panel-lbl{font-size:11px;font-weight:600;color:var(--gold2);text-transform:uppercase;letter-spacing:1px;}
 .panel-acts{margin-left:auto;display:flex;gap:5px;}
@@ -260,10 +261,11 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
         </div>
       </div>
       <div class="split-view">
-        <div class="code-panel">
+        <div class="code-panel" id="code-panel">
           <div class="panel-hdr">
             <span class="panel-lbl">Code généré</span>
             <div class="panel-acts">
+              <button class="btn-xs" onclick="toggleCodePanel()" id="btn-toggle-code" title="Masquer le code" aria-label="Masquer le code">⛶</button>
               <button class="btn-xs" onclick="copyCode()">Copier</button>
               <button class="btn-xs" id="btn-compile" onclick="compileProject()" style="color:var(--gold);border-color:rgba(212,168,32,.3);">⚡ Compiler</button>
               <button class="btn-xs admin-only" id="btn-pub" onclick="publishProject()" style="display:none;color:#4ade80;border-color:rgba(74,222,128,.3);">Publier</button>
@@ -282,6 +284,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
             </div>
             <div id="urlbar" style="flex:1;background:rgba(10,31,92,.4);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:11px;color:var(--b300);font-family:'DM Mono',monospace;display:none;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">preview</div>
             <div class="panel-acts">
+              <button class="btn-xs" onclick="toggleCodePanel()" id="btn-show-code" title="Afficher le code" aria-label="Afficher le code" style="display:none;">⛶</button>
               <button class="btn-xs" onclick="prevBack()">←</button>
               <button class="btn-xs" onclick="prevFwd()">→</button>
               <button class="btn-xs" onclick="refreshPreview()">↺</button>
@@ -744,6 +747,12 @@ function setDevice(device){
 }
 function copyCode(){
   navigator.clipboard.writeText(document.getElementById('code-display').textContent).then(()=>showToast('Code copié !','success'));
+}
+function toggleCodePanel(){
+  const panel=document.getElementById('code-panel');
+  const showBtn=document.getElementById('btn-show-code');
+  panel.classList.toggle('hidden');
+  showBtn.style.display=panel.classList.contains('hidden')?'inline-block':'none';
 }
 
 // ── PUBLISH ──

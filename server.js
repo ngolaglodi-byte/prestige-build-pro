@@ -146,7 +146,7 @@ const server = http.createServer(async (req, res) => {
     streamClaude(messages, res, full=>{
       if (project_id) {
         db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
-        db.prepare('UPDATE projects SET generated_code=?,updated_at=datetime("now"),status="ready",version=version+1 WHERE id=?').run(full,project_id);
+        db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
       }
     }); return;
   }
@@ -159,7 +159,7 @@ const server = http.createServer(async (req, res) => {
     if (!compiler) { json(res,503,{error:'Moteur de compilation non disponible.'}); return; }
     const buildId=crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO builds (id,project_id,status,progress,message) VALUES (?,?,?,?,?)').run(buildId,project_id,'building',0,'Démarrage...');
-    db.prepare('UPDATE projects SET build_id=?,build_status="building" WHERE id=?').run(buildId,project_id);
+    db.prepare("UPDATE projects SET build_id=?,build_status='building' WHERE id=?").run(buildId,project_id);
     json(res,200,{buildId});
     // Friendly step messages — no technical terms shown to agents
     const friendly = {1:'Analyse et organisation du projet...',2:'Mise en place des composants...',3:'Application du design et des styles...',4:'Optimisation et finalisation...',5:'Vérification du résultat...',6:'Prêt !'};
@@ -169,14 +169,14 @@ const server = http.createServer(async (req, res) => {
     }).then(result=>{
       if (result.success) {
         const url2=`/preview/${buildId}/`;
-        db.prepare('UPDATE builds SET status="done",progress=100,url=?,message="Prêt !" WHERE id=?').run(url2,buildId);
-        db.prepare('UPDATE projects SET build_status="done",build_url=? WHERE id=?').run(url2,project_id);
+        db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(url2,buildId);
+        db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(url2,project_id);
         db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id,`Projet "${project.title}" prêt à explorer !`, 'success');
       } else {
         // Clean error — never expose npm/vite details
         const cleanErr = 'Une correction est nécessaire. Utilisez le chat pour ajuster le projet.';
-        db.prepare('UPDATE builds SET status="error",message=? WHERE id=?').run(cleanErr,buildId);
-        db.prepare('UPDATE projects SET build_status="error" WHERE id=?').run(project_id);
+        db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run(cleanErr,buildId);
+        db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
       }
     }); return;
   }
@@ -206,13 +206,13 @@ const server = http.createServer(async (req, res) => {
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='PUT') {
     const id=parseInt(url.split('/').pop());
     const {title,client_name,brief,subdomain,domain,apis,notes,generated_code,status}=await getBody(req);
-    db.prepare('UPDATE projects SET title=COALESCE(?,title),client_name=COALESCE(?,client_name),brief=COALESCE(?,brief),subdomain=COALESCE(?,subdomain),domain=COALESCE(?,domain),apis=COALESCE(?,apis),notes=COALESCE(?,notes),generated_code=COALESCE(?,generated_code),status=COALESCE(?,status),updated_at=datetime("now") WHERE id=?').run(title,client_name,brief,subdomain,domain,apis?JSON.stringify(apis):null,notes,generated_code,status,id);
+    db.prepare("UPDATE projects SET title=COALESCE(?,title),client_name=COALESCE(?,client_name),brief=COALESCE(?,brief),subdomain=COALESCE(?,subdomain),domain=COALESCE(?,domain),apis=COALESCE(?,apis),notes=COALESCE(?,notes),generated_code=COALESCE(?,generated_code),status=COALESCE(?,status),updated_at=datetime('now') WHERE id=?").run(title,client_name,brief,subdomain,domain,apis?JSON.stringify(apis):null,notes,generated_code,status,id);
     json(res,200,{ok:true}); return;
   }
   if (url.match(/^\/api\/projects\/\d+\/publish$/) && req.method==='POST') {
     if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
     const id=parseInt(url.split('/')[3]);
-    db.prepare('UPDATE projects SET is_published=1,status="published",updated_at=datetime("now") WHERE id=?').run(id);
+    db.prepare("UPDATE projects SET is_published=1,status='published',updated_at=datetime('now') WHERE id=?").run(id);
     const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié !`,'success');
     json(res,200,{ok:true}); return;
