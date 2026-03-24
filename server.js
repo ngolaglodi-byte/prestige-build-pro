@@ -33,12 +33,34 @@ try {
     CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, service TEXT NOT NULL, key_value TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message TEXT, type TEXT DEFAULT 'info', read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS builds (id TEXT PRIMARY KEY, project_id INTEGER, status TEXT DEFAULT 'building', progress INTEGER DEFAULT 0, message TEXT, url TEXT, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
+    CREATE TABLE IF NOT EXISTS project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version_number INTEGER NOT NULL, generated_code TEXT, screenshot_url TEXT, created_by INTEGER, created_at TEXT DEFAULT (datetime('now')), message TEXT, FOREIGN KEY(project_id) REFERENCES projects(id));
   `);
   const bcrypt = require('bcryptjs');
   if (!db.prepare("SELECT id FROM users WHERE role='admin'").get()) {
     db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run('admin@prestige-build.dev', bcrypt.hashSync('Admin2026!',10), 'Administrateur', 'admin');
   }
 } catch(e) { console.error('DB:', e.message); }
+
+// ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
+const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName}>>
+
+// ─── SITES DIRECTORY FOR PUBLISHED SITES ───
+const SITES_DIR = process.env.SITES_DIR || '/data/sites';
+const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
+const PUBLIC_URL = process.env.PUBLIC_URL || '';
+if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SITES_DIR:', e.message); } }
+
+// ─── SCREENSHOTS DIRECTORY FOR VERSION HISTORY ───
+const SCREENSHOTS_DIR = process.env.SCREENSHOTS_DIR || '/data/screenshots';
+if (!fs.existsSync(SCREENSHOTS_DIR)) { try { fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SCREENSHOTS_DIR:', e.message); } }
+
+// ─── PATH VALIDATION HELPER ───
+function isPathSafe(basePath, targetPath) {
+  const resolvedBase = path.resolve(basePath);
+  const resolvedTarget = path.resolve(targetPath);
+  return resolvedTarget.startsWith(resolvedBase + path.sep) || resolvedTarget === resolvedBase;
+}
 
 // ─── AUTH ───
 function signToken(p) {
@@ -56,17 +78,65 @@ function verifyToken(t) {
     return p.exp<Math.floor(Date.now()/1000)?null:p;
   } catch{return null;}
 }
-function getAuth(req) { return verifyToken((req.headers['authorization']||'').replace('Bearer ','')); }
+function getAuth(req) { 
+  // Check Authorization header first
+  const headerToken = (req.headers['authorization']||'').replace('Bearer ','');
+  if (headerToken) return verifyToken(headerToken);
+  // Check query string for SSE support
+  const urlParts = req.url.split('?');
+  if (urlParts.length > 1) {
+    const params = new URLSearchParams(urlParts[1]);
+    const queryToken = params.get('token');
+    if (queryToken) return verifyToken(queryToken);
+  }
+  return null;
+}
 function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}); res.end(JSON.stringify(data)); }
 function cors(res) { res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization'); }
 function getBody(req) { return new Promise(r=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{r(JSON.parse(b))}catch{r({})}})}); }
 
 // ─── STREAM CLAUDE ───
-function streamClaude(messages, res, onDone, brief) {
+function streamClaude(messages, res, onDone, brief, options = {}) {
   if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
   const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
-  const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
+  
+  // Enhanced system prompt with content generation and API integration instructions
+  const contentGenPrompt = `
+
+## GÉNÉRATION DE CONTENU AUTOMATIQUE
+AVANT de générer le code, crée automatiquement du contenu contextuel adapté au secteur :
+- Un slogan accrocheur et mémorable
+- Des textes professionnels pour chaque section (hero, about, services, témoignages)
+- Des noms fictifs réalistes pour l'équipe (avec titres et courtes bios)
+- Des prix et tarifs cohérents avec le marché français
+- 3-5 témoignages clients convaincants et réalistes
+- Utilise https://picsum.photos/WIDTH/HEIGHT pour les images placeholder (ex: https://picsum.photos/800/600)
+
+RÈGLE ABSOLUE : Zéro "Lorem ipsum" — tout le contenu doit être réaliste et contextuel.`;
+
+  // API auto-integration instructions
+  const savedApis = db ? db.prepare('SELECT name,service,key_value,description FROM api_keys').all() : [];
+  let apiIntegrationPrompt = '';
+  if (savedApis.length > 0) {
+    apiIntegrationPrompt = `
+
+## APIS DISPONIBLES POUR INTÉGRATION AUTOMATIQUE
+Les APIs suivantes sont configurées dans le système. Intègre-les automatiquement si pertinentes :
+${savedApis.map(a => `- ${a.name} (${a.service}): ${a.description || 'Disponible'}`).join('\n')}
+
+Règles d'intégration automatique :
+- Stripe disponible + projet e-commerce/paiement → intègre le checkout Stripe
+- Google Maps disponible + projet restaurant/immobilier/local → intègre une carte
+- Twilio disponible → ajoute formulaire contact avec notification SMS
+- OpenAI disponible → intègre un chatbot client
+- Mailchimp disponible → ajoute formulaire newsletter`;
+  }
+
+  const systemPrompt = sectorProfile 
+    ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
+    : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
+    
   const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   const r = https.request(opts, apiRes => {
@@ -85,6 +155,153 @@ function streamClaude(messages, res, onDone, brief) {
   });
   r.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
   r.write(payload); r.end();
+}
+
+// ─── STREAM CLAUDE WITH IMAGE (VISION) ───
+function streamClaudeWithImage(imageBase64, mediaType, prompt, res, onDone) {
+  if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
+  
+  const systemPrompt = `Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
+
+## TA MISSION
+Analyse l'image fournie et reproduis FIDÈLEMENT ce design en HTML/CSS/JS moderne, responsive et professionnel.
+
+## INSTRUCTIONS DE REPRODUCTION
+1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
+2. Identifie la palette de couleurs exacte utilisée
+3. Note la typographie et les tailles de police
+4. Reproduis les espacements et marges
+5. Adapte pour le responsive (mobile-first)
+
+## CODE À GÉNÉRER
+- HTML5 sémantique avec structure complète
+- CSS moderne (Flexbox/Grid, variables CSS)
+- Tailwind CSS pour le styling rapide
+- JavaScript pour les interactions si nécessaire
+- Images via https://picsum.photos avec dimensions appropriées
+- Contenu réaliste et professionnel (jamais de Lorem ipsum)
+
+## FORMAT DE SORTIE
+Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans une balise <style>.`;
+
+  const messages = [{
+    role: 'user',
+    content: [
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mediaType,
+          data: imageBase64
+        }
+      },
+      {
+        type: 'text',
+        text: prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image."
+      }
+    ]
+  }];
+
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+  
+  const r = https.request(opts, apiRes => {
+    let full='';
+    apiRes.on('data', chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d=JSON.parse(line.slice(6));
+          if (d.type==='content_block_delta'&&d.delta?.text) { full+=d.delta.text; res.write(`data: ${JSON.stringify({type:'delta',content:d.delta.text})}\n\n`); }
+          if (d.type==='message_stop') { res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); res.end(); if(onDone) onDone(full); }
+        } catch {}
+      }
+    });
+    apiRes.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+  });
+  r.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+  r.write(payload); r.end();
+}
+
+// ─── SAVE PROJECT VERSION ───
+function saveProjectVersion(projectId, code, userId, message) {
+  try {
+    const lastVersion = db.prepare('SELECT MAX(version_number) as max FROM project_versions WHERE project_id=?').get(projectId);
+    const versionNumber = (lastVersion?.max || 0) + 1;
+    db.prepare('INSERT INTO project_versions (project_id, version_number, generated_code, created_by, message) VALUES (?,?,?,?,?)').run(projectId, versionNumber, code, userId, message || `Version ${versionNumber}`);
+    return versionNumber;
+  } catch(e) { console.error('Version save error:', e.message); return null; }
+}
+
+// ─── NOTIFY SSE CLIENTS ───
+function notifyProjectClients(projectId, event, data, excludeUserId = null) {
+  const clients = projectSSEClients.get(projectId);
+  if (!clients) return;
+  clients.forEach(client => {
+    if (excludeUserId && client.userId === excludeUserId) return;
+    try {
+      client.res.write(`data: ${JSON.stringify({ type: event, ...data })}\n\n`);
+    } catch(e) {}
+  });
+}
+
+// ─── INJECT TRACKING SCRIPT INTO GENERATED CODE ───
+function injectTrackingScript(html, projectId, subdomain) {
+  const trackingScript = `
+<script>
+(function() {
+  const PID = '${projectId}';
+  const API = '${PUBLIC_URL || (typeof window !== 'undefined' ? window.location.origin : '')}/api/track/' + PID;
+  let startTime = Date.now();
+  
+  function track(type, data) {
+    fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_type: type, event_data: data, page: location.pathname })
+    }).catch(() => {});
+  }
+  
+  // Track pageview
+  track('pageview', { url: location.href, referrer: document.referrer });
+  
+  // Track clicks on main elements
+  document.addEventListener('click', function(e) {
+    const el = e.target.closest('a, button, [data-track]');
+    if (el) {
+      track('click', { 
+        tag: el.tagName, 
+        text: (el.textContent || '').substring(0, 50),
+        href: el.href || null,
+        id: el.id || null
+      });
+    }
+  });
+  
+  // Track form submissions
+  document.addEventListener('submit', function(e) {
+    const form = e.target;
+    track('form_submit', { 
+      action: form.action || location.href,
+      id: form.id || null
+    });
+  });
+  
+  // Track time spent (on page unload)
+  window.addEventListener('beforeunload', function() {
+    const timeSpent = Math.round((Date.now() - startTime) / 1000);
+    track('time_spent', { seconds: timeSpent, page: location.pathname });
+  });
+})();
+</script>`;
+
+  // Insert before </body> or </html>
+  if (html.includes('</body>')) {
+    return html.replace('</body>', trackingScript + '</body>');
+  } else if (html.includes('</html>')) {
+    return html.replace('</html>', trackingScript + '</html>');
+  }
+  return html + trackingScript;
 }
 
 // ─── SERVE BUILT FILES ───
@@ -469,6 +686,30 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── ANALYTICS TRACKING (NO AUTH - CALLED BY CLIENT SITES) ───
+  if (url.match(/^\/api\/track\/\d+$/) && req.method==='POST') {
+    const projectId = parseInt(url.split('/')[3]);
+    const body = await getBody(req);
+    const { event_type, event_data, page } = body;
+    
+    if (!event_type) { json(res, 400, { error: 'event_type required' }); return; }
+    
+    // Store analytics event
+    try {
+      const ipAddress = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '';
+      const userAgent = req.headers['user-agent'] || '';
+      const eventDataStr = event_data ? JSON.stringify({ ...event_data, page }) : JSON.stringify({ page });
+      
+      db.prepare('INSERT INTO analytics (project_id, event_type, event_data, ip_address, user_agent) VALUES (?,?,?,?,?)').run(
+        projectId, event_type, eventDataStr, ipAddress.split(',')[0], userAgent.substring(0, 255)
+      );
+      json(res, 200, { ok: true });
+    } catch(e) {
+      json(res, 500, { error: e.message });
+    }
+    return;
+  }
+
   const user=getAuth(req);
   if (!user) { json(res,401,{error:'Non autorisé.'}); return; }
 
@@ -480,6 +721,8 @@ const server = http.createServer(async (req, res) => {
     if (project_id) {
       project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
       history=db.prepare('SELECT role,content FROM project_messages WHERE project_id=? ORDER BY id ASC LIMIT 30').all(project_id);
+      // Notify other clients that someone is generating
+      notifyProjectClients(project_id, 'user_action', { action: 'generating', userName: user.name }, user.id);
     }
     const savedApis=db.prepare('SELECT name,service,description FROM api_keys').all();
     const userMsg=ai?ai.buildProfessionalPrompt(message,project,savedApis):message;
@@ -490,6 +733,8 @@ const server = http.createServer(async (req, res) => {
       if (project_id) {
         db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
         db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
+        // Save version history
+        saveProjectVersion(project_id, full, user.id, `Génération via chat: ${message.substring(0,50)}...`);
         // Auto-save preview files after generation
         try {
           const previewResult = savePreviewFiles(project_id, full);
@@ -497,8 +742,56 @@ const server = http.createServer(async (req, res) => {
         } catch(e) {
           console.error('Preview save error:', e.message);
         }
+        // Notify other clients about the new code
+        notifyProjectClients(project_id, 'code_updated', { 
+          userName: user.name, 
+          previewUrl: `/preview/${project_id}/`,
+          message: `${user.name} a généré une nouvelle version`
+        }, user.id);
       }
     }, brief); return;
+  }
+
+  // ─── GENERATE FROM IMAGE (STREAMING) ───
+  if (url==='/api/generate/image' && req.method==='POST') {
+    const body = await getBody(req);
+    const { project_id, image_base64, media_type, prompt } = body;
+    if (!image_base64) { json(res, 400, { error: 'Image requise' }); return; }
+    
+    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive','Access-Control-Allow-Origin':'*'});
+    
+    let project = null;
+    if (project_id) {
+      project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
+      db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'user','[Image uploadée pour reproduction de design]');
+      // Notify other clients
+      notifyProjectClients(project_id, 'user_action', { action: 'generating_from_image', userName: user.name }, user.id);
+    }
+    
+    const imagePrompt = prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image.";
+    
+    streamClaudeWithImage(image_base64, media_type || 'image/png', imagePrompt, res, full => {
+      if (project_id) {
+        db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
+        db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
+        // Save version history
+        saveProjectVersion(project_id, full, user.id, 'Génération depuis image');
+        // Auto-save preview files
+        try {
+          const previewResult = savePreviewFiles(project_id, full);
+          res.write(`data: ${JSON.stringify({type:'preview_ready',previewUrl:`/preview/${project_id}/`,framework:previewResult.framework})}\n\n`);
+        } catch(e) {
+          console.error('Preview save error:', e.message);
+        }
+        // Notify other clients
+        notifyProjectClients(project_id, 'code_updated', { 
+          userName: user.name, 
+          previewUrl: `/preview/${project_id}/`,
+          message: `${user.name} a généré un design depuis une image`
+        }, user.id);
+      }
+    });
+    return;
   }
 
   // ─── COMPILE ───
@@ -562,10 +855,81 @@ const server = http.createServer(async (req, res) => {
   if (url.match(/^\/api\/projects\/\d+\/publish$/) && req.method==='POST') {
     if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
     const id=parseInt(url.split('/')[3]);
-    db.prepare("UPDATE projects SET is_published=1,status='published',updated_at=datetime('now') WHERE id=?").run(id);
     const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
-    db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié !`,'success');
-    json(res,200,{ok:true}); return;
+    if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
+    
+    const subdomain = p.subdomain || `project-${id}`;
+    
+    // Copy preview files to sites directory
+    try {
+      const previewDir = path.join(PREVIEWS_DIR, String(id));
+      if (!fs.existsSync(previewDir)) {
+        // Try to create preview from generated code
+        if (p.generated_code) {
+          savePreviewFiles(id, p.generated_code);
+        } else {
+          json(res, 400, { error: 'Aucun code à publier.' }); return;
+        }
+      }
+      
+      // Validate subdomain to prevent path traversal
+      const safeSubdomain = subdomain.replace(/[^a-zA-Z0-9-]/g, '');
+      const siteDir = path.join(SITES_DIR, safeSubdomain);
+      
+      // Verify the site directory is within SITES_DIR (prevent path traversal)
+      if (!isPathSafe(SITES_DIR, siteDir)) {
+        json(res, 400, { error: 'Subdomain invalide.' }); return;
+      }
+      
+      // Create site directory and copy files
+      if (fs.existsSync(siteDir)) {
+        fs.rmSync(siteDir, { recursive: true, force: true });
+      }
+      fs.mkdirSync(siteDir, { recursive: true });
+      
+      // Copy all files from preview to site
+      const copyRecursive = (src, dest) => {
+        if (!fs.existsSync(src)) return;
+        // Verify paths are safe
+        if (!isPathSafe(previewDir, src) || !isPathSafe(siteDir, dest)) return;
+        
+        const stat = fs.statSync(src);
+        if (stat.isDirectory()) {
+          fs.mkdirSync(dest, { recursive: true });
+          fs.readdirSync(src).forEach(child => {
+            copyRecursive(path.join(src, child), path.join(dest, child));
+          });
+        } else {
+          let content = fs.readFileSync(src);
+          // Inject tracking script into HTML files
+          if (src.endsWith('.html')) {
+            content = injectTrackingScript(content.toString(), id, safeSubdomain);
+          }
+          fs.writeFileSync(dest, content);
+        }
+      };
+      copyRecursive(previewDir, siteDir);
+      
+      // Update project status
+      db.prepare("UPDATE projects SET is_published=1,status='published',subdomain=?,updated_at=datetime('now') WHERE id=?").run(safeSubdomain, id);
+      db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié sur ${safeSubdomain}.${PUBLISH_DOMAIN} !`,'success');
+      
+      // Generate publish URL
+      const publishedUrl = `https://${safeSubdomain}.${PUBLISH_DOMAIN}`;
+      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(publishedUrl)}`;
+      
+      json(res,200,{
+        ok: true, 
+        subdomain: safeSubdomain,
+        url: publishedUrl,
+        qrCode: qrCodeUrl,
+        localPath: siteDir
+      });
+    } catch(e) {
+      console.error('Publish error:', e);
+      json(res, 500, { error: 'Erreur lors de la publication: ' + e.message });
+    }
+    return;
   }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='DELETE') {
     if (user.role!=='admin') { json(res,403,{error:'Interdit.'}); return; }
@@ -595,6 +959,153 @@ const server = http.createServer(async (req, res) => {
   // ─── NOTIFICATIONS ───
   if (url==='/api/notifications' && req.method==='GET') { json(res,200,db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 20').all(user.id)); return; }
   if (url==='/api/notifications/read' && req.method==='POST') { db.prepare('UPDATE notifications SET read=1 WHERE user_id=?').run(user.id); json(res,200,{ok:true}); return; }
+
+  // ─── PROJECT VERSIONS ───
+  if (url.match(/^\/api\/projects\/\d+\/versions$/) && req.method==='GET') {
+    const projectId = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const versions = db.prepare('SELECT v.*, u.name as author_name FROM project_versions v LEFT JOIN users u ON v.created_by = u.id WHERE v.project_id = ? ORDER BY v.version_number DESC').all(projectId);
+    json(res, 200, versions);
+    return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/versions\/\d+$/) && req.method==='GET') {
+    const parts = url.split('/');
+    const projectId = parseInt(parts[3]);
+    const versionId = parseInt(parts[5]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const version = db.prepare('SELECT * FROM project_versions WHERE id = ? AND project_id = ?').get(versionId, projectId);
+    if (!version) { json(res, 404, { error: 'Version non trouvée.' }); return; }
+    json(res, 200, version);
+    return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/versions\/\d+\/restore$/) && req.method==='POST') {
+    const parts = url.split('/');
+    const projectId = parseInt(parts[3]);
+    const versionId = parseInt(parts[5]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const version = db.prepare('SELECT * FROM project_versions WHERE id = ? AND project_id = ?').get(versionId, projectId);
+    if (!version) { json(res, 404, { error: 'Version non trouvée.' }); return; }
+    // Restore the version
+    db.prepare("UPDATE projects SET generated_code = ?, updated_at = datetime('now'), version = version + 1 WHERE id = ?").run(version.generated_code, projectId);
+    // Save as new version
+    saveProjectVersion(projectId, version.generated_code, user.id, `Restauration de la version ${version.version_number}`);
+    // Regenerate preview
+    try {
+      savePreviewFiles(projectId, version.generated_code);
+    } catch(e) {}
+    // Notify other clients
+    notifyProjectClients(projectId, 'version_restored', { userName: user.name, versionNumber: version.version_number }, user.id);
+    json(res, 200, { ok: true, message: `Version ${version.version_number} restaurée.` });
+    return;
+  }
+
+  // ─── PROJECT ANALYTICS ───
+  if (url.match(/^\/api\/projects\/\d+\/analytics$/) && req.method==='GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin seulement.' }); return; }
+    const projectId = parseInt(url.split('/')[3]);
+    
+    // Get analytics summary
+    const totalViews = db.prepare('SELECT COUNT(*) as c FROM analytics WHERE project_id = ? AND event_type = ?').get(projectId, 'pageview')?.c || 0;
+    const totalClicks = db.prepare('SELECT COUNT(*) as c FROM analytics WHERE project_id = ? AND event_type = ?').get(projectId, 'click')?.c || 0;
+    const totalForms = db.prepare('SELECT COUNT(*) as c FROM analytics WHERE project_id = ? AND event_type = ?').get(projectId, 'form_submit')?.c || 0;
+    
+    // Get views by day (last 30 days)
+    const viewsByDay = db.prepare(`
+      SELECT DATE(created_at) as date, COUNT(*) as count 
+      FROM analytics 
+      WHERE project_id = ? AND event_type = 'pageview' AND created_at >= datetime('now', '-30 days')
+      GROUP BY DATE(created_at) 
+      ORDER BY date DESC
+    `).all(projectId);
+    
+    // Get top pages
+    const topPages = db.prepare(`
+      SELECT json_extract(event_data, '$.page') as page, COUNT(*) as count 
+      FROM analytics 
+      WHERE project_id = ? AND event_type = 'pageview' AND event_data IS NOT NULL
+      GROUP BY page 
+      ORDER BY count DESC 
+      LIMIT 10
+    `).all(projectId);
+    
+    // Get top clicks
+    const topClicks = db.prepare(`
+      SELECT json_extract(event_data, '$.text') as text, COUNT(*) as count 
+      FROM analytics 
+      WHERE project_id = ? AND event_type = 'click' AND event_data IS NOT NULL
+      GROUP BY text 
+      ORDER BY count DESC 
+      LIMIT 10
+    `).all(projectId);
+    
+    // Get average time spent
+    const avgTime = db.prepare(`
+      SELECT AVG(CAST(json_extract(event_data, '$.seconds') AS INTEGER)) as avg_seconds 
+      FROM analytics 
+      WHERE project_id = ? AND event_type = 'time_spent'
+    `).get(projectId);
+    
+    json(res, 200, {
+      totalViews,
+      totalClicks,
+      totalForms,
+      avgTimeSpent: Math.round(avgTime?.avg_seconds || 0),
+      viewsByDay,
+      topPages,
+      topClicks
+    });
+    return;
+  }
+
+  // ─── REAL-TIME COLLABORATION (SSE) ───
+  if (url.match(/^\/api\/projects\/\d+\/stream$/) && req.method==='GET') {
+    const projectId = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    
+    // Setup SSE connection
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    
+    // Register this client
+    if (!projectSSEClients.has(projectId)) {
+      projectSSEClients.set(projectId, new Set());
+    }
+    const clientInfo = { res, userId: user.id, userName: user.name };
+    projectSSEClients.get(projectId).add(clientInfo);
+    
+    // Notify others that this user joined
+    notifyProjectClients(projectId, 'user_joined', { userName: user.name, userId: user.id }, user.id);
+    
+    // Send initial connection confirmation
+    res.write(`data: ${JSON.stringify({ type: 'connected', userId: user.id, userName: user.name })}\n\n`);
+    
+    // Heartbeat every 30 seconds
+    const heartbeat = setInterval(() => {
+      try { res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`); } catch(e) {}
+    }, 30000);
+    
+    // Cleanup on disconnect
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      const clients = projectSSEClients.get(projectId);
+      if (clients) {
+        clients.delete(clientInfo);
+        if (clients.size === 0) projectSSEClients.delete(projectId);
+      }
+      // Notify others that this user left
+      notifyProjectClients(projectId, 'user_left', { userName: user.name, userId: user.id }, user.id);
+    });
+    
+    return; // Keep connection open
+  }
 
   // ─── STATS ───
   if (url==='/api/stats' && req.method==='GET') {
