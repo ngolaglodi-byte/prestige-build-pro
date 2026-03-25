@@ -48,7 +48,10 @@ const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userNam
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
+const CNAME_TARGET = process.env.CNAME_TARGET || `app.${PUBLISH_DOMAIN}`;
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
+const CADDY_ADMIN_API = process.env.CADDY_ADMIN_API || 'http://localhost:2019';
+const SERVER_IP = process.env.SERVER_IP || '204.168.177.199';
 if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SITES_DIR:', e.message); } }
 
 // ─── SCREENSHOTS DIRECTORY FOR VERSION HISTORY ───
@@ -60,6 +63,58 @@ function isPathSafe(basePath, targetPath) {
   const resolvedBase = path.resolve(basePath);
   const resolvedTarget = path.resolve(targetPath);
   return resolvedTarget.startsWith(resolvedBase + path.sep) || resolvedTarget === resolvedBase;
+}
+
+// ─── CADDY CUSTOM DOMAIN HELPER ───
+async function addCustomDomainToCaddy(customDomain, siteDir) {
+  // Add a route for the custom domain in Caddy via its admin API
+  // Caddy will automatically provision SSL via Let's Encrypt
+  const routeConfig = {
+    '@id': `custom-domain-${customDomain.replace(/[^a-z0-9]/gi, '-')}`,
+    match: [{ host: [customDomain] }],
+    handle: [{
+      handler: 'file_server',
+      root: siteDir
+    }],
+    terminal: true
+  };
+  
+  return new Promise((resolve, reject) => {
+    const url = new URL(CADDY_ADMIN_API + '/config/apps/http/servers/srv0/routes');
+    const options = {
+      hostname: url.hostname,
+      port: url.port || 2019,
+      path: url.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          console.log(`Custom domain ${customDomain} added to Caddy successfully`);
+          resolve({ success: true, domain: customDomain });
+        } else {
+          console.warn(`Caddy API response: ${res.statusCode} - ${data}`);
+          // Don't fail the publish if Caddy config fails - domain can be added later
+          resolve({ success: false, domain: customDomain, error: data });
+        }
+      });
+    });
+    
+    req.on('error', (err) => {
+      console.warn(`Could not configure Caddy for ${customDomain}: ${err.message}`);
+      // Don't fail the publish if Caddy is not available
+      resolve({ success: false, domain: customDomain, error: err.message });
+    });
+    
+    req.write(JSON.stringify(routeConfig));
+    req.end();
+  });
 }
 
 // ─── AUTH ───
@@ -852,6 +907,29 @@ const server = http.createServer(async (req, res) => {
     db.prepare("UPDATE projects SET title=COALESCE(?,title),client_name=COALESCE(?,client_name),brief=COALESCE(?,brief),subdomain=COALESCE(?,subdomain),domain=COALESCE(?,domain),apis=COALESCE(?,apis),notes=COALESCE(?,notes),generated_code=COALESCE(?,generated_code),status=COALESCE(?,status),updated_at=datetime('now') WHERE id=?").run(title,client_name,brief,subdomain,domain,apis?JSON.stringify(apis):null,notes,generated_code,status,id);
     json(res,200,{ok:true}); return;
   }
+  if (url.match(/^\/api\/projects\/\d+\/dns-instructions$/) && req.method==='GET') {
+    if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
+    const id=parseInt(url.split('/')[3]);
+    const p=db.prepare('SELECT domain,subdomain,is_published FROM projects WHERE id=?').get(id);
+    if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
+    
+    const subdomain = p.subdomain || `project-${id}`;
+    const defaultUrl = `https://${subdomain}.${PUBLISH_DOMAIN}`;
+    
+    const response = {
+      defaultUrl,
+      cname: { type: 'CNAME', name: 'www', value: CNAME_TARGET },
+      a: { type: 'A', name: '@', value: SERVER_IP }
+    };
+    
+    if (p.domain) {
+      response.customDomain = p.domain;
+      response.customDomainUrl = `https://${p.domain}`;
+      response.isActive = p.is_published === 1;
+    }
+    
+    json(res,200,response); return;
+  }
   if (url.match(/^\/api\/projects\/\d+\/publish$/) && req.method==='POST') {
     if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
     const id=parseInt(url.split('/')[3]);
@@ -918,13 +996,47 @@ const server = http.createServer(async (req, res) => {
       const publishedUrl = `https://${safeSubdomain}.${PUBLISH_DOMAIN}`;
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(publishedUrl)}`;
       
-      json(res,200,{
+      // Handle custom domain with Caddy SSL
+      let customDomainResult = null;
+      let customDomainUrl = null;
+      if (p.domain) {
+        // Validate custom domain format
+        const customDomain = p.domain.toLowerCase().trim();
+        if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(customDomain)) {
+          customDomainResult = await addCustomDomainToCaddy(customDomain, siteDir);
+          customDomainUrl = `https://${customDomain}`;
+          
+          // Notify about custom domain
+          if (customDomainResult.success) {
+            db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(
+              p.user_id,
+              `Domaine personnalisé ${customDomain} configuré avec SSL !`,
+              'success'
+            );
+          }
+        }
+      }
+      
+      const response = {
         ok: true, 
         subdomain: safeSubdomain,
         url: publishedUrl,
         qrCode: qrCodeUrl,
         localPath: siteDir
-      });
+      };
+      
+      // Add custom domain info if configured
+      if (customDomainUrl) {
+        response.customDomain = p.domain;
+        response.customDomainUrl = customDomainUrl;
+        response.customDomainConfigured = customDomainResult ? customDomainResult.success : false;
+        response.dnsInstructions = {
+          cname: { type: 'CNAME', name: 'www', value: CNAME_TARGET },
+          a: { type: 'A', name: '@', value: SERVER_IP }
+        };
+      }
+      
+      json(res,200,response);
     } catch(e) {
       console.error('Publish error:', e);
       json(res, 500, { error: 'Erreur lors de la publication: ' + e.message });
