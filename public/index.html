@@ -270,6 +270,29 @@ button.card { padding: 0; }
   .stat-card { flex: 1 1 45%; }
   .type-grid { grid-template-columns: repeat(2, 1fr); }
 }
+/* Custom Domain Styles */
+.custom-domain-section { margin-top: var(--space-md); padding: var(--space-md); background: var(--bg-elevated); border-radius: var(--radius-md); border: 1px solid var(--gold-border); }
+.custom-domain-section.collapsed { padding: var(--space-sm) var(--space-md); }
+.custom-domain-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+.custom-domain-header h4 { font-size: 0.875rem; font-weight: 600; color: var(--gold); display: flex; align-items: center; gap: var(--space-xs); margin: 0; }
+.custom-domain-header svg { width: 16px; height: 16px; }
+.custom-domain-toggle { font-size: 0.75rem; color: var(--text-muted); }
+.custom-domain-content { margin-top: var(--space-md); }
+.custom-domain-section.collapsed .custom-domain-content { display: none; }
+.dns-instructions { background: var(--bg-surface); border-radius: var(--radius-sm); padding: var(--space-md); margin-top: var(--space-md); }
+.dns-instructions h5 { font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); margin-bottom: var(--space-sm); }
+.dns-record { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-sm) var(--space-md); background: var(--bg-elevated); border-radius: var(--radius-sm); margin-bottom: var(--space-sm); font-family: var(--font-mono); font-size: 0.8125rem; }
+.dns-record-type { background: var(--gold); color: var(--bg-base); padding: 2px 8px; border-radius: var(--radius-xs); font-weight: 600; min-width: 60px; text-align: center; }
+.dns-record-value { color: var(--text-primary); flex: 1; }
+.dns-record-target { color: var(--gold); }
+.custom-domain-status { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); font-size: 0.8125rem; margin-top: var(--space-md); }
+.custom-domain-status.pending { background: rgba(255, 193, 7, 0.1); color: #ffc107; }
+.custom-domain-status.active { background: rgba(76, 175, 80, 0.1); color: #4caf50; }
+.custom-domain-status.error { background: rgba(244, 67, 54, 0.1); color: #f44336; }
+.custom-domain-status svg { width: 14px; height: 14px; }
+.domain-input-group { display: flex; gap: var(--space-sm); }
+.domain-input-group .input { flex: 1; }
+.domain-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: var(--space-xs); }
 </style>
 </head>
 <body>
@@ -356,6 +379,7 @@ button.card { padding: 0; }
         </div>
         <div><span class="badge badge-draft" id="ws-project-status">Brouillon</span></div>
         <div class="workspace-topbar-right">
+          <button class="btn btn-ghost" id="ws-domain-btn" onclick="openCustomDomainModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Domaine</button>
           <button class="btn btn-ghost" id="ws-presentation-btn" onclick="openPresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Présentation</button>
           <button class="btn btn-ghost" id="ws-history-btn" onclick="openHistoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Historique</button>
           <button class="btn btn-primary" id="ws-publish-btn" onclick="publishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>Publier</button>
@@ -433,6 +457,18 @@ button.card { padding: 0; }
         <div class="form-group"><label class="form-label">Décrivez votre projet en détail</label><textarea id="np-brief" class="textarea" rows="6" placeholder="Décrivez le projet, le style souhaité, les sections nécessaires, les fonctionnalités..."></textarea><div class="form-hint">Plus vous donnez de détails, meilleur sera le résultat.</div></div>
         <div class="form-group"><label class="form-label">Maquette ou inspiration (optionnel)</label><label class="btn btn-secondary" style="cursor:pointer;display:inline-flex;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Uploader une image<input type="file" id="np-image" accept="image/*" style="display:none;" onchange="handleModalImage(this)"/></label><span id="np-image-name" style="margin-left:var(--space-sm);font-size:0.875rem;color:var(--text-secondary);"></span></div>
         <div class="form-group"><label class="form-label">APIs & intégrations</label><input type="text" id="np-apis" class="input" placeholder="Stripe, Google Maps, Mailchimp..."/><div class="form-hint">Séparez les services par des virgules</div></div>
+        <div class="custom-domain-section collapsed" id="np-custom-domain-section">
+          <div class="custom-domain-header" onclick="toggleCustomDomainSection('np-custom-domain-section')">
+            <h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Domaine personnalisé (optionnel)</h4>
+            <span class="custom-domain-toggle" id="np-domain-toggle-text">Configurer</span>
+          </div>
+          <div class="custom-domain-content">
+            <div class="form-group" style="margin-bottom:0;">
+              <input type="text" id="np-custom-domain" class="input" placeholder="www.mon-client.com"/>
+              <div class="domain-hint">Le domaine personnalisé du client (ex: www.hopital-alpha.com)</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -447,6 +483,55 @@ button.card { padding: 0; }
   <div class="modal" style="max-width:700px;">
     <div class="modal-header"><h3 class="modal-title">Historique des versions</h3><button class="modal-close" onclick="closeHistoryModal()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="modal-body"><div id="history-timeline" style="max-height:400px;overflow-y:auto;"></div></div>
+  </div>
+</div>
+<div class="modal-overlay" id="custom-domain-modal">
+  <div class="modal" style="max-width:600px;">
+    <div class="modal-header"><h3 class="modal-title">Domaine personnalisé</h3><button class="modal-close" onclick="closeCustomDomainModal()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Domaine personnalisé</label>
+        <div class="domain-input-group">
+          <input type="text" id="cd-domain" class="input" placeholder="www.mon-client.com"/>
+          <button class="btn btn-primary" onclick="saveCustomDomain()">Enregistrer</button>
+        </div>
+        <div class="domain-hint">Entrez le domaine complet du client (ex: www.hopital-alpha.com)</div>
+      </div>
+      <div class="dns-instructions" id="dns-instructions">
+        <h5>Instructions DNS pour le client</h5>
+        <p style="font-size:0.8125rem;color:var(--text-secondary);margin-bottom:var(--space-md);">Demandez au client de configurer les enregistrements DNS suivants :</p>
+        <div class="dns-record">
+          <span class="dns-record-type">CNAME</span>
+          <span class="dns-record-value">www</span>
+          <span style="color:var(--text-muted);">→</span>
+          <span class="dns-record-target">app.prestige-build.dev</span>
+        </div>
+        <p style="font-size:0.75rem;color:var(--text-muted);margin:var(--space-sm) 0;">OU pour le domaine racine :</p>
+        <div class="dns-record">
+          <span class="dns-record-type">A</span>
+          <span class="dns-record-value">@</span>
+          <span style="color:var(--text-muted);">→</span>
+          <span class="dns-record-target">204.168.177.199</span>
+        </div>
+      </div>
+      <div class="custom-domain-status pending" id="cd-status" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="cd-status-text">En attente de la configuration DNS...</span>
+      </div>
+      <div style="margin-top:var(--space-lg);padding-top:var(--space-md);border-top:var(--border-default);">
+        <h5 style="font-size:0.8125rem;font-weight:600;color:var(--text-secondary);margin-bottom:var(--space-sm);">URLs du site</h5>
+        <div style="font-size:0.875rem;">
+          <div style="display:flex;align-items:center;gap:var(--space-sm);margin-bottom:var(--space-xs);">
+            <span style="color:var(--text-muted);">Par défaut :</span>
+            <a href="#" id="cd-default-url" target="_blank" style="color:var(--gold);font-family:var(--font-mono);">—</a>
+          </div>
+          <div style="display:flex;align-items:center;gap:var(--space-sm);" id="cd-custom-url-row">
+            <span style="color:var(--text-muted);">Personnalisé :</span>
+            <a href="#" id="cd-custom-url" target="_blank" style="color:var(--gold);font-family:var(--font-mono);">—</a>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 <div class="presentation-overlay" id="presentation-overlay">
@@ -584,8 +669,11 @@ function openNewProjectModal() {
   document.getElementById('np-subdomain').value = '';
   document.getElementById('np-brief').value = '';
   document.getElementById('np-apis').value = '';
+  document.getElementById('np-custom-domain').value = '';
   document.getElementById('np-image-name').textContent = '';
   document.querySelectorAll('.type-option').forEach(el => el.classList.remove('selected'));
+  document.getElementById('np-custom-domain-section').classList.add('collapsed');
+  document.getElementById('np-domain-toggle-text').textContent = 'Configurer';
   updateModalStep();
   document.getElementById('new-project-modal').classList.add('active');
 }
@@ -632,9 +720,10 @@ async function createAndGenerate() {
   const subdomain = document.getElementById('np-subdomain').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
   const brief = document.getElementById('np-brief').value.trim();
   const apis = document.getElementById('np-apis').value.split(',').map(a => a.trim()).filter(Boolean);
+  const domain = document.getElementById('np-custom-domain').value.trim().toLowerCase();
   if (!brief) { alert('Veuillez décrire votre projet.'); return; }
   try {
-    const p = await api('/api/projects', 'POST', { title: title || client || 'Nouveau projet', client_name: client, project_type: selectedTypes.join(', '), brief, subdomain, apis });
+    const p = await api('/api/projects', 'POST', { title: title || client || 'Nouveau projet', client_name: client, project_type: selectedTypes.join(', '), brief, subdomain, domain, apis });
     currentProject = p;
     closeNewProjectModal();
     await openWorkspace(p.id);
@@ -690,6 +779,7 @@ function updateWorkspaceUI() {
     el.textContent = statusLabel(status);
   });
   const isAdmin = currentUser && currentUser.role === 'admin';
+  document.getElementById('ws-domain-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   document.getElementById('ws-presentation-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   document.getElementById('ws-publish-btn').style.display = isAdmin ? 'inline-flex' : 'none';
 }
@@ -1012,9 +1102,90 @@ async function publishProject() {
   if (!confirm('Publier ce projet?')) return;
   try {
     const r = await api('/api/projects/' + currentProject.id + '/publish', 'POST');
-    alert('Publié sur: ' + r.url);
+    let msg = 'Publié sur: ' + r.url;
+    if (r.customDomainUrl) msg += '\nDomaine personnalisé: ' + r.customDomainUrl;
+    alert(msg);
     currentProject.status = 'published';
+    currentProject.subdomain = r.subdomain;
     updateWorkspaceUI();
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOM DOMAIN
+// ═══════════════════════════════════════════════════════════════════════════
+function toggleCustomDomainSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  section.classList.toggle('collapsed');
+  const toggleText = section.querySelector('.custom-domain-toggle');
+  toggleText.textContent = section.classList.contains('collapsed') ? 'Configurer' : 'Réduire';
+}
+
+function openCustomDomainModal() {
+  if (!currentProject || currentUser.role !== 'admin') return;
+  const domain = currentProject.domain || '';
+  document.getElementById('cd-domain').value = domain;
+  
+  // Update URLs display
+  const subdomain = currentProject.subdomain || `project-${currentProject.id}`;
+  const defaultUrl = `https://${subdomain}.prestige-build.dev`;
+  document.getElementById('cd-default-url').href = defaultUrl;
+  document.getElementById('cd-default-url').textContent = defaultUrl;
+  
+  if (domain) {
+    const customUrl = `https://${domain}`;
+    document.getElementById('cd-custom-url').href = customUrl;
+    document.getElementById('cd-custom-url').textContent = customUrl;
+    document.getElementById('cd-custom-url-row').style.display = 'flex';
+    document.getElementById('cd-status').style.display = 'flex';
+    if (currentProject.is_published) {
+      document.getElementById('cd-status').className = 'custom-domain-status active';
+      document.getElementById('cd-status-text').textContent = 'Domaine actif avec SSL';
+    } else {
+      document.getElementById('cd-status').className = 'custom-domain-status pending';
+      document.getElementById('cd-status-text').textContent = 'En attente de publication...';
+    }
+  } else {
+    document.getElementById('cd-custom-url-row').style.display = 'none';
+    document.getElementById('cd-status').style.display = 'none';
+  }
+  
+  document.getElementById('custom-domain-modal').classList.add('active');
+}
+
+function closeCustomDomainModal() {
+  document.getElementById('custom-domain-modal').classList.remove('active');
+}
+
+async function saveCustomDomain() {
+  if (!currentProject || currentUser.role !== 'admin') return;
+  const domain = document.getElementById('cd-domain').value.trim().toLowerCase();
+  
+  // Validate domain format
+  if (domain && !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(domain)) {
+    alert('Format de domaine invalide. Exemple: www.mon-site.com');
+    return;
+  }
+  
+  try {
+    await api('/api/projects/' + currentProject.id, 'PUT', { domain });
+    currentProject.domain = domain;
+    
+    // Update display
+    if (domain) {
+      const customUrl = `https://${domain}`;
+      document.getElementById('cd-custom-url').href = customUrl;
+      document.getElementById('cd-custom-url').textContent = customUrl;
+      document.getElementById('cd-custom-url-row').style.display = 'flex';
+      document.getElementById('cd-status').style.display = 'flex';
+      document.getElementById('cd-status').className = 'custom-domain-status pending';
+      document.getElementById('cd-status-text').textContent = 'En attente de publication...';
+    } else {
+      document.getElementById('cd-custom-url-row').style.display = 'none';
+      document.getElementById('cd-status').style.display = 'none';
+    }
+    
+    alert(domain ? 'Domaine personnalisé enregistré. Publiez le projet pour activer le SSL.' : 'Domaine personnalisé supprimé.');
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 
