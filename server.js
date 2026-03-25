@@ -23,6 +23,7 @@ const containerMapping = new Map();
 // Preview system constants
 const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const MAX_CODE_DISPLAY_LENGTH = 50000; // 50KB max for fallback code display
 
 // ─── ERROR MANAGEMENT SYSTEM CONSTANTS ───
 const MAX_AUTO_CORRECTION_ATTEMPTS = 3;
@@ -614,9 +615,9 @@ function savePreviewFiles(projectId, code) {
         mainHtml = htmlMatch[0];
       } else {
         // Last resort: create minimal HTML wrapping the code
-        // Truncate only for display purposes at 50KB, but preserve meaningful content
+        // Truncate only for display purposes, but preserve meaningful content
         const codeLength = code.length;
-        const truncatedCode = codeLength > 50000 ? code.substring(0, 50000) + '\n\n... (code truncated, ' + codeLength + ' chars total)' : code;
+        const truncatedCode = codeLength > MAX_CODE_DISPLAY_LENGTH ? code.substring(0, MAX_CODE_DISPLAY_LENGTH) + '\n\n... (code truncated, ' + codeLength + ' chars total)' : code;
         mainHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Preview</title><style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#e2e8f0;} pre{white-space:pre-wrap;word-wrap:break-word;}</style></head><body><h2 style="color:#D4A820;">Code généré</h2><p style="color:#8896c4;">Le code ne contient pas de HTML valide. Voici le contenu brut :</p><pre>' + escapeHtml(truncatedCode) + '</pre></body></html>';
       }
     }
@@ -2139,8 +2140,8 @@ const server = http.createServer(async (req, res) => {
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='PUT') {
     const id=parseInt(url.split('/').pop());
     // Authorization check: user must own the project or be admin
-    const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
-    if (!p||(user.role!=='admin'&&p.user_id!==user.id)) { json(res,403,{error:'Accès refusé.'}); return; }
+    const project=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!project||(user.role!=='admin'&&project.user_id!==user.id)) { json(res,403,{error:'Accès refusé.'}); return; }
     
     const {title,client_name,brief,subdomain,domain,apis,notes,generated_code,status}=await getBody(req);
     try {
