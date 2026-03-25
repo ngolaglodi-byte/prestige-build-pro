@@ -1332,7 +1332,17 @@ async function autoCorrectProject(projectId, onProgress) {
       });
       return { success: true, url: result.url };
     } else {
-      // If still failing, try again recursively
+      // If still failing, check attempts before trying again
+      const updatedAttempts = correctionAttempts.get(projectId) || 0;
+      if (updatedAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+        return { 
+          success: false, 
+          reason: 'max_attempts',
+          attempts: updatedAttempts,
+          lastError: 'Build échoué après correction'
+        };
+      }
+      // Try again recursively
       return await autoCorrectProject(projectId, onProgress);
     }
     
@@ -1341,11 +1351,25 @@ async function autoCorrectProject(projectId, onProgress) {
     
     const currentAttempts = correctionAttempts.get(projectId) || 0;
     
+    // Always check attempts before recursing
     if (currentAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
       return { 
         success: false, 
         reason: 'max_attempts',
         attempts: currentAttempts,
+        error: e.message
+      };
+    }
+    
+    // Increment attempts before retrying
+    correctionAttempts.set(projectId, currentAttempts + 1);
+    
+    // Check again after increment
+    if (correctionAttempts.get(projectId) >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+      return { 
+        success: false, 
+        reason: 'max_attempts',
+        attempts: correctionAttempts.get(projectId),
         error: e.message
       };
     }
@@ -1442,12 +1466,6 @@ function translateLogsToFrench(logs) {
   }
   
   return translatedLogs;
-}
-
-// Get formatted logs for display (translated to French)
-function getFormattedLogs(projectId) {
-  const rawLogs = getContainerLogs(projectId, 100);
-  return translateLogsToFrench(rawLogs);
 }
 
 // Get error history for a project
