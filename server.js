@@ -934,8 +934,32 @@ const server = http.createServer(async (req, res) => {
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='DELETE') {
     if (user.role!=='admin') { json(res,403,{error:'Interdit.'}); return; }
     const id=parseInt(url.split('/').pop());
+    
+    // Get project info before deletion (for cleanup)
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    
+    // Delete all related records
     db.prepare('DELETE FROM project_messages WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM project_versions WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM analytics WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM builds WHERE project_id=?').run(id);
     db.prepare('DELETE FROM projects WHERE id=?').run(id);
+    
+    // Clean up preview files
+    const previewDir = path.join(PREVIEWS_DIR, String(id));
+    if (fs.existsSync(previewDir)) {
+      try { fs.rmSync(previewDir, { recursive: true, force: true }); } catch(e) { console.warn('Preview cleanup error:', e.message); }
+    }
+    
+    // Clean up published site files if published
+    if (project && project.subdomain && project.is_published) {
+      const safeSubdomain = project.subdomain.replace(/[^a-zA-Z0-9-]/g, '');
+      const siteDir = path.join(SITES_DIR, safeSubdomain);
+      if (fs.existsSync(siteDir) && isPathSafe(SITES_DIR, siteDir)) {
+        try { fs.rmSync(siteDir, { recursive: true, force: true }); } catch(e) { console.warn('Site cleanup error:', e.message); }
+      }
+    }
+    
     json(res,200,{ok:true}); return;
   }
 

@@ -1289,10 +1289,29 @@ async function pubProjectById(id){
   const r=await api('/api/projects/'+id+'/publish','POST');
   if(r.ok){showToast('Publié !','success');loadProjects();loadStats();}
 }
+
+// Reset project UI to initial state
+function resetProjectUI(message = 'Aucun projet sélectionné.') {
+  currentProject = null;
+  currentPreviewUrl = null;
+  clearErrorConsole();
+  document.getElementById('code-display').innerHTML = '<div class="code-ph">' + message + '</div>';
+  document.getElementById('preview-frame').style.display = 'none';
+  document.getElementById('prev-ph').style.display = 'flex';
+  document.getElementById('chat-msgs').innerHTML = '<div class="msg msg-s">' + message + '</div>';
+  document.getElementById('tb-proj').textContent = 'Aucun projet';
+  document.getElementById('btn-history').style.display = 'none';
+  document.getElementById('btn-analytics').style.display = 'none';
+  document.getElementById('btn-presentation').style.display = 'none';
+  if (me.role === 'admin') document.getElementById('btn-pub').style.display = 'none';
+}
+
 async function delProjectById(id){
   if(!confirm('Supprimer définitivement ?'))return;
   await api('/api/projects/'+id,'DELETE');
-  if(currentProject?.id===id){currentProject=null;document.getElementById('code-display').innerHTML='<div class="code-ph">Projet supprimé.</div>';}
+  if(currentProject?.id===id){
+    resetProjectUI('Projet supprimé. Sélectionnez ou créez un nouveau projet.');
+  }
   showToast('Supprimé.','info');loadProjects();loadStats();
 }
 
