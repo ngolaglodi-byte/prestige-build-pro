@@ -232,13 +232,30 @@ Règles d'intégration automatique :
         try {
           const d=JSON.parse(line.slice(6));
           if (d.type==='content_block_delta'&&d.delta?.text) { full+=d.delta.text; res.write(`data: ${JSON.stringify({type:'delta',content:d.delta.text})}\n\n`); }
-          if (d.type==='message_stop') { res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); res.end(); if(onDone) onDone(full); }
-        } catch {}
+          if (d.type==='message_stop') { 
+            // Call onDone BEFORE ending response, so callbacks can still write to res
+            if(onDone) onDone(full); 
+            res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); 
+            res.end(); 
+          }
+        } catch(e) {
+          console.error('Stream parse error:', e.message);
+        }
       }
     });
-    apiRes.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+    apiRes.on('error', e=>{ 
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
+        res.end(); 
+      }
+    });
   });
-  r.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+  r.on('error', e=>{ 
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
+      res.end(); 
+    }
+  });
   r.write(payload); r.end();
 }
 
@@ -298,13 +315,30 @@ Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans 
         try {
           const d=JSON.parse(line.slice(6));
           if (d.type==='content_block_delta'&&d.delta?.text) { full+=d.delta.text; res.write(`data: ${JSON.stringify({type:'delta',content:d.delta.text})}\n\n`); }
-          if (d.type==='message_stop') { res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); res.end(); if(onDone) onDone(full); }
-        } catch {}
+          if (d.type==='message_stop') { 
+            // Call onDone BEFORE ending response, so callbacks can still write to res
+            if(onDone) onDone(full); 
+            res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); 
+            res.end(); 
+          }
+        } catch(e) {
+          console.error('Stream parse error:', e.message);
+        }
       }
     });
-    apiRes.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+    apiRes.on('error', e=>{ 
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
+        res.end(); 
+      }
+    });
   });
-  r.on('error', e=>{ res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); res.end(); });
+  r.on('error', e=>{ 
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
+      res.end(); 
+    }
+  });
   r.write(payload); r.end();
 }
 
@@ -395,6 +429,12 @@ function serveBuilt(res, buildId, filePath) {
   if (!buildDir) { res.writeHead(404); res.end('Build not found'); return; }
   const clean = (filePath||'index.html').replace(/\.\./g,'').replace(/^\//,'') || 'index.html';
   const full = path.join(buildDir, clean);
+  
+  // Security check: prevent path traversal attacks
+  if (!isPathSafe(buildDir, full)) {
+    res.writeHead(403); res.end('Access denied'); return;
+  }
+  
   if (!fs.existsSync(full)) {
     const idx = path.join(buildDir,'index.html');
     if (fs.existsSync(idx)) { res.writeHead(200,{'Content-Type':'text/html','Access-Control-Allow-Origin':'*'}); res.end(fs.readFileSync(idx)); return; }
@@ -573,8 +613,11 @@ function savePreviewFiles(projectId, code) {
       if (htmlMatch) {
         mainHtml = htmlMatch[0];
       } else {
-        // Last resort: create minimal HTML
-        mainHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Preview</title></head><body><pre>${escapeHtml(code.substring(0, 2000))}</pre></body></html>`;
+        // Last resort: create minimal HTML wrapping the code
+        // Truncate only for display purposes at 50KB, but preserve meaningful content
+        const codeLength = code.length;
+        const truncatedCode = codeLength > 50000 ? code.substring(0, 50000) + '\n\n... (code truncated, ' + codeLength + ' chars total)' : code;
+        mainHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Preview</title><style>body{font-family:monospace;padding:20px;background:#1a1a2e;color:#e2e8f0;} pre{white-space:pre-wrap;word-wrap:break-word;}</style></head><body><h2 style="color:#D4A820;">Code généré</h2><p style="color:#8896c4;">Le code ne contient pas de HTML valide. Voici le contenu brut :</p><pre>' + escapeHtml(truncatedCode) + '</pre></body></html>';
       }
     }
   }
@@ -659,6 +702,13 @@ function servePreview(res, projectId, filePath) {
 
   const clean = (filePath || 'index.html').replace(/\.\./g, '').replace(/^\//, '') || 'index.html';
   const fullPath = path.join(previewDir, clean);
+
+  // Security check: prevent path traversal attacks
+  if (!isPathSafe(previewDir, fullPath)) {
+    res.writeHead(403);
+    res.end('Access denied.');
+    return;
+  }
 
   if (!fs.existsSync(fullPath)) {
     // Try index.html fallback (SPA support)
@@ -1711,6 +1761,20 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     
+    // Authentication check for Docker proxy
+    const user = getAuth(req);
+    if (!user) {
+      json(res, 401, { error: 'Non autorisé. Connectez-vous pour accéder au projet.' });
+      return;
+    }
+    
+    // Authorization check: user must own the project or be admin
+    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé à ce projet.' });
+      return;
+    }
+    
     // Build the target path (everything after /run/projectId)
     const targetPath = '/' + parts.slice(2).join('/') || '/';
     
@@ -1719,9 +1783,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Preview refresh endpoint (no auth required for simplicity, but validates project exists)
+  // Preview refresh endpoint - requires authentication
   if (url.match(/^\/api\/preview\/\d+\/refresh$/) && req.method==='POST') {
     const projectId = parseInt(url.split('/')[3]);
+    
+    // Authentication check
+    const user = getAuth(req);
+    if (!user) {
+      json(res, 401, { error: 'Non autorisé.' });
+      return;
+    }
+    
+    // Authorization check: user must own the project or be admin
+    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé à ce projet.' });
+      return;
+    }
+    
     const body = await getBody(req);
     const code = body.code;
     if (!code) {
@@ -1888,6 +1967,12 @@ const server = http.createServer(async (req, res) => {
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
     if (!project?.generated_code) { json(res,400,{error:'Générez le code d\'abord.'}); return; }
     
+    // Authorization check: user must own the project or be admin
+    if (user.role !== 'admin' && project.user_id !== user.id) {
+      json(res, 403, { error: 'Accès refusé à ce projet.' });
+      return;
+    }
+    
     const buildId=crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO builds (id,project_id,status,progress,message) VALUES (?,?,?,?,?)').run(buildId,project_id,'building',0,'Démarrage...');
     db.prepare("UPDATE projects SET build_id=?,build_status='building' WHERE id=?").run(buildId,project_id);
@@ -2023,7 +2108,16 @@ const server = http.createServer(async (req, res) => {
   // ─── BUILD STATUS ───
   if (url.match(/^\/api\/builds\/\w+$/) && req.method==='GET') {
     const build=db.prepare('SELECT * FROM builds WHERE id=?').get(url.split('/').pop());
-    json(res,build?200:404,build||{error:'Build non trouvé.'}); return;
+    if (!build) { json(res,404,{error:'Build non trouvé.'}); return; }
+    
+    // Authorization check: verify user owns the associated project or is admin
+    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(build.project_id);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé.' });
+      return;
+    }
+    
+    json(res,200,build); return;
   }
 
   // ─── PROJECTS CRUD ───
@@ -2044,9 +2138,18 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='PUT') {
     const id=parseInt(url.split('/').pop());
+    // Authorization check: user must own the project or be admin
+    const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p||(user.role!=='admin'&&p.user_id!==user.id)) { json(res,403,{error:'Accès refusé.'}); return; }
+    
     const {title,client_name,brief,subdomain,domain,apis,notes,generated_code,status}=await getBody(req);
-    db.prepare("UPDATE projects SET title=COALESCE(?,title),client_name=COALESCE(?,client_name),brief=COALESCE(?,brief),subdomain=COALESCE(?,subdomain),domain=COALESCE(?,domain),apis=COALESCE(?,apis),notes=COALESCE(?,notes),generated_code=COALESCE(?,generated_code),status=COALESCE(?,status),updated_at=datetime('now') WHERE id=?").run(title,client_name,brief,subdomain,domain,apis?JSON.stringify(apis):null,notes,generated_code,status,id);
-    json(res,200,{ok:true}); return;
+    try {
+      db.prepare("UPDATE projects SET title=COALESCE(?,title),client_name=COALESCE(?,client_name),brief=COALESCE(?,brief),subdomain=COALESCE(?,subdomain),domain=COALESCE(?,domain),apis=COALESCE(?,apis),notes=COALESCE(?,notes),generated_code=COALESCE(?,generated_code),status=COALESCE(?,status),updated_at=datetime('now') WHERE id=?").run(title,client_name,brief,subdomain,domain,apis?JSON.stringify(apis):null,notes,generated_code,status,id);
+      json(res,200,{ok:true});
+    } catch(e) {
+      json(res,500,{error:'Erreur lors de la mise à jour: ' + e.message});
+    }
+    return;
   }
   if (url.match(/^\/api\/projects\/\d+\/dns-instructions$/) && req.method==='GET') {
     if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
