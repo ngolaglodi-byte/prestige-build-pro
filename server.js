@@ -48,6 +48,7 @@ const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userNam
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
+const CNAME_TARGET = process.env.CNAME_TARGET || `app.${PUBLISH_DOMAIN}`;
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const CADDY_ADMIN_API = process.env.CADDY_ADMIN_API || 'http://localhost:2019';
 const SERVER_IP = process.env.SERVER_IP || '204.168.177.199';
@@ -917,7 +918,7 @@ const server = http.createServer(async (req, res) => {
     
     const response = {
       defaultUrl,
-      cname: { type: 'CNAME', name: 'www', value: `app.${PUBLISH_DOMAIN}` },
+      cname: { type: 'CNAME', name: 'www', value: CNAME_TARGET },
       a: { type: 'A', name: '@', value: SERVER_IP }
     };
     
@@ -1030,7 +1031,7 @@ const server = http.createServer(async (req, res) => {
         response.customDomainUrl = customDomainUrl;
         response.customDomainConfigured = customDomainResult ? customDomainResult.success : false;
         response.dnsInstructions = {
-          cname: { type: 'CNAME', name: 'www', value: `app.${PUBLISH_DOMAIN}` },
+          cname: { type: 'CNAME', name: 'www', value: CNAME_TARGET },
           a: { type: 'A', name: '@', value: SERVER_IP }
         };
       }
