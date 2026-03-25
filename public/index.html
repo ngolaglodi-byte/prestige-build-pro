@@ -809,6 +809,11 @@ function showSidebarTab(tab) {
   document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
   document.querySelector(`.sidebar-tab[data-tab="${tab}"]`).classList.add('active');
   document.getElementById(tab + '-panel').classList.add('active');
+  
+  // Refresh logs when switching to logs tab
+  if (tab === 'logs' && currentProject) {
+    refreshLogs();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

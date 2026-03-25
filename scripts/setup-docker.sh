@@ -75,9 +75,14 @@ echo ""
 
 # Connect the main container to the network if running in Docker
 if [ -f /.dockerenv ]; then
-    CONTAINER_ID=$(cat /proc/self/cgroup | grep docker | head -n 1 | cut -d/ -f3 | cut -c1-12)
+    # Use HOSTNAME which is set to container ID in Docker, or fallback to cgroup parsing
+    CONTAINER_ID="${HOSTNAME:-}"
+    if [ -z "$CONTAINER_ID" ] || [ ${#CONTAINER_ID} -lt 12 ]; then
+        # Try to get from cgroup (works on both cgroup v1 and v2)
+        CONTAINER_ID=$(cat /proc/self/cgroup 2>/dev/null | grep -oE '[a-f0-9]{64}' | head -n 1 | cut -c1-12)
+    fi
     if [ -n "$CONTAINER_ID" ]; then
-        echo "Connecting main container to '$NETWORK_NAME' network..."
+        echo "Connecting main container ($CONTAINER_ID) to '$NETWORK_NAME' network..."
         docker network connect $NETWORK_NAME $CONTAINER_ID 2>/dev/null || true
         echo "✓ Main container connected to network"
     fi

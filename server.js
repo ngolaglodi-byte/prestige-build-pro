@@ -875,20 +875,41 @@ async function buildDockerProject(projectId, code, onProgress) {
       throw new Error('Aucun fichier trouvé dans le code généré. Utilisez les marqueurs ### pour séparer les fichiers.');
     }
 
-    // Create directories
+    // Helper function to copy directory contents recursively
+    function copyDirSync(src, dest) {
+      if (!fs.existsSync(src)) return;
+      fs.mkdirSync(dest, { recursive: true });
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+      for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyDirSync(srcPath, destPath);
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    }
+
+    // Create directories, preserving data directory for persistence
     if (fs.existsSync(projectDir)) {
-      // Keep data directory for persistence
       const tmpData = path.join('/tmp', `pbp-data-${projectId}`);
+      // Backup data directory using fs operations (cross-platform)
       if (fs.existsSync(dataDir)) {
-        try { execSync(`mv ${dataDir} ${tmpData}`); } catch(e) {}
+        try {
+          copyDirSync(dataDir, tmpData);
+        } catch(e) { console.warn('Data backup failed:', e.message); }
       }
       fs.rmSync(projectDir, { recursive: true, force: true });
       fs.mkdirSync(projectDir, { recursive: true });
       fs.mkdirSync(publicDir, { recursive: true });
       fs.mkdirSync(dataDir, { recursive: true });
+      // Restore data directory
       if (fs.existsSync(tmpData)) {
-        try { execSync(`mv ${tmpData}/* ${dataDir}/`); } catch(e) {}
-        try { fs.rmSync(tmpData, { recursive: true, force: true }); } catch(e) {}
+        try {
+          copyDirSync(tmpData, dataDir);
+          fs.rmSync(tmpData, { recursive: true, force: true });
+        } catch(e) { console.warn('Data restore failed:', e.message); }
       }
     } else {
       fs.mkdirSync(projectDir, { recursive: true });
@@ -909,12 +930,14 @@ async function buildDockerProject(projectId, code, onProgress) {
     }
 
     // Create Dockerfile for the project
+    // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
+    const jwtSecret = crypto.randomBytes(32).toString('hex');
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
 COPY server.js ./
 COPY public/ ./public/
-ENV JWT_SECRET=${crypto.randomBytes(16).toString('hex')}
+ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \\
@@ -932,8 +955,8 @@ CMD ["node", "server.js"]
     // Step 4: Run the container (70%)
     onProgress({ step: 4, progress: 70, message: 'Lancement du projet...' });
     
-    const jwtSecret = crypto.randomBytes(32).toString('hex');
-    execDocker(`docker run -d --name ${containerName} --network ${DOCKER_NETWORK} --restart unless-stopped -v ${dataDir}:/app/data -e JWT_SECRET=${jwtSecret} -e PORT=3000 ${imageName}`, { timeout: 30000 });
+    // Use the same jwtSecret that was embedded in the Dockerfile ENV
+    execDocker(`docker run -d --name ${containerName} --network ${DOCKER_NETWORK} --restart unless-stopped -v ${dataDir}:/app/data -e PORT=3000 ${imageName}`, { timeout: 30000 });
 
     // Step 5: Wait for health check (90%)
     onProgress({ step: 5, progress: 90, message: 'Vérification du démarrage...' });
@@ -964,6 +987,9 @@ CMD ["node", "server.js"]
     throw e;
   }
 }
+
+// Restart lock to prevent multiple simultaneous restart attempts
+const restartLocks = new Map();
 
 // Proxy request to container
 function proxyToContainer(req, res, projectId, targetPath) {
@@ -1052,9 +1078,12 @@ function proxyToContainer(req, res, projectId, targetPath) {
 
   proxyReq.on('error', (e) => {
     console.error('Proxy error:', e.message);
-    // Container might have crashed, try to restart
-    if (!isContainerRunning(projectId)) {
+    // Container might have crashed, try to restart (with lock to prevent multiple attempts)
+    if (!isContainerRunning(projectId) && !restartLocks.get(projectId)) {
+      restartLocks.set(projectId, true);
       restartContainer(projectId);
+      // Clear lock after 30 seconds
+      setTimeout(() => restartLocks.delete(projectId), 30000);
     }
     // Remove from mapping to force re-lookup
     containerMapping.delete(projectId);

@@ -473,10 +473,12 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'secret-key';
+// JWT_SECRET est fourni par l'environnement Docker - ne jamais utiliser de valeur par défaut en production
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const db = new Database('/data/database.db');
 
 // Middleware
