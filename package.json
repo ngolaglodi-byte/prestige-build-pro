@@ -5,11 +5,13 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "setup-docker": "bash scripts/setup-docker.sh"
   },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
     "bcryptjs": "^2.4.3",
+    "http-proxy-middleware": "^3.0.3",
     "jsonwebtoken": "^9.0.2"
   },
   "engines": {
