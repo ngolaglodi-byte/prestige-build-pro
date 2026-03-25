@@ -380,6 +380,7 @@ button.card { padding: 0; }
         </div>
         <div><span class="badge badge-draft" id="ws-project-status">Brouillon</span></div>
         <div class="workspace-topbar-right">
+          <button class="btn btn-ghost" id="ws-restart-btn" onclick="restartProject()" title="Redémarrer le projet"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Redémarrer</button>
           <button class="btn btn-ghost" id="ws-domain-btn" onclick="openCustomDomainModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Domaine</button>
           <button class="btn btn-ghost" id="ws-presentation-btn" onclick="openPresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Présentation</button>
           <button class="btn btn-ghost" id="ws-history-btn" onclick="openHistoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Historique</button>
@@ -393,6 +394,7 @@ button.card { padding: 0; }
             <button class="sidebar-tab active" data-tab="chat" onclick="showSidebarTab('chat')">Chat IA</button>
             <button class="sidebar-tab" data-tab="files" onclick="showSidebarTab('files')">Fichiers</button>
             <button class="sidebar-tab" data-tab="history" onclick="showSidebarTab('history')">Historique</button>
+            <button class="sidebar-tab" data-tab="logs" onclick="showSidebarTab('logs')">Logs</button>
           </div>
           <div class="sidebar-content">
             <div id="chat-panel" class="sidebar-panel active">
@@ -405,6 +407,7 @@ button.card { padding: 0; }
             </div>
             <div id="files-panel" class="sidebar-panel"><div class="files-tree" id="files-tree"><p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Les fichiers générés apparaîtront ici.</p></div></div>
             <div id="history-panel" class="sidebar-panel"><div class="history-list" id="history-list"><p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">L'historique des versions apparaîtra ici.</p></div></div>
+            <div id="logs-panel" class="sidebar-panel"><div class="logs-container" id="logs-container" style="padding:var(--space-md);font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary);white-space:pre-wrap;overflow-y:auto;height:100%;background:var(--bg-primary);"><p style="color:var(--text-muted);">Les logs du conteneur apparaîtront ici après compilation.</p></div><div style="padding:var(--space-sm);border-top:var(--border-default);"><button class="btn btn-secondary btn-sm" onclick="refreshLogs()" style="width:100%;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Actualiser les logs</button></div></div>
           </div>
         </aside>
         <div class="workspace-preview">
@@ -758,6 +761,7 @@ async function openWorkspace(id) {
 
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
+  stopLogsPolling();
   document.getElementById('workspace-view').classList.remove('active');
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
@@ -783,6 +787,7 @@ function updateWorkspaceUI() {
   document.getElementById('ws-domain-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   document.getElementById('ws-presentation-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   document.getElementById('ws-publish-btn').style.display = isAdmin ? 'inline-flex' : 'none';
+  document.getElementById('ws-restart-btn').style.display = currentProject.build_status === 'done' ? 'inline-flex' : 'none';
 }
 
 function resetPreviewUI() {
@@ -804,6 +809,11 @@ function showSidebarTab(tab) {
   document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
   document.querySelector(`.sidebar-tab[data-tab="${tab}"]`).classList.add('active');
   document.getElementById(tab + '-panel').classList.add('active');
+  
+  // Refresh logs when switching to logs tab
+  if (tab === 'logs' && currentProject) {
+    refreshLogs();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -998,11 +1008,70 @@ window.addEventListener('message', (e) => {
     const console = document.getElementById('error-console');
     const content = document.getElementById('error-console-content');
     console.classList.add('active');
-    content.innerHTML += '<div>' + escapeHtml(e.data.message) + '</div>';
+    // Show user-friendly error messages
+    let message = e.data.message;
+    if (message.includes('fetch') || message.includes('network') || message.includes('Failed to load')) {
+      message = 'Le projet démarre, veuillez patienter...';
+      // Auto-retry after 3 seconds
+      setTimeout(() => refreshPreview(), 3000);
+    }
+    content.innerHTML += '<div>' + escapeHtml(message) + '</div>';
   }
 });
 
-function closeErrorConsole() { document.getElementById('error-console').classList.remove('active'); }
+function closeErrorConsole() { document.getElementById('error-console').classList.remove('active'); document.getElementById('error-console-content').innerHTML = ''; }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCKER CONTAINER LOGS
+// ═══════════════════════════════════════════════════════════════════════════
+let logsPollingInterval = null;
+
+async function refreshLogs() {
+  if (!currentProject) return;
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/logs');
+    const container = document.getElementById('logs-container');
+    if (r.logs) {
+      container.innerHTML = `<div style="color:var(--text-muted);font-size:0.7rem;margin-bottom:var(--space-sm);">Container: ${escapeHtml(r.container)} | Status: ${r.running ? '🟢 Running' : '🔴 Stopped'}</div><div style="color:var(--text-primary);">${escapeHtml(r.logs)}</div>`;
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.innerHTML = '<p style="color:var(--text-muted);">Aucun log disponible.</p>';
+    }
+  } catch (e) {
+    document.getElementById('logs-container').innerHTML = '<p style="color:var(--error);">Impossible de récupérer les logs.</p>';
+  }
+}
+
+function startLogsPolling() {
+  if (logsPollingInterval) clearInterval(logsPollingInterval);
+  logsPollingInterval = setInterval(() => {
+    if (document.querySelector('.sidebar-tab[data-tab="logs"]').classList.contains('active')) {
+      refreshLogs();
+    }
+  }, 5000);
+}
+
+function stopLogsPolling() {
+  if (logsPollingInterval) {
+    clearInterval(logsPollingInterval);
+    logsPollingInterval = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCKER CONTAINER RESTART
+// ═══════════════════════════════════════════════════════════════════════════
+async function restartProject() {
+  if (!currentProject) return;
+  if (!confirm('Redémarrer le projet? Le conteneur sera relancé.')) return;
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/restart', 'POST');
+    alert(r.message || 'Projet redémarré.');
+    setTimeout(() => refreshPreview(), 2000);
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CODE PANEL
@@ -1011,20 +1080,74 @@ function toggleCodePanel() { document.getElementById('code-panel').classList.tog
 
 async function compileProject() {
   if (!currentProject) return;
+  const status = document.getElementById('preview-status');
+  const loading = document.getElementById('preview-loading');
+  
+  // Show building state
+  status.className = 'preview-status generating';
+  status.innerHTML = '<span>Compilation en cours...</span>';
+  loading.style.display = 'flex';
+  loading.querySelector('span').textContent = 'Construction de l\'environnement Docker...';
+  document.getElementById('preview-frame').style.display = 'none';
+  
   try {
     const r = await api('/api/compile', 'POST', { project_id: currentProject.id });
     if (r.buildId) pollBuildStatus(r.buildId);
-  } catch (e) { alert('Erreur: ' + e.message); }
+  } catch (e) { 
+    status.className = 'preview-status';
+    status.innerHTML = '<span>Erreur</span>';
+    alert('Erreur: ' + e.message); 
+  }
 }
 
 async function pollBuildStatus(buildId) {
+  const loading = document.getElementById('preview-loading');
+  const status = document.getElementById('preview-status');
+  
   const check = async () => {
-    const b = await api('/api/builds/' + buildId);
-    if (b.status === 'done') loadPreview(b.url);
-    else if (b.status === 'error') alert('Erreur de compilation');
-    else setTimeout(check, 2000);
+    try {
+      const b = await api('/api/builds/' + buildId);
+      
+      // Update loading message with progress
+      if (b.message) {
+        loading.querySelector('span').textContent = b.message + (b.progress ? ` (${b.progress}%)` : '');
+      }
+      
+      if (b.status === 'done') {
+        // Use Docker proxy URL for preview
+        const previewUrl = b.url.startsWith('/run/') ? b.url : `/run/${currentProject.id}/`;
+        loadDockerPreview(previewUrl);
+      } else if (b.status === 'error') {
+        status.className = 'preview-status';
+        status.innerHTML = '<span style="color:var(--error);">Erreur</span>';
+        loading.querySelector('span').textContent = b.message || 'Erreur de compilation';
+        alert('Erreur de compilation: ' + (b.message || 'Vérifiez les logs'));
+      } else {
+        setTimeout(check, 1500);
+      }
+    } catch (e) {
+      console.error('Poll error:', e);
+      setTimeout(check, 2000);
+    }
   };
   check();
+}
+
+// Load Docker preview via proxy
+function loadDockerPreview(url) {
+  const frame = document.getElementById('preview-frame');
+  const loading = document.getElementById('preview-loading');
+  const previewUrl = url || `/run/${currentProject.id}/`;
+  
+  document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
+  frame.src = previewUrl;
+  frame.style.display = 'block';
+  loading.style.display = 'none';
+  document.getElementById('preview-status').className = 'preview-status live';
+  document.getElementById('preview-status').innerHTML = '<span>✓ Docker isolé</span>';
+  
+  // Start logs polling when preview is loaded
+  startLogsPolling();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -3,12 +3,22 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execSync, spawn } = require('child_process');
 
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
 const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
+
+// Docker preview system constants
+const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
+const DOCKER_NETWORK = 'pbp-projects';
+const DOCKER_BASE_IMAGE = 'pbp-base';
+const DOCKER_HEALTH_TIMEOUT = 15000; // 15 seconds max wait for container health
+
+// In-memory mapping of projectId → containerIP for proxy routing
+const containerMapping = new Map();
 
 // Preview system constants
 const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -674,6 +684,518 @@ function cleanOldPreviews() {
 // Clean old previews periodically
 setInterval(cleanOldPreviews, CLEANUP_INTERVAL_MS);
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DOCKER ISOLATED PREVIEW SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Ensure Docker projects directory exists
+if (!fs.existsSync(DOCKER_PROJECTS_DIR)) {
+  try { fs.mkdirSync(DOCKER_PROJECTS_DIR, { recursive: true }); } catch(e) { console.warn('Could not create DOCKER_PROJECTS_DIR:', e.message); }
+}
+
+// Execute Docker command safely
+function execDocker(cmd, options = {}) {
+  try {
+    return execSync(cmd, { encoding: 'utf8', timeout: 60000, ...options });
+  } catch (e) {
+    console.error('Docker command failed:', cmd, e.message);
+    throw e;
+  }
+}
+
+// Check if Docker is available
+function isDockerAvailable() {
+  try {
+    execSync('docker --version', { encoding: 'utf8', timeout: 5000 });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Ensure Docker network exists
+function ensureDockerNetwork() {
+  try {
+    const networks = execDocker('docker network ls --format "{{.Name}}"');
+    if (!networks.includes(DOCKER_NETWORK)) {
+      execDocker(`docker network create ${DOCKER_NETWORK}`);
+      console.log(`Created Docker network: ${DOCKER_NETWORK}`);
+    }
+  } catch (e) {
+    console.error('Failed to ensure Docker network:', e.message);
+  }
+}
+
+// Get container name for a project
+function getContainerName(projectId) {
+  return `pbp-project-${projectId}`;
+}
+
+// Get container IP address
+function getContainerIP(projectId) {
+  try {
+    const containerName = getContainerName(projectId);
+    const ip = execDocker(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerName}`).trim();
+    return ip || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Check if container is running
+function isContainerRunning(projectId) {
+  try {
+    const containerName = getContainerName(projectId);
+    const status = execDocker(`docker inspect -f '{{.State.Running}}' ${containerName}`).trim();
+    return status === 'true';
+  } catch (e) {
+    return false;
+  }
+}
+
+// Stop and remove container
+function stopContainer(projectId) {
+  const containerName = getContainerName(projectId);
+  try {
+    execDocker(`docker stop ${containerName}`, { timeout: 10000 });
+  } catch (e) {}
+  try {
+    execDocker(`docker rm ${containerName}`, { timeout: 5000 });
+  } catch (e) {}
+}
+
+// Remove container image
+function removeContainerImage(projectId) {
+  const imageName = `pbp-project-${projectId}:latest`;
+  try {
+    execDocker(`docker rmi ${imageName}`, { timeout: 10000 });
+  } catch (e) {}
+}
+
+// Get container logs
+function getContainerLogs(projectId, tailLines = 100) {
+  const containerName = getContainerName(projectId);
+  try {
+    return execDocker(`docker logs --tail ${tailLines} ${containerName}`, { timeout: 10000 });
+  } catch (e) {
+    return `Erreur: impossible de récupérer les logs. ${e.message}`;
+  }
+}
+
+// Restart container
+function restartContainer(projectId) {
+  const containerName = getContainerName(projectId);
+  try {
+    execDocker(`docker restart ${containerName}`, { timeout: 30000 });
+    // Update IP in mapping after restart
+    setTimeout(() => {
+      const ip = getContainerIP(projectId);
+      if (ip) containerMapping.set(projectId, ip);
+    }, 2000);
+    return true;
+  } catch (e) {
+    console.error('Failed to restart container:', e.message);
+    return false;
+  }
+}
+
+// Wait for container to be healthy
+async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT) {
+  const startTime = Date.now();
+  const ip = getContainerIP(projectId);
+  if (!ip) return false;
+
+  while (Date.now() - startTime < maxWait) {
+    try {
+      const response = await new Promise((resolve, reject) => {
+        const req = http.get(`http://${ip}:3000/health`, { timeout: 2000 }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              resolve(json.status === 'ok');
+            } catch { resolve(false); }
+          });
+        });
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+      });
+      if (response) return true;
+    } catch (e) {}
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+// Parse generated code into files (looking for ### markers)
+function parseDockerProjectCode(code) {
+  const files = {};
+  if (!code) return files;
+
+  // Pattern: ### filename.ext followed by content until next ### or end
+  const sections = code.split(/###\s+/);
+  
+  for (const section of sections) {
+    if (!section.trim()) continue;
+    
+    // First line is the filename
+    const lines = section.split('\n');
+    const firstLine = lines[0].trim();
+    
+    // Check if it looks like a filename
+    if (firstLine.includes('.') && !firstLine.includes(' ')) {
+      const filename = firstLine.replace(/[`*]/g, '').trim();
+      // Get content, skipping markdown code block markers
+      let content = lines.slice(1).join('\n');
+      content = content.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
+      if (content) {
+        files[filename] = content;
+      }
+    }
+  }
+
+  return files;
+}
+
+// Build and run Docker container for a project
+async function buildDockerProject(projectId, code, onProgress) {
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  const publicDir = path.join(projectDir, 'public');
+  const dataDir = path.join(projectDir, 'data');
+  const containerName = getContainerName(projectId);
+  const imageName = `pbp-project-${projectId}:latest`;
+
+  try {
+    // Step 1: Parse code into files (10%)
+    onProgress({ step: 1, progress: 10, message: 'Analyse du code généré...' });
+    const files = parseDockerProjectCode(code);
+    
+    if (Object.keys(files).length === 0) {
+      throw new Error('Aucun fichier trouvé dans le code généré. Utilisez les marqueurs ### pour séparer les fichiers.');
+    }
+
+    // Helper function to copy directory contents recursively
+    function copyDirSync(src, dest) {
+      if (!fs.existsSync(src)) return;
+      fs.mkdirSync(dest, { recursive: true });
+      const entries = fs.readdirSync(src, { withFileTypes: true });
+      for (const entry of entries) {
+        const srcPath = path.join(src, entry.name);
+        const destPath = path.join(dest, entry.name);
+        if (entry.isDirectory()) {
+          copyDirSync(srcPath, destPath);
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+    }
+
+    // Create directories, preserving data directory for persistence
+    if (fs.existsSync(projectDir)) {
+      const tmpData = path.join('/tmp', `pbp-data-${projectId}`);
+      // Backup data directory using fs operations (cross-platform)
+      if (fs.existsSync(dataDir)) {
+        try {
+          copyDirSync(dataDir, tmpData);
+        } catch(e) { console.warn('Data backup failed:', e.message); }
+      }
+      fs.rmSync(projectDir, { recursive: true, force: true });
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.mkdirSync(dataDir, { recursive: true });
+      // Restore data directory
+      if (fs.existsSync(tmpData)) {
+        try {
+          copyDirSync(tmpData, dataDir);
+          fs.rmSync(tmpData, { recursive: true, force: true });
+        } catch(e) { console.warn('Data restore failed:', e.message); }
+      }
+    } else {
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.mkdirSync(publicDir, { recursive: true });
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    // Step 2: Write all files (30%)
+    onProgress({ step: 2, progress: 30, message: 'Écriture des fichiers du projet...' });
+    
+    for (const [filename, content] of Object.entries(files)) {
+      const filePath = path.join(projectDir, filename);
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(filePath, content);
+    }
+
+    // Create Dockerfile for the project
+    // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
+    const jwtSecret = crypto.randomBytes(32).toString('hex');
+    const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
+WORKDIR /app
+COPY package.json ./
+COPY server.js ./
+COPY public/ ./public/
+ENV JWT_SECRET=${jwtSecret}
+ENV PORT=3000
+EXPOSE 3000
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \\
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["node", "server.js"]
+`;
+    fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
+
+    // Step 3: Stop old container and build new image (50%)
+    onProgress({ step: 3, progress: 50, message: 'Construction de l\'environnement...' });
+    stopContainer(projectId);
+    
+    execDocker(`docker build -t ${imageName} ${projectDir}`, { timeout: 120000 });
+
+    // Step 4: Run the container (70%)
+    onProgress({ step: 4, progress: 70, message: 'Lancement du projet...' });
+    
+    // Use the same jwtSecret that was embedded in the Dockerfile ENV
+    execDocker(`docker run -d --name ${containerName} --network ${DOCKER_NETWORK} --restart unless-stopped -v ${dataDir}:/app/data -e PORT=3000 ${imageName}`, { timeout: 30000 });
+
+    // Step 5: Wait for health check (90%)
+    onProgress({ step: 5, progress: 90, message: 'Vérification du démarrage...' });
+    
+    const healthy = await waitForContainerHealth(projectId);
+    if (!healthy) {
+      const logs = getContainerLogs(projectId, 50);
+      console.error('Container health check failed. Logs:', logs);
+      throw new Error('Le projet ne répond pas. Vérifiez les logs pour plus de détails.');
+    }
+
+    // Step 6: Get container IP and update mapping (100%)
+    onProgress({ step: 6, progress: 100, message: 'Prêt !' });
+    
+    const ip = getContainerIP(projectId);
+    if (ip) {
+      containerMapping.set(projectId, ip);
+    }
+
+    return {
+      success: true,
+      url: `/run/${projectId}/`,
+      containerIP: ip
+    };
+
+  } catch (e) {
+    console.error('Docker build failed:', e.message);
+    throw e;
+  }
+}
+
+// Restart lock to prevent multiple simultaneous restart attempts
+const restartLocks = new Map();
+
+// Proxy request to container
+function proxyToContainer(req, res, projectId, targetPath) {
+  const containerIP = containerMapping.get(projectId);
+  
+  if (!containerIP) {
+    // Try to get IP from Docker
+    const ip = getContainerIP(projectId);
+    if (ip) {
+      containerMapping.set(projectId, ip);
+      return proxyToContainer(req, res, projectId, targetPath);
+    }
+    
+    // Return elegant error page
+    res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projet en cours de démarrage</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: system-ui, -apple-system, sans-serif; 
+      background: linear-gradient(135deg, #0d1120 0%, #1a2744 100%);
+      min-height: 100vh; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center;
+      color: #e2e8f0;
+    }
+    .container { text-align: center; padding: 40px; }
+    .loader {
+      width: 50px; height: 50px;
+      border: 4px solid rgba(212, 168, 32, 0.2);
+      border-top-color: #D4A820;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 24px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 12px; color: #D4A820; }
+    p { color: #8896c4; margin-bottom: 20px; }
+    .retry { 
+      display: inline-block;
+      padding: 10px 24px;
+      background: #D4A820;
+      color: #1a2744;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .retry:hover { background: #e5b921; }
+  </style>
+  <script>setTimeout(() => location.reload(), 5000);</script>
+</head>
+<body>
+  <div class="container">
+    <div class="loader"></div>
+    <h1>Votre projet démarre...</h1>
+    <p>L'environnement se prépare, veuillez patienter quelques instants.</p>
+    <a href="javascript:location.reload()" class="retry">Réessayer</a>
+  </div>
+</body>
+</html>`);
+    return;
+  }
+
+  // Proxy the request
+  const options = {
+    hostname: containerIP,
+    port: 3000,
+    path: targetPath || '/',
+    method: req.method,
+    headers: { ...req.headers, host: `${containerIP}:3000` },
+    timeout: 30000
+  };
+
+  const proxyReq = http.request(options, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+
+  proxyReq.on('error', (e) => {
+    console.error('Proxy error:', e.message);
+    // Container might have crashed, try to restart (with lock to prevent multiple attempts)
+    if (!isContainerRunning(projectId) && !restartLocks.get(projectId)) {
+      restartLocks.set(projectId, true);
+      restartContainer(projectId);
+      // Clear lock after 30 seconds
+      setTimeout(() => restartLocks.delete(projectId), 30000);
+    }
+    // Remove from mapping to force re-lookup
+    containerMapping.delete(projectId);
+    
+    res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redémarrage en cours</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: system-ui, -apple-system, sans-serif; 
+      background: linear-gradient(135deg, #0d1120 0%, #1a2744 100%);
+      min-height: 100vh; 
+      display: flex; 
+      align-items: center; 
+      justify-content: center;
+      color: #e2e8f0;
+    }
+    .container { text-align: center; padding: 40px; }
+    .loader {
+      width: 50px; height: 50px;
+      border: 4px solid rgba(212, 168, 32, 0.2);
+      border-top-color: #D4A820;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 24px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 1.5rem; margin-bottom: 12px; color: #D4A820; }
+    p { color: #8896c4; margin-bottom: 20px; }
+  </style>
+  <script>setTimeout(() => location.reload(), 3000);</script>
+</head>
+<body>
+  <div class="container">
+    <div class="loader"></div>
+    <h1>Votre projet redémarre automatiquement</h1>
+    <p>Un petit souci technique. Nous relançons tout pour vous...</p>
+  </div>
+</body>
+</html>`);
+  });
+
+  proxyReq.on('timeout', () => {
+    proxyReq.destroy();
+    res.writeHead(504, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Le projet met trop de temps à répondre.' }));
+  });
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    req.pipe(proxyReq);
+  } else {
+    proxyReq.end();
+  }
+}
+
+// Rebuild container mapping from database on startup
+async function rebuildContainerMapping() {
+  if (!db || !isDockerAvailable()) return;
+  
+  try {
+    const projects = db.prepare("SELECT id FROM projects WHERE build_status = 'done'").all();
+    console.log(`Rebuilding container mapping for ${projects.length} projects...`);
+    
+    for (const project of projects) {
+      const containerName = getContainerName(project.id);
+      
+      // Check if container exists and is running
+      if (isContainerRunning(project.id)) {
+        const ip = getContainerIP(project.id);
+        if (ip) {
+          containerMapping.set(project.id, ip);
+          console.log(`  - Project ${project.id}: ${ip}`);
+        }
+      } else {
+        // Try to start stopped container
+        try {
+          execDocker(`docker start ${containerName}`, { timeout: 10000 });
+          await new Promise(r => setTimeout(r, 2000));
+          const ip = getContainerIP(project.id);
+          if (ip) {
+            containerMapping.set(project.id, ip);
+            console.log(`  - Project ${project.id}: ${ip} (restarted)`);
+          }
+        } catch (e) {
+          console.log(`  - Project ${project.id}: container not available`);
+        }
+      }
+    }
+    
+    console.log(`Container mapping rebuilt: ${containerMapping.size} active containers`);
+  } catch (e) {
+    console.error('Failed to rebuild container mapping:', e.message);
+  }
+}
+
+// Initialize Docker system
+function initializeDockerSystem() {
+  if (!isDockerAvailable()) {
+    console.log('Docker not available - Docker preview system disabled');
+    return;
+  }
+  
+  console.log('Initializing Docker preview system...');
+  ensureDockerNetwork();
+  rebuildContainerMapping();
+}
+
 // ─── SERVER ───
 const server = http.createServer(async (req, res) => {
   cors(res);
@@ -683,6 +1205,27 @@ const server = http.createServer(async (req, res) => {
   // Health check endpoint for proxy monitoring
   if (url==='/health' && req.method==='GET') {
     json(res,200,{status:'ok',timestamp:new Date().toISOString(),service:'prestige-build-pro'});
+    return;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DOCKER PROXY ROUTE: /run/:projectId/*
+  // Proxies requests to isolated Docker containers running project previews
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (url.startsWith('/run/')) {
+    const parts = url.split('/').filter(Boolean); // ['run', 'projectId', ...]
+    const projectId = parseInt(parts[1]);
+    
+    if (!projectId || isNaN(projectId)) {
+      json(res, 400, { error: 'ID de projet invalide' });
+      return;
+    }
+    
+    // Build the target path (everything after /run/projectId)
+    const targetPath = '/' + parts.slice(2).join('/') || '/';
+    
+    // Proxy to the container
+    proxyToContainer(req, res, projectId, targetPath);
     return;
   }
 
@@ -849,34 +1392,68 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ─── COMPILE ───
+  // ─── COMPILE (DOCKER ISOLATED PREVIEW) ───
   if (url==='/api/compile' && req.method==='POST') {
-    const {project_id}=await getBody(req);
+    const {project_id, mode}=await getBody(req);
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
     if (!project?.generated_code) { json(res,400,{error:'Générez le code d\'abord.'}); return; }
-    if (!compiler) { json(res,503,{error:'Moteur de compilation non disponible.'}); return; }
+    
     const buildId=crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO builds (id,project_id,status,progress,message) VALUES (?,?,?,?,?)').run(buildId,project_id,'building',0,'Démarrage...');
     db.prepare("UPDATE projects SET build_id=?,build_status='building' WHERE id=?").run(buildId,project_id);
     json(res,200,{buildId});
-    // Friendly step messages — no technical terms shown to agents
-    const friendly = {1:'Analyse et organisation du projet...',2:'Mise en place des composants...',3:'Application du design et des styles...',4:'Optimisation et finalisation...',5:'Vérification du résultat...',6:'Prêt !'};
-    // Async build
-    compiler.buildProject(buildId,project.generated_code,p=>{
-      db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress, friendly[p.step]||'Construction en cours...', buildId);
-    }).then(result=>{
-      if (result.success) {
-        const url2=`/preview/${buildId}/`;
-        db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(url2,buildId);
-        db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(url2,project_id);
-        db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id,`Projet "${project.title}" prêt à explorer !`, 'success');
-      } else {
-        // Clean error — never expose npm/vite details
-        const cleanErr = 'Une correction est nécessaire. Utilisez le chat pour ajuster le projet.';
-        db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run(cleanErr,buildId);
+    
+    // Check if Docker is available for isolated preview
+    if (isDockerAvailable() && mode !== 'legacy') {
+      // Docker isolated preview system
+      const friendly = {
+        1: 'Analyse du code généré...',
+        2: 'Écriture des fichiers du projet...',
+        3: 'Construction de l\'environnement...',
+        4: 'Lancement du projet...',
+        5: 'Vérification du démarrage...',
+        6: 'Prêt !'
+      };
+      
+      buildDockerProject(project_id, project.generated_code, (p) => {
+        db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress, friendly[p.step] || p.message || 'Construction en cours...', buildId);
+      }).then(result => {
+        if (result.success) {
+          db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(result.url, buildId);
+          db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(result.url, project_id);
+          db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id, `Projet "${project.title}" prêt à explorer !`, 'success');
+        } else {
+          db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run('Une erreur est survenue. Vérifiez les logs.', buildId);
+          db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
+        }
+      }).catch(err => {
+        console.error('Docker build error:', err.message);
+        db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run('Erreur: ' + (err.message || 'Construction échouée'), buildId);
         db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
-      }
-    }); return;
+      });
+    } else if (compiler) {
+      // Legacy compiler fallback
+      const friendly = {1:'Analyse et organisation du projet...',2:'Mise en place des composants...',3:'Application du design et des styles...',4:'Optimisation et finalisation...',5:'Vérification du résultat...',6:'Prêt !'};
+      compiler.buildProject(buildId,project.generated_code,p=>{
+        db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress, friendly[p.step]||'Construction en cours...', buildId);
+      }).then(result=>{
+        if (result.success) {
+          const url2=`/preview/${buildId}/`;
+          db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(url2,buildId);
+          db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(url2,project_id);
+          db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id,`Projet "${project.title}" prêt à explorer !`, 'success');
+        } else {
+          const cleanErr = 'Une correction est nécessaire. Utilisez le chat pour ajuster le projet.';
+          db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run(cleanErr,buildId);
+          db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
+        }
+      });
+    } else {
+      // No compilation engine available
+      db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run('Aucun moteur de compilation disponible.', buildId);
+      db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
+    }
+    return;
   }
 
   // ─── BUILD STATUS ───
@@ -1063,6 +1640,21 @@ const server = http.createServer(async (req, res) => {
       try { fs.rmSync(previewDir, { recursive: true, force: true }); } catch(e) { console.warn('Preview cleanup error:', e.message); }
     }
     
+    // Clean up Docker container and image
+    if (isDockerAvailable()) {
+      try {
+        stopContainer(id);
+        removeContainerImage(id);
+        containerMapping.delete(id);
+      } catch(e) { console.warn('Docker cleanup error:', e.message); }
+    }
+    
+    // Clean up Docker project files
+    const dockerProjectDir = path.join(DOCKER_PROJECTS_DIR, String(id));
+    if (fs.existsSync(dockerProjectDir)) {
+      try { fs.rmSync(dockerProjectDir, { recursive: true, force: true }); } catch(e) { console.warn('Docker project cleanup error:', e.message); }
+    }
+    
     // Clean up published site files if published
     if (project && project.subdomain && project.is_published) {
       const safeSubdomain = project.subdomain.replace(/[^a-zA-Z0-9-]/g, '');
@@ -1073,6 +1665,42 @@ const server = http.createServer(async (req, res) => {
     }
     
     json(res,200,{ok:true}); return;
+  }
+
+  // ─── PROJECT LOGS (Docker container logs) ───
+  if (url.match(/^\/api\/projects\/\d+\/logs$/) && req.method==='GET') {
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    
+    if (!isDockerAvailable()) {
+      json(res, 503, { error: 'Docker non disponible.' });
+      return;
+    }
+    
+    const logs = getContainerLogs(id, 100);
+    json(res, 200, { logs, container: getContainerName(id), running: isContainerRunning(id) });
+    return;
+  }
+
+  // ─── PROJECT RESTART (Docker container restart) ───
+  if (url.match(/^\/api\/projects\/\d+\/restart$/) && req.method==='POST') {
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    
+    if (!isDockerAvailable()) {
+      json(res, 503, { error: 'Docker non disponible.' });
+      return;
+    }
+    
+    const success = restartContainer(id);
+    if (success) {
+      json(res, 200, { ok: true, message: 'Projet redémarré avec succès.' });
+    } else {
+      json(res, 500, { error: 'Échec du redémarrage. Essayez de recompiler le projet.' });
+    }
+    return;
   }
 
   // ─── USERS ───
@@ -1260,4 +1888,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, ()=>{
   console.log(`Prestige Build Pro on port ${PORT}`);
   console.log(`API: ${ANTHROPIC_API_KEY?'OK':'MISSING'} | Compiler: ${compiler?'OK':'N/A'}`);
+  
+  // Initialize Docker preview system
+  initializeDockerSystem();
 });
