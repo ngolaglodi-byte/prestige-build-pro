@@ -407,7 +407,16 @@ button.card { padding: 0; }
             </div>
             <div id="files-panel" class="sidebar-panel"><div class="files-tree" id="files-tree"><p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Les fichiers générés apparaîtront ici.</p></div></div>
             <div id="history-panel" class="sidebar-panel"><div class="history-list" id="history-list"><p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">L'historique des versions apparaîtra ici.</p></div></div>
-            <div id="logs-panel" class="sidebar-panel"><div class="logs-container" id="logs-container" style="padding:var(--space-md);font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary);white-space:pre-wrap;overflow-y:auto;height:100%;background:var(--bg-primary);"><p style="color:var(--text-muted);">Les logs du conteneur apparaîtront ici après compilation.</p></div><div style="padding:var(--space-sm);border-top:var(--border-default);"><button class="btn btn-secondary btn-sm" onclick="refreshLogs()" style="width:100%;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Actualiser les logs</button></div></div>
+            <div id="logs-panel" class="sidebar-panel">
+              <div class="logs-container" id="logs-container" style="padding:var(--space-md);font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary);white-space:pre-wrap;overflow-y:auto;flex:1;background:var(--bg-primary);">
+                <p style="color:var(--text-muted);">📋 Les logs du conteneur apparaîtront ici après compilation.</p>
+                <p style="color:var(--text-muted);font-size:0.7rem;margin-top:var(--space-sm);">Les erreurs sont automatiquement détectées et corrigées par Prestige AI.</p>
+              </div>
+              <div style="padding:var(--space-sm);border-top:var(--border-default);display:flex;gap:var(--space-xs);">
+                <button class="btn btn-secondary btn-sm" onclick="refreshLogs()" style="flex:1;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Actualiser</button>
+                <button class="btn btn-ghost btn-sm" onclick="triggerAutoCorrect()" style="font-size:0.75rem;" title="Lancer une correction automatique"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button>
+              </div>
+            </div>
           </div>
         </aside>
         <div class="workspace-preview">
@@ -1032,7 +1041,24 @@ async function refreshLogs() {
     const r = await api('/api/projects/' + currentProject.id + '/logs');
     const container = document.getElementById('logs-container');
     if (r.logs) {
-      container.innerHTML = `<div style="color:var(--text-muted);font-size:0.7rem;margin-bottom:var(--space-sm);">Container: ${escapeHtml(r.container)} | Status: ${r.running ? '🟢 Running' : '🔴 Stopped'}</div><div style="color:var(--text-primary);">${escapeHtml(r.logs)}</div>`;
+      // Display translated logs with error history
+      let html = `<div style="color:var(--text-muted);font-size:0.7rem;margin-bottom:var(--space-sm);padding-bottom:var(--space-sm);border-bottom:1px solid var(--gold-dim);">
+        Container: ${escapeHtml(r.container)} | Status: ${r.running ? '🟢 En cours' : '🔴 Arrêté'}
+      </div>`;
+      
+      // Show error history if any
+      if (r.errorHistory && r.errorHistory.length > 0) {
+        html += `<div style="margin-bottom:var(--space-md);padding:var(--space-sm);background:var(--gold-dim);border-radius:var(--radius-sm);">
+          <div style="font-size:0.7rem;font-weight:600;color:var(--gold);margin-bottom:var(--space-xs);">📋 Historique des corrections</div>`;
+        r.errorHistory.slice(0, 3).forEach(e => {
+          const icon = e.corrected ? '✅' : '⏳';
+          html += `<div style="font-size:0.7rem;color:var(--text-secondary);margin-bottom:2px;">${icon} ${escapeHtml(e.type)} (tentative ${e.attempt})</div>`;
+        });
+        html += `</div>`;
+      }
+      
+      html += `<div style="color:var(--text-primary);">${escapeHtml(r.logs)}</div>`;
+      container.innerHTML = html;
       container.scrollTop = container.scrollHeight;
     } else {
       container.innerHTML = '<p style="color:var(--text-muted);">Aucun log disponible.</p>';
@@ -1110,7 +1136,21 @@ async function pollBuildStatus(buildId) {
       
       // Update loading message with progress
       if (b.message) {
-        loading.querySelector('span').textContent = b.message + (b.progress ? ` (${b.progress}%)` : '');
+        // Check if this is auto-correction mode and show elegant message
+        if (b.message.includes('Prestige AI optimise') || b.message.includes('Correction')) {
+          loading.querySelector('span').innerHTML = `
+            <span style="display:flex;align-items:center;gap:8px;flex-direction:column;">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" style="animation:spin 2s linear infinite;">
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+              </svg>
+              <span style="color:var(--gold);font-weight:600;">${escapeHtml(b.message)}</span>
+              ${b.progress ? `<span style="font-size:0.75rem;color:var(--text-muted);">Progression: ${b.progress}%</span>` : ''}
+            </span>`;
+          status.className = 'preview-status generating';
+          status.innerHTML = '<span style="color:var(--gold);">🤖 Optimisation IA</span>';
+        } else {
+          loading.querySelector('span').textContent = b.message + (b.progress ? ` (${b.progress}%)` : '');
+        }
       }
       
       if (b.status === 'done') {
@@ -1120,8 +1160,19 @@ async function pollBuildStatus(buildId) {
       } else if (b.status === 'error') {
         status.className = 'preview-status';
         status.innerHTML = '<span style="color:var(--error);">Erreur</span>';
-        loading.querySelector('span').textContent = b.message || 'Erreur de compilation';
-        alert('Erreur de compilation: ' + (b.message || 'Vérifiez les logs'));
+        
+        // Check if max attempts were reached - show friendly message
+        if (b.message && b.message.includes('tentatives')) {
+          loading.querySelector('span').innerHTML = `
+            <div style="text-align:center;padding:var(--space-lg);">
+              <div style="font-size:1.2rem;margin-bottom:var(--space-md);">💡</div>
+              <div style="color:var(--text-primary);font-weight:500;margin-bottom:var(--space-sm);">Votre projet nécessite une simplification</div>
+              <div style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:var(--space-md);">${escapeHtml(b.message)}</div>
+              <button class="btn btn-primary" onclick="showSimplifyOptions()">Obtenir de l'aide</button>
+            </div>`;
+        } else {
+          loading.querySelector('span').textContent = b.message || 'Erreur de compilation';
+        }
       } else {
         setTimeout(check, 1500);
       }
@@ -1131,6 +1182,34 @@ async function pollBuildStatus(buildId) {
     }
   };
   check();
+}
+
+// Show simplify options after max correction attempts
+function showSimplifyOptions() {
+  addChatMessage('assistant', `🔧 **Votre projet a rencontré des difficultés**
+
+Après plusieurs tentatives d'optimisation automatique, le projet nécessite votre intervention.
+
+**Options disponibles :**
+- **Simplifier le projet** : Je peux générer une version plus légère et stable
+- **Voir les erreurs** : Consultez l'onglet Logs pour les détails techniques
+- **Ajuster manuellement** : Décrivez ce que vous souhaitez modifier
+
+Que souhaitez-vous faire ?`);
+  showSidebarTab('chat');
+}
+
+// Auto-correct project manually
+async function triggerAutoCorrect() {
+  if (!currentProject) return;
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/auto-correct', 'POST');
+    if (r.ok) {
+      addChatMessage('assistant', '🔄 Correction automatique lancée. Veuillez patienter...');
+    }
+  } catch (e) {
+    addChatMessage('assistant', 'Erreur: ' + e.message);
+  }
 }
 
 // Load Docker preview via proxy
