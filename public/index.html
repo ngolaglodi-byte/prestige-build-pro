@@ -88,7 +88,8 @@ a:hover { color: var(--text-primary); }
 button.card { padding: 0; }
 .screen { display: none; }
 .screen.active { display: block; }
-#login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--bg-primary) 0%, var(--marine) 100%); }
+#login-screen { min-height: 100vh; display: none; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--bg-primary) 0%, var(--marine) 100%); z-index: 1000; }
+#login-screen.active { display: flex; }
 .login-card { width: 100%; max-width: 400px; padding: var(--space-2xl); background: var(--bg-surface); border: var(--border-default); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); }
 .login-logo { display: flex; align-items: center; justify-content: center; gap: var(--space-md); margin-bottom: var(--space-xl); }
 .login-logo img { height: 48px; width: auto; }
