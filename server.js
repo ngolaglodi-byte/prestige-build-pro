@@ -24,6 +24,25 @@ const containerMapping = new Map();
 const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
+// ─── ERROR MANAGEMENT SYSTEM CONSTANTS ───
+const MAX_AUTO_CORRECTION_ATTEMPTS = 3;
+const CONTAINER_MONITORING_INTERVAL = 30000; // 30 seconds
+const ERROR_TYPES = {
+  SYNTAX: 'syntax',
+  DEPENDENCY: 'dependency',
+  PORT: 'port',
+  SQLITE: 'sqlite',
+  MEMORY: 'memory',
+  TIMEOUT: 'timeout',
+  UNKNOWN: 'unknown'
+};
+
+// In-memory tracking of auto-correction attempts per project
+const correctionAttempts = new Map();
+
+// In-memory tracking of projects being auto-corrected (to prevent concurrent corrections)
+const correctionInProgress = new Set();
+
 // Ensure previews directory exists
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
@@ -45,6 +64,7 @@ try {
     CREATE TABLE IF NOT EXISTS builds (id TEXT PRIMARY KEY, project_id INTEGER, status TEXT DEFAULT 'building', progress INTEGER DEFAULT 0, message TEXT, url TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version_number INTEGER NOT NULL, generated_code TEXT, screenshot_url TEXT, created_by INTEGER, created_at TEXT DEFAULT (datetime('now')), message TEXT, FOREIGN KEY(project_id) REFERENCES projects(id));
+    CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, error_type TEXT NOT NULL, error_message TEXT, docker_logs TEXT, correction_attempt INTEGER DEFAULT 1, corrected INTEGER DEFAULT 0, corrected_code TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
   `);
   const bcrypt = require('bcryptjs');
   if (!db.prepare("SELECT id FROM users WHERE role='admin'").get()) {
@@ -929,6 +949,14 @@ async function buildDockerProject(projectId, code, onProgress) {
       fs.writeFileSync(filePath, content);
     }
 
+    // Step 2.5: Syntax check before building (35%)
+    onProgress({ step: 2, progress: 35, message: 'Vérification de la syntaxe...' });
+    const syntaxResult = checkSyntax(projectDir);
+    if (!syntaxResult.valid) {
+      console.log('Syntax error detected, throwing for auto-correction');
+      throw new Error(`Erreur de syntaxe: ${syntaxResult.error}`);
+    }
+
     // Create Dockerfile for the project
     // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
     const jwtSecret = crypto.randomBytes(32).toString('hex');
@@ -985,6 +1013,468 @@ CMD ["node", "server.js"]
   } catch (e) {
     console.error('Docker build failed:', e.message);
     throw e;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROFESSIONAL ERROR MANAGEMENT SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Detect error type from Docker logs or error message
+function detectErrorType(logs, errorMessage = '') {
+  const combined = (logs + ' ' + errorMessage).toLowerCase();
+  
+  // Syntax errors
+  if (combined.includes('syntaxerror') || combined.includes('unexpected token') || 
+      combined.includes('unexpected identifier') || combined.includes('parsing error')) {
+    return ERROR_TYPES.SYNTAX;
+  }
+  
+  // Dependency errors
+  if (combined.includes('cannot find module') || combined.includes('module not found') ||
+      combined.includes('npm err!') || combined.includes('error: cannot find package')) {
+    return ERROR_TYPES.DEPENDENCY;
+  }
+  
+  // Port errors
+  if (combined.includes('eaddrinuse') || combined.includes('address already in use') ||
+      combined.includes('port') && combined.includes('already')) {
+    return ERROR_TYPES.PORT;
+  }
+  
+  // SQLite errors
+  if (combined.includes('sqlite') && (combined.includes('error') || combined.includes('constraint') ||
+      combined.includes('malformed') || combined.includes('corrupt'))) {
+    return ERROR_TYPES.SQLITE;
+  }
+  
+  // Memory errors
+  if (combined.includes('heap out of memory') || combined.includes('allocation failed') ||
+      combined.includes('oom') || combined.includes('killed')) {
+    return ERROR_TYPES.MEMORY;
+  }
+  
+  // Timeout errors
+  if (combined.includes('timeout') || combined.includes('timed out')) {
+    return ERROR_TYPES.TIMEOUT;
+  }
+  
+  return ERROR_TYPES.UNKNOWN;
+}
+
+// Translate error type to French for user display
+function translateErrorType(errorType) {
+  const translations = {
+    [ERROR_TYPES.SYNTAX]: 'Erreur de syntaxe JavaScript',
+    [ERROR_TYPES.DEPENDENCY]: 'Module npm manquant',
+    [ERROR_TYPES.PORT]: 'Port déjà utilisé',
+    [ERROR_TYPES.SQLITE]: 'Erreur de base de données SQLite',
+    [ERROR_TYPES.MEMORY]: 'Limite de mémoire atteinte',
+    [ERROR_TYPES.TIMEOUT]: 'Délai de démarrage dépassé',
+    [ERROR_TYPES.UNKNOWN]: 'Erreur de démarrage'
+  };
+  return translations[errorType] || translations[ERROR_TYPES.UNKNOWN];
+}
+
+// Check syntax before container build using node --check
+function checkSyntax(projectDir) {
+  const serverJsPath = path.join(projectDir, 'server.js');
+  if (!fs.existsSync(serverJsPath)) {
+    return { valid: true };
+  }
+  
+  try {
+    execSync(`node --check "${serverJsPath}"`, { encoding: 'utf8', timeout: 10000 });
+    return { valid: true };
+  } catch (e) {
+    return { 
+      valid: false, 
+      error: e.message,
+      type: ERROR_TYPES.SYNTAX
+    };
+  }
+}
+
+// Extract missing module name from error logs
+function extractMissingModule(logs) {
+  const patterns = [
+    /Cannot find module ['"]([^'"]+)['"]/i,
+    /Error: Cannot find package ['"]([^'"]+)['"]/i,
+    /Module not found: Error:.*['"]([^'"]+)['"]/i
+  ];
+  
+  for (const pattern of patterns) {
+    const match = logs.match(pattern);
+    if (match && match[1]) {
+      // Clean up the module name (remove relative paths)
+      let moduleName = match[1];
+      if (!moduleName.startsWith('.') && !moduleName.startsWith('/')) {
+        // Get the base package name (e.g., 'express' from 'express/lib/router')
+        return moduleName.split('/')[0];
+      }
+    }
+  }
+  return null;
+}
+
+// Find a free port starting from 3000
+function findFreePort(startPort = 3001) {
+  for (let port = startPort; port < startPort + 100; port++) {
+    try {
+      const result = execSync(`lsof -i :${port} 2>/dev/null || true`, { encoding: 'utf8' });
+      if (!result.trim()) {
+        return port;
+      }
+    } catch (e) {
+      return port; // If command fails, assume port is free
+    }
+  }
+  return startPort + Math.floor(Math.random() * 100);
+}
+
+// Log error to database
+function logError(projectId, errorType, errorMessage, dockerLogs, attempt) {
+  if (!db) return;
+  try {
+    db.prepare('INSERT INTO error_history (project_id, error_type, error_message, docker_logs, correction_attempt) VALUES (?,?,?,?,?)')
+      .run(projectId, errorType, errorMessage, dockerLogs, attempt);
+  } catch (e) {
+    console.error('Failed to log error:', e.message);
+  }
+}
+
+// Mark error as corrected in database
+function markErrorCorrected(projectId, correctedCode) {
+  if (!db) return;
+  try {
+    db.prepare('UPDATE error_history SET corrected = 1, corrected_code = ? WHERE project_id = ? AND corrected = 0 ORDER BY id DESC LIMIT 1')
+      .run(correctedCode, projectId);
+  } catch (e) {
+    console.error('Failed to mark error corrected:', e.message);
+  }
+}
+
+// Call Claude API for code correction (non-streaming)
+async function callClaudeForCorrection(originalCode, errorLogs, errorType) {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('Clé API Claude non configurée');
+  }
+  
+  const correctionPrompt = `Tu es un expert en développement Node.js. Le code suivant a généré une erreur.
+
+## Type d'erreur détecté: ${translateErrorType(errorType)}
+
+## Logs d'erreur:
+\`\`\`
+${errorLogs.substring(0, 2000)}
+\`\`\`
+
+## Code original:
+\`\`\`
+${originalCode}
+\`\`\`
+
+## Ta mission:
+1. Analyse l'erreur et identifie la cause exacte
+2. Corrige le code pour résoudre cette erreur
+3. Assure-toi que le code est fonctionnel et démarrera correctement
+
+## Instructions spécifiques selon l'erreur:
+- Erreur de syntaxe: Corrige les erreurs de syntaxe JavaScript
+- Module manquant: Ajoute le package dans le package.json et utilise une alternative si indisponible
+- Port utilisé: Utilise process.env.PORT || 3000 et ajoute une logique de port dynamique
+- Erreur SQLite: Vérifie la structure des tables et les requêtes SQL
+- Mémoire: Optimise le code pour réduire la consommation mémoire
+
+RETOURNE UNIQUEMENT le code corrigé complet en utilisant le format ### pour chaque fichier.
+Exemple:
+### package.json
+{...}
+### server.js
+const express = require('express');
+...
+### public/index.html
+<!DOCTYPE html>
+...
+
+Ne retourne AUCUNE explication, SEULEMENT le code corrigé.`;
+
+  return new Promise((resolve, reject) => {
+    const messages = [{ role: 'user', content: correctionPrompt }];
+    const payload = JSON.stringify({ 
+      model: 'claude-sonnet-4-20250514', 
+      max_tokens: 8000, 
+      messages 
+    });
+    
+    const opts = { 
+      hostname: 'api.anthropic.com', 
+      path: '/v1/messages', 
+      method: 'POST', 
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+    
+    const req = https.request(opts, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.content && response.content[0] && response.content[0].text) {
+            resolve(response.content[0].text);
+          } else if (response.error) {
+            reject(new Error(response.error.message || 'Erreur API Claude'));
+          } else {
+            reject(new Error('Réponse API invalide'));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Auto-correction cycle for a project
+async function autoCorrectProject(projectId, onProgress) {
+  // Prevent concurrent corrections
+  if (correctionInProgress.has(projectId)) {
+    console.log(`Correction already in progress for project ${projectId}`);
+    return { success: false, reason: 'correction_in_progress' };
+  }
+  
+  correctionInProgress.add(projectId);
+  
+  try {
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+    if (!project || !project.generated_code) {
+      return { success: false, reason: 'no_code' };
+    }
+    
+    // Get current attempt count
+    const currentAttempts = correctionAttempts.get(projectId) || 0;
+    
+    if (currentAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+      // Max attempts reached - notify the user
+      const lastError = db.prepare('SELECT * FROM error_history WHERE project_id = ? ORDER BY id DESC LIMIT 1').get(projectId);
+      return { 
+        success: false, 
+        reason: 'max_attempts', 
+        attempts: currentAttempts,
+        lastError: lastError ? translateErrorType(lastError.error_type) : 'Erreur inconnue'
+      };
+    }
+    
+    // Get Docker logs
+    const logs = getContainerLogs(projectId, 200);
+    const errorType = detectErrorType(logs);
+    
+    onProgress?.({ 
+      step: 'detecting', 
+      message: 'Erreur détectée — analyse en cours',
+      errorType: translateErrorType(errorType)
+    });
+    
+    // Log the error
+    logError(projectId, errorType, logs.substring(0, 500), logs, currentAttempts + 1);
+    
+    // Increment attempt counter
+    correctionAttempts.set(projectId, currentAttempts + 1);
+    
+    onProgress?.({ 
+      step: 'correcting', 
+      message: 'Correction en cours via Prestige AI',
+      attempt: currentAttempts + 1
+    });
+    
+    // Call Claude for correction
+    const correctedCode = await callClaudeForCorrection(project.generated_code, logs, errorType);
+    
+    // Update project with corrected code
+    db.prepare("UPDATE projects SET generated_code=?, updated_at=datetime('now') WHERE id=?")
+      .run(correctedCode, projectId);
+    
+    // Mark error as corrected
+    markErrorCorrected(projectId, correctedCode);
+    
+    onProgress?.({ 
+      step: 'rebuilding', 
+      message: 'Correction appliquée — reconstruction'
+    });
+    
+    // Stop old container
+    stopContainer(projectId);
+    
+    // Rebuild with corrected code
+    const result = await buildDockerProject(projectId, correctedCode, (p) => {
+      onProgress?.({ 
+        step: 'building', 
+        progress: p.progress,
+        message: p.message
+      });
+    });
+    
+    if (result.success) {
+      // Reset attempt counter on success
+      correctionAttempts.delete(projectId);
+      onProgress?.({ 
+        step: 'done', 
+        message: 'Projet corrigé et redémarré avec succès'
+      });
+      return { success: true, url: result.url };
+    } else {
+      // If still failing, check attempts before trying again
+      const updatedAttempts = correctionAttempts.get(projectId) || 0;
+      if (updatedAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+        return { 
+          success: false, 
+          reason: 'max_attempts',
+          attempts: updatedAttempts,
+          lastError: 'Build échoué après correction'
+        };
+      }
+      // Try again recursively
+      return await autoCorrectProject(projectId, onProgress);
+    }
+    
+  } catch (e) {
+    console.error('Auto-correction failed:', e.message);
+    
+    const currentAttempts = correctionAttempts.get(projectId) || 0;
+    
+    // Always check attempts before recursing
+    if (currentAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+      return { 
+        success: false, 
+        reason: 'max_attempts',
+        attempts: currentAttempts,
+        error: e.message
+      };
+    }
+    
+    // Increment attempts before retrying
+    correctionAttempts.set(projectId, currentAttempts + 1);
+    
+    // Check again after increment
+    if (correctionAttempts.get(projectId) >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+      return { 
+        success: false, 
+        reason: 'max_attempts',
+        attempts: correctionAttempts.get(projectId),
+        error: e.message
+      };
+    }
+    
+    // Try again
+    return await autoCorrectProject(projectId, onProgress);
+    
+  } finally {
+    correctionInProgress.delete(projectId);
+  }
+}
+
+// Monitor all active containers every 30 seconds
+async function monitorContainers() {
+  if (!db || !isDockerAvailable()) return;
+  
+  try {
+    const projects = db.prepare("SELECT id, user_id, title FROM projects WHERE build_status = 'done'").all();
+    
+    for (const project of projects) {
+      // Check if container should be running but isn't
+      if (!isContainerRunning(project.id)) {
+        const containerName = getContainerName(project.id);
+        console.log(`Container ${containerName} stopped unexpectedly. Attempting restart...`);
+        
+        // Try simple restart first
+        try {
+          execDocker(`docker start ${containerName}`, { timeout: 10000 });
+          await new Promise(r => setTimeout(r, 3000));
+          
+          // Check if healthy now
+          const healthy = await waitForContainerHealth(project.id, 10000);
+          if (healthy) {
+            const ip = getContainerIP(project.id);
+            if (ip) containerMapping.set(project.id, ip);
+            console.log(`Container ${containerName} restarted successfully`);
+            
+            // Add notification for user
+            db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
+              .run(project.user_id, `Le projet "${project.title}" a été redémarré automatiquement.`, 'info');
+          } else {
+            // Container not healthy after restart - trigger auto-correction
+            console.log(`Container ${containerName} unhealthy after restart. Triggering auto-correction...`);
+            
+            autoCorrectProject(project.id, (p) => {
+              console.log(`Auto-correction ${project.id}: ${p.message}`);
+            }).then(result => {
+              if (result.success) {
+                db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
+                  .run(project.user_id, `Le projet "${project.title}" a été corrigé automatiquement par Prestige AI.`, 'success');
+              } else if (result.reason === 'max_attempts') {
+                db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
+                  .run(project.user_id, `Le projet "${project.title}" nécessite votre attention. ${result.lastError || ''}`, 'warning');
+              }
+            });
+          }
+        } catch (e) {
+          console.error(`Failed to restart container ${containerName}:`, e.message);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Container monitoring error:', e.message);
+  }
+}
+
+// Translate Docker logs to user-friendly French messages
+function translateLogsToFrench(logs) {
+  const translations = [
+    { pattern: /Server running on port (\d+)/gi, replacement: '🟢 Serveur démarré sur le port $1' },
+    { pattern: /listening on.*port.*(\d+)/gi, replacement: '🟢 Écoute sur le port $1' },
+    { pattern: /Connected to database/gi, replacement: '📦 Connecté à la base de données' },
+    { pattern: /Database connection established/gi, replacement: '📦 Connexion base de données établie' },
+    { pattern: /Express server started/gi, replacement: '🟢 Serveur Express démarré' },
+    { pattern: /npm WARN/gi, replacement: '⚠️ Avertissement npm' },
+    { pattern: /npm ERR!/gi, replacement: '❌ Erreur npm' },
+    { pattern: /SyntaxError/gi, replacement: '❌ Erreur de syntaxe' },
+    { pattern: /ReferenceError/gi, replacement: '❌ Variable non définie' },
+    { pattern: /TypeError/gi, replacement: '❌ Erreur de type' },
+    { pattern: /Cannot find module/gi, replacement: '❌ Module introuvable' },
+    { pattern: /EADDRINUSE/gi, replacement: '⚠️ Port déjà utilisé' },
+    { pattern: /ECONNREFUSED/gi, replacement: '⚠️ Connexion refusée' },
+    { pattern: /Error:/gi, replacement: '❌ Erreur:' },
+    { pattern: /Warning:/gi, replacement: '⚠️ Attention:' },
+    { pattern: /Starting/gi, replacement: '🔄 Démarrage' },
+    { pattern: /Ready/gi, replacement: '✅ Prêt' },
+    { pattern: /Shutting down/gi, replacement: '🛑 Arrêt en cours' },
+    { pattern: /health check/gi, replacement: 'vérification santé' }
+  ];
+  
+  let translatedLogs = logs;
+  for (const { pattern, replacement } of translations) {
+    translatedLogs = translatedLogs.replace(pattern, replacement);
+  }
+  
+  return translatedLogs;
+}
+
+// Get error history for a project
+function getErrorHistory(projectId) {
+  if (!db) return [];
+  try {
+    return db.prepare('SELECT * FROM error_history WHERE project_id = ? ORDER BY id DESC LIMIT 10').all(projectId);
+  } catch (e) {
+    return [];
   }
 }
 
@@ -1401,36 +1891,110 @@ const server = http.createServer(async (req, res) => {
     const buildId=crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO builds (id,project_id,status,progress,message) VALUES (?,?,?,?,?)').run(buildId,project_id,'building',0,'Démarrage...');
     db.prepare("UPDATE projects SET build_id=?,build_status='building' WHERE id=?").run(buildId,project_id);
+    
+    // Reset correction attempts for new build
+    correctionAttempts.delete(project_id);
+    
     json(res,200,{buildId});
     
     // Check if Docker is available for isolated preview
     if (isDockerAvailable() && mode !== 'legacy') {
-      // Docker isolated preview system
+      // Docker isolated preview system with auto-correction
       const friendly = {
         1: 'Analyse du code généré...',
         2: 'Écriture des fichiers du projet...',
         3: 'Construction de l\'environnement...',
         4: 'Lancement du projet...',
         5: 'Vérification du démarrage...',
-        6: 'Prêt !'
+        6: 'Prêt !',
+        'detecting': 'Erreur détectée — analyse en cours...',
+        'correcting': 'Prestige AI optimise votre projet...',
+        'rebuilding': 'Correction appliquée — reconstruction...',
+        'building': 'Construction en cours...'
       };
       
-      buildDockerProject(project_id, project.generated_code, (p) => {
-        db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress, friendly[p.step] || p.message || 'Construction en cours...', buildId);
-      }).then(result => {
-        if (result.success) {
-          db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(result.url, buildId);
-          db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(result.url, project_id);
-          db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id, `Projet "${project.title}" prêt à explorer !`, 'success');
-        } else {
-          db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run('Une erreur est survenue. Vérifiez les logs.', buildId);
-          db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
+      const attemptBuild = async (code, attempt = 1) => {
+        try {
+          const result = await buildDockerProject(project_id, code, (p) => {
+            const msg = friendly[p.step] || p.message || 'Construction en cours...';
+            db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress || 0, msg, buildId);
+          });
+          
+          if (result.success) {
+            db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(result.url, buildId);
+            db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(result.url, project_id);
+            db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id, `Projet "${project.title}" prêt à explorer !`, 'success');
+            return true;
+          }
+          return false;
+        } catch (err) {
+          console.error(`Build attempt ${attempt} failed:`, err.message);
+          
+          // Check if we should try auto-correction
+          if (attempt <= MAX_AUTO_CORRECTION_ATTEMPTS) {
+            db.prepare('UPDATE builds SET message=? WHERE id=?').run(friendly['detecting'], buildId);
+            
+            // Get logs for error analysis
+            const logs = getContainerLogs(project_id, 200);
+            const errorType = detectErrorType(logs, err.message);
+            
+            // Log error to database
+            logError(project_id, errorType, err.message, logs, attempt);
+            
+            db.prepare('UPDATE builds SET message=? WHERE id=?').run(
+              `${friendly['correcting']} (tentative ${attempt}/${MAX_AUTO_CORRECTION_ATTEMPTS})`, 
+              buildId
+            );
+            
+            try {
+              // Get current code from project
+              const currentProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(project_id);
+              
+              // Call Claude for correction
+              const correctedCode = await callClaudeForCorrection(currentProject.generated_code, logs, errorType);
+              
+              // Update project with corrected code
+              db.prepare("UPDATE projects SET generated_code=?, updated_at=datetime('now') WHERE id=?")
+                .run(correctedCode, project_id);
+              
+              // Mark error as corrected
+              markErrorCorrected(project_id, correctedCode);
+              
+              db.prepare('UPDATE builds SET message=? WHERE id=?').run(friendly['rebuilding'], buildId);
+              
+              // Stop old container
+              stopContainer(project_id);
+              
+              // Try building with corrected code
+              return await attemptBuild(correctedCode, attempt + 1);
+              
+            } catch (correctionErr) {
+              console.error('Auto-correction failed:', correctionErr.message);
+              // Continue to next attempt or fail
+              return await attemptBuild(code, attempt + 1);
+            }
+          } else {
+            // Max attempts reached
+            const lastError = db.prepare('SELECT error_type FROM error_history WHERE project_id = ? ORDER BY id DESC LIMIT 1').get(project_id);
+            const errorMsg = lastError ? translateErrorType(lastError.error_type) : 'Erreur de construction';
+            
+            db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run(
+              `Après ${MAX_AUTO_CORRECTION_ATTEMPTS} tentatives, le projet nécessite votre attention. ${errorMsg}`, 
+              buildId
+            );
+            db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
+            db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(
+              project.user_id, 
+              `Le projet "${project.title}" nécessite une simplification. Essayez de simplifier vos requêtes.`, 
+              'warning'
+            );
+            return false;
+          }
         }
-      }).catch(err => {
-        console.error('Docker build error:', err.message);
-        db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run('Erreur: ' + (err.message || 'Construction échouée'), buildId);
-        db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
-      });
+      };
+      
+      attemptBuild(project.generated_code, 1);
+      
     } else if (compiler) {
       // Legacy compiler fallback
       const friendly = {1:'Analyse et organisation du projet...',2:'Mise en place des composants...',3:'Application du design et des styles...',4:'Optimisation et finalisation...',5:'Vérification du résultat...',6:'Prêt !'};
@@ -1632,7 +2196,12 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM project_versions WHERE project_id=?').run(id);
     db.prepare('DELETE FROM analytics WHERE project_id=?').run(id);
     db.prepare('DELETE FROM builds WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM error_history WHERE project_id=?').run(id);
     db.prepare('DELETE FROM projects WHERE id=?').run(id);
+    
+    // Clean up correction attempts tracking
+    correctionAttempts.delete(id);
+    correctionInProgress.delete(id);
     
     // Clean up preview files
     const previewDir = path.join(PREVIEWS_DIR, String(id));
@@ -1678,8 +2247,69 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     
-    const logs = getContainerLogs(id, 100);
-    json(res, 200, { logs, container: getContainerName(id), running: isContainerRunning(id) });
+    const rawLogs = getContainerLogs(id, 100);
+    const translatedLogs = translateLogsToFrench(rawLogs);
+    const errorHistory = getErrorHistory(id);
+    
+    json(res, 200, { 
+      logs: translatedLogs, 
+      rawLogs,
+      container: getContainerName(id), 
+      running: isContainerRunning(id),
+      errorHistory: errorHistory.map(e => ({
+        type: translateErrorType(e.error_type),
+        attempt: e.correction_attempt,
+        corrected: e.corrected === 1,
+        timestamp: e.created_at
+      }))
+    });
+    return;
+  }
+
+  // ─── PROJECT ERROR HISTORY ───
+  if (url.match(/^\/api\/projects\/\d+\/errors$/) && req.method==='GET') {
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    
+    const errorHistory = getErrorHistory(id);
+    json(res, 200, errorHistory.map(e => ({
+      id: e.id,
+      type: e.error_type,
+      typeFr: translateErrorType(e.error_type),
+      message: e.error_message,
+      attempt: e.correction_attempt,
+      corrected: e.corrected === 1,
+      timestamp: e.created_at
+    })));
+    return;
+  }
+
+  // ─── PROJECT AUTO-CORRECT ───
+  if (url.match(/^\/api\/projects\/\d+\/auto-correct$/) && req.method==='POST') {
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    
+    if (!isDockerAvailable()) {
+      json(res, 503, { error: 'Docker non disponible.' });
+      return;
+    }
+    
+    // Reset correction attempts
+    correctionAttempts.delete(id);
+    
+    // Trigger auto-correction
+    autoCorrectProject(id, (progress) => {
+      console.log(`Auto-correct ${id}:`, progress);
+    }).then(result => {
+      if (result.success) {
+        db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)')
+          .run(p.user_id, `Projet "${p.title}" corrigé automatiquement par Prestige AI.`, 'success');
+      }
+    });
+    
+    json(res, 200, { ok: true, message: 'Correction automatique lancée.' });
     return;
   }
 
@@ -1891,4 +2521,10 @@ server.listen(PORT, ()=>{
   
   // Initialize Docker preview system
   initializeDockerSystem();
+  
+  // Start container monitoring (every 30 seconds)
+  if (isDockerAvailable()) {
+    console.log('Starting container monitoring (30s interval)...');
+    setInterval(monitorContainers, CONTAINER_MONITORING_INTERVAL);
+  }
 });
