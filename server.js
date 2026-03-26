@@ -422,6 +422,24 @@ DASHBOARD → sidebar, Chart.js, CRUD complet, exports
 // Track active Claude Code processes per project
 const claudeCodeProcesses = new Map();
 
+// Timeout for Claude Code generation (5 minutes)
+const CLAUDE_CODE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// Check if Claude Code CLI is available on this system
+let _claudeCodeAvailable = null;
+function isClaudeCodeAvailable() {
+  if (_claudeCodeAvailable !== null) return _claudeCodeAvailable;
+  try {
+    execSync('which claude', { timeout: 5000, stdio: 'pipe' });
+    _claudeCodeAvailable = true;
+    console.log('[Claude Code] CLI detected and available');
+  } catch {
+    _claudeCodeAvailable = false;
+    console.warn('[Claude Code] CLI not found — will use API fallback for generation');
+  }
+  return _claudeCodeAvailable;
+}
+
 // ─── GENERATE CLAUDE CODE (SERVER-SIDE, ISOLATED PER PROJECT) ───
 // Note: options parameter reserved for future extensibility (e.g., timeout, max retries)
 function generateClaudeCode(projectId, brief, jobId, options = {}) {
@@ -491,13 +509,24 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   
   // Store process reference
   claudeCodeProcesses.set(projectId, claudeProcess);
-  
+
+  // Timeout: kill process if it takes too long
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    console.warn(`[Claude Code] Timeout after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s for project ${projectId}`);
+    claudeProcess.kill('SIGTERM');
+    setTimeout(() => {
+      try { claudeProcess.kill('SIGKILL'); } catch {}
+    }, 5000);
+  }, CLAUDE_CODE_TIMEOUT_MS);
+
   // Capture stdout in real-time
   claudeProcess.stdout.on('data', (data) => {
     const output = data.toString();
     job.claudeCodeOutput += output;
     job.progress = job.claudeCodeOutput.length;
-    
+
     // Parse output for user-friendly messages
     if (output.includes('package.json')) {
       job.progressMessage = 'Création du fichier package.json...';
@@ -514,48 +543,68 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
     } else if (output.includes('ERROR') || output.includes('error')) {
       job.progressMessage = 'Correction en cours...';
     }
-    
+
     console.log(`[Claude Code] Output: ${output.substring(0, 200)}...`);
   });
-  
+
   // Capture stderr
   claudeProcess.stderr.on('data', (data) => {
     const errorOutput = data.toString();
     job.claudeCodeOutput += `[stderr] ${errorOutput}`;
     console.error(`[Claude Code] stderr: ${errorOutput}`);
   });
-  
+
   // Handle process completion
   claudeProcess.on('close', (code) => {
-    console.log(`[Claude Code] Process exited with code ${code}`);
+    clearTimeout(timeout);
+    console.log(`[Claude Code] Process exited with code ${code}${timedOut ? ' (timeout)' : ''}`);
     claudeCodeProcesses.delete(projectId);
-    
+
+    if (timedOut) {
+      // Timeout: fall back to API generation
+      console.warn(`[Claude Code] Timed out for project ${projectId}, falling back to API`);
+      job.progressMessage = 'Claude Code timeout — basculement vers API...';
+      generateViaAPI(projectId, brief, jobId);
+      return;
+    }
+
     // Check if files were created successfully
     const packageJsonPath = path.join(projectDir, 'package.json');
     const serverJsPath = path.join(projectDir, 'server.js');
     const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
     const readyPath = path.join(projectDir, 'READY');
     const errorPath = path.join(projectDir, 'ERROR');
-    
+
     const packageExists = fs.existsSync(packageJsonPath);
     const serverExists = fs.existsSync(serverJsPath);
     const indexExists = fs.existsSync(indexHtmlPath);
     const readyExists = fs.existsSync(readyPath);
     const errorExists = fs.existsSync(errorPath);
-    
+
     if (errorExists) {
-      job.status = 'error';
-      job.error = 'Claude Code a rencontré des erreurs après plusieurs tentatives.';
+      // Claude Code failed — fall back to API generation
+      console.warn(`[Claude Code] ERROR file found for project ${projectId}, falling back to API`);
+      job.progressMessage = 'Claude Code erreur — basculement vers API...';
+      try { fs.unlinkSync(errorPath); } catch {}
+      generateViaAPI(projectId, brief, jobId);
       return;
     }
-    
+
+    if (code !== 0 && !packageExists && !serverExists && !indexExists) {
+      // Process crashed without producing files — fall back to API
+      console.warn(`[Claude Code] Process failed (code ${code}) with no files, falling back to API`);
+      job.progressMessage = 'Claude Code indisponible — basculement vers API...';
+      generateViaAPI(projectId, brief, jobId);
+      return;
+    }
+
     if (packageExists && serverExists && indexExists) {
       // Read the generated files and format as code for storage
       try {
         const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
         const serverJs = fs.readFileSync(serverJsPath, 'utf8');
         const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-        
+
         // Format as the expected code output with markers
         job.code = `### package.json
 ${packageJson}
@@ -565,7 +614,7 @@ ${serverJs}
 
 ### public/index.html
 ${indexHtml}`;
-        
+
         job.status = 'done';
         job.progressMessage = 'Projet généré avec succès !';
         console.log(`[Claude Code] Generation successful for project ${projectId}`);
@@ -577,7 +626,7 @@ ${indexHtml}`;
     } else {
       // Files missing - use default files as fallback
       console.warn(`[Claude Code] Some files missing, using defaults. Package: ${packageExists}, Server: ${serverExists}, Index: ${indexExists}`);
-      
+
       // Write default files
       if (!packageExists) {
         fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
@@ -588,12 +637,12 @@ ${indexHtml}`;
       if (!indexExists) {
         fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
       }
-      
+
       // Read the files (now including defaults)
       const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
       const serverJs = fs.readFileSync(serverJsPath, 'utf8');
       const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-      
+
       job.code = `### package.json
 ${packageJson}
 
@@ -602,18 +651,21 @@ ${serverJs}
 
 ### public/index.html
 ${indexHtml}`;
-      
+
       job.status = 'done';
       job.progressMessage = 'Projet généré avec fichiers par défaut.';
     }
   });
-  
-  // Handle process errors
+
+  // Handle process errors (e.g., ENOENT if claude binary not found)
   claudeProcess.on('error', (err) => {
+    clearTimeout(timeout);
     console.error(`[Claude Code] Process error: ${err.message}`);
     claudeCodeProcesses.delete(projectId);
-    job.status = 'error';
-    job.error = `Erreur Claude Code: ${err.message}`;
+    // Fall back to API generation instead of failing
+    console.warn(`[Claude Code] Spawning failed, falling back to API generation`);
+    job.progressMessage = 'Claude Code indisponible — basculement vers API...';
+    generateViaAPI(projectId, brief, jobId);
   });
 }
 
@@ -662,13 +714,24 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   
   // Store process reference
   claudeCodeProcesses.set(projectId, claudeProcess);
-  
+
+  // Timeout: kill process if it takes too long
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    console.warn(`[Claude Code Chat] Timeout after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s for project ${projectId}`);
+    claudeProcess.kill('SIGTERM');
+    setTimeout(() => {
+      try { claudeProcess.kill('SIGKILL'); } catch {}
+    }, 5000);
+  }, CLAUDE_CODE_TIMEOUT_MS);
+
   // Capture stdout in real-time
   claudeProcess.stdout.on('data', (data) => {
     const output = data.toString();
     job.claudeCodeOutput += output;
     job.progress = job.claudeCodeOutput.length;
-    
+
     // Parse output for user-friendly messages
     if (output.includes('Modifying') || output.includes('Editing')) {
       job.progressMessage = 'Modification des fichiers...';
@@ -690,29 +753,34 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   
   // Handle process completion
   claudeProcess.on('close', (code) => {
-    console.log(`[Claude Code Chat] Process exited with code ${code}`);
+    clearTimeout(timeout);
+    console.log(`[Claude Code Chat] Process exited with code ${code}${timedOut ? ' (timeout)' : ''}`);
     claudeCodeProcesses.delete(projectId);
-    
+
+    if (timedOut) {
+      job.status = 'error';
+      job.error = 'Claude Code a dépassé le délai maximum (5 min). Réessayez.';
+      return;
+    }
+
     // Read the modified files
     const packageJsonPath = path.join(projectDir, 'package.json');
     const serverJsPath = path.join(projectDir, 'server.js');
     const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
     const errorPath = path.join(projectDir, 'ERROR');
-    
+
     if (fs.existsSync(errorPath)) {
       job.status = 'error';
       job.error = 'Claude Code n\'a pas pu appliquer les modifications.';
-      // Clean up ERROR file for next attempt
       try { fs.unlinkSync(errorPath); } catch (e) { console.warn('Could not remove ERROR file:', e.message); }
       return;
     }
-    
+
     try {
       const packageJson = fs.existsSync(packageJsonPath) ? fs.readFileSync(packageJsonPath, 'utf8') : DEFAULT_PACKAGE_JSON;
       const serverJs = fs.existsSync(serverJsPath) ? fs.readFileSync(serverJsPath, 'utf8') : DEFAULT_SERVER_JS;
       const indexHtml = fs.existsSync(indexHtmlPath) ? fs.readFileSync(indexHtmlPath, 'utf8') : DEFAULT_INDEX_HTML;
-      
-      // Format as the expected code output with markers
+
       job.code = `### package.json
 ${packageJson}
 
@@ -721,12 +789,11 @@ ${serverJs}
 
 ### public/index.html
 ${indexHtml}`;
-      
+
       job.status = 'done';
       job.progressMessage = 'Modifications appliquées avec succès !';
       console.log(`[Claude Code Chat] Modification successful for project ${projectId}`);
-      
-      // Clean up READY file if exists
+
       const readyPath = path.join(projectDir, 'READY');
       try { if (fs.existsSync(readyPath)) fs.unlinkSync(readyPath); } catch (e) { console.warn('Could not remove READY file:', e.message); }
     } catch (readErr) {
@@ -735,36 +802,189 @@ ${indexHtml}`;
       console.error(`[Claude Code Chat] Error reading files: ${readErr.message}`);
     }
   });
-  
+
   // Handle process errors
   claudeProcess.on('error', (err) => {
+    clearTimeout(timeout);
     console.error(`[Claude Code Chat] Process error: ${err.message}`);
     claudeCodeProcesses.delete(projectId);
     job.status = 'error';
-    job.error = `Erreur Claude Code: ${err.message}`;
+    job.error = `Erreur Claude Code: ${err.message}. Réessayez.`;
   });
+}
+
+// ─── API FALLBACK: Generate project files via direct Anthropic API ───
+// Used when Claude Code CLI is unavailable, times out, or errors out.
+// Streams from the API, parses ### markers, writes files to project dir.
+function generateViaAPI(projectId, brief, jobId) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
+
+  if (!ANTHROPIC_API_KEY) {
+    job.status = 'error';
+    job.error = 'Clé API Anthropic non configurée (ANTHROPIC_API_KEY).';
+    return;
+  }
+
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
+  const publicDir = path.join(projectDir, 'public');
+  if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+
+  job.status = 'running';
+  job.progressMessage = 'Génération via API Anthropic...';
+  console.log(`[API Fallback] Starting generation for project ${projectId}`);
+
+  const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
+  const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
+  const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+
+  const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.`;
+
+  const payload = JSON.stringify({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    stream: true,
+    messages: [{ role: 'user', content: userPrompt }]
+  });
+
+  const opts = {
+    hostname: 'api.anthropic.com',
+    path: '/v1/messages',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Length': Buffer.byteLength(payload)
+    }
+  };
+
+  let accumulatedCode = '';
+
+  const r = https.request(opts, apiRes => {
+    if (apiRes.statusCode !== 200) {
+      let errorBody = '';
+      apiRes.on('data', chunk => { errorBody += chunk.toString(); });
+      apiRes.on('end', () => {
+        console.error(`[API Fallback] API returned ${apiRes.statusCode}: ${errorBody.substring(0, 500)}`);
+        job.status = 'error';
+        job.error = `Erreur API Anthropic (${apiRes.statusCode}). Vérifiez la clé API.`;
+      });
+      return;
+    }
+
+    apiRes.on('data', chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (d.type === 'content_block_delta' && d.delta?.text) {
+            accumulatedCode += d.delta.text;
+            job.code = accumulatedCode;
+            job.progress = accumulatedCode.length;
+
+            // Update progress message based on content
+            const text = d.delta.text;
+            if (text.includes('package.json')) job.progressMessage = 'Génération du package.json...';
+            else if (text.includes('server.js')) job.progressMessage = 'Génération du backend Express...';
+            else if (text.includes('index.html')) job.progressMessage = 'Génération du frontend...';
+          }
+          if (d.type === 'message_stop') {
+            // Write generated files to project directory
+            try {
+              writeGeneratedFiles(projectDir, accumulatedCode);
+              job.status = 'done';
+              job.progressMessage = 'Projet généré avec succès via API !';
+              console.log(`[API Fallback] Generation successful for project ${projectId}`);
+            } catch (writeErr) {
+              console.error(`[API Fallback] Error writing files: ${writeErr.message}`);
+              // Still mark as done — the code is in job.code for Docker build
+              job.status = 'done';
+              job.progressMessage = 'Projet généré (écriture fichiers partielle).';
+            }
+          }
+        } catch (e) {
+          // Ignore JSON parse errors for non-data lines
+        }
+      }
+    });
+
+    apiRes.on('error', e => {
+      console.error(`[API Fallback] Stream error: ${e.message}`);
+      job.status = 'error';
+      job.error = `Erreur de stream API: ${e.message}`;
+    });
+  });
+
+  r.on('error', e => {
+    console.error(`[API Fallback] Request error: ${e.message}`);
+    job.status = 'error';
+    job.error = `Erreur de connexion API: ${e.message}`;
+  });
+
+  // Timeout for API request (5 minutes)
+  r.setTimeout(CLAUDE_CODE_TIMEOUT_MS, () => {
+    r.destroy();
+    if (job.status === 'running') {
+      job.status = 'error';
+      job.error = 'Délai dépassé pour la génération API.';
+    }
+  });
+
+  r.write(payload);
+  r.end();
+}
+
+// Write ### marked code sections to files in the project directory
+function writeGeneratedFiles(projectDir, code) {
+  const sections = code.split(/^### /m).filter(s => s.trim());
+  for (const section of sections) {
+    const newlineIdx = section.indexOf('\n');
+    if (newlineIdx === -1) continue;
+    const filename = section.substring(0, newlineIdx).trim();
+    const content = section.substring(newlineIdx + 1).trim();
+
+    if (!filename || !content) continue;
+    // Only write expected files
+    if (!['package.json', 'server.js', 'public/index.html'].includes(filename)) continue;
+
+    const filePath = path.join(projectDir, filename);
+    const fileDir = path.dirname(filePath);
+    if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+    fs.writeFileSync(filePath, content);
+    console.log(`[API Fallback] Wrote ${filename} (${content.length} bytes)`);
+  }
 }
 
 // ─── LEGACY GENERATE CLAUDE (KEPT FOR SMALL OPERATIONS) ───
 function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
-  
+
   // Use Claude Code for project generation instead of direct API
   if (job.project_id) {
     const projectDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
     const serverJsPath = path.join(projectDir, 'server.js');
-    
+
     // Check if this is a modification (existing project with files) vs new generation
     const isModification = fs.existsSync(serverJsPath);
-    
-    if (isModification) {
-      // Use chat modification function for existing projects
-      const userMessage = messages[messages.length - 1]?.content || '';
-      generateClaudeCodeChat(job.project_id, userMessage, jobId);
+
+    if (isClaudeCodeAvailable()) {
+      // Primary path: Claude Code CLI
+      if (isModification) {
+        const userMessage = messages[messages.length - 1]?.content || '';
+        generateClaudeCodeChat(job.project_id, userMessage, jobId);
+      } else {
+        generateClaudeCode(job.project_id, brief || (messages[messages.length - 1]?.content || ''), jobId, options);
+      }
     } else {
-      // New generation
-      generateClaudeCode(job.project_id, brief || (messages[messages.length - 1]?.content || ''), jobId, options);
+      // Fallback: direct API generation (Claude Code not installed)
+      console.warn(`[generateClaude] Claude Code unavailable, using API fallback for project ${job.project_id}`);
+      const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
+      generateViaAPI(job.project_id, effectiveBrief, jobId);
     }
     return;
   }
@@ -972,14 +1192,24 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
   
   // Store process reference
   claudeCodeProcesses.set(projectId, claudeProcess);
-  
+
+  // Timeout: kill process if it takes too long
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    console.warn(`[Claude Code Image] Timeout after ${CLAUDE_CODE_TIMEOUT_MS / 1000}s for project ${projectId}`);
+    claudeProcess.kill('SIGTERM');
+    setTimeout(() => {
+      try { claudeProcess.kill('SIGKILL'); } catch {}
+    }, 5000);
+  }, CLAUDE_CODE_TIMEOUT_MS);
+
   // Capture stdout in real-time
   claudeProcess.stdout.on('data', (data) => {
     const output = data.toString();
     job.claudeCodeOutput += output;
     job.progress = job.claudeCodeOutput.length;
-    
-    // Parse output for user-friendly messages
+
     if (output.includes('Analyzing') || output.includes('image')) {
       job.progressMessage = 'Analyse du design...';
     } else if (output.includes('package.json')) {
@@ -993,45 +1223,52 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
     } else if (output.includes('READY') || output.includes('Success')) {
       job.progressMessage = 'Design reproduit avec succès !';
     }
-    
+
     console.log(`[Claude Code Image] Output: ${output.substring(0, 200)}...`);
   });
-  
+
   // Capture stderr
   claudeProcess.stderr.on('data', (data) => {
     const errorOutput = data.toString();
     job.claudeCodeOutput += `[stderr] ${errorOutput}`;
     console.error(`[Claude Code Image] stderr: ${errorOutput}`);
   });
-  
+
   // Handle process completion
   claudeProcess.on('close', (code) => {
-    console.log(`[Claude Code Image] Process exited with code ${code}`);
+    clearTimeout(timeout);
+    console.log(`[Claude Code Image] Process exited with code ${code}${timedOut ? ' (timeout)' : ''}`);
     claudeCodeProcesses.delete(projectId);
-    
-    // Check if files were created successfully
+
+    if (timedOut) {
+      job.status = 'error';
+      job.error = 'Claude Code a dépassé le délai maximum. Réessayez.';
+      return;
+    }
+
     const packageJsonPath = path.join(projectDir, 'package.json');
     const serverJsPath = path.join(projectDir, 'server.js');
     const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
     const errorPath = path.join(projectDir, 'ERROR');
-    
+
     const packageExists = fs.existsSync(packageJsonPath);
     const serverExists = fs.existsSync(serverJsPath);
     const indexExists = fs.existsSync(indexHtmlPath);
     const errorExists = fs.existsSync(errorPath);
-    
+
     if (errorExists) {
       job.status = 'error';
       job.error = 'Claude Code a rencontré des erreurs lors de la reproduction du design.';
+      try { fs.unlinkSync(errorPath); } catch {}
       return;
     }
-    
+
     if (packageExists && serverExists && indexExists) {
       try {
         const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
         const serverJs = fs.readFileSync(serverJsPath, 'utf8');
         const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-        
+
         job.code = `### package.json
 ${packageJson}
 
@@ -1040,27 +1277,25 @@ ${serverJs}
 
 ### public/index.html
 ${indexHtml}`;
-        
+
         job.status = 'done';
         job.progressMessage = 'Design reproduit avec succès !';
         console.log(`[Claude Code Image] Generation successful for project ${projectId}`);
       } catch (readErr) {
         job.status = 'error';
         job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
-        console.error(`[Claude Code Image] Error reading files: ${readErr.message}`);
       }
     } else {
-      // Files missing - use default files as fallback
       console.warn(`[Claude Code Image] Some files missing, using defaults.`);
-      
+
       if (!packageExists) fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
       if (!serverExists) fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
       if (!indexExists) fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
-      
+
       const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
       const serverJs = fs.readFileSync(serverJsPath, 'utf8');
       const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-      
+
       job.code = `### package.json
 ${packageJson}
 
@@ -1069,14 +1304,15 @@ ${serverJs}
 
 ### public/index.html
 ${indexHtml}`;
-      
+
       job.status = 'done';
       job.progressMessage = 'Projet généré avec fichiers par défaut.';
     }
   });
-  
+
   // Handle process errors
   claudeProcess.on('error', (err) => {
+    clearTimeout(timeout);
     console.error(`[Claude Code Image] Process error: ${err.message}`);
     claudeCodeProcesses.delete(projectId);
     job.status = 'error';
