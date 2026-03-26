@@ -787,8 +787,15 @@ function isDockerAvailable() {
 // Ensure Docker network exists
 function ensureDockerNetwork() {
   try {
-    const networks = execDocker('docker network ls --format "{{.Name}}"');
-    if (!networks.includes(DOCKER_NETWORK)) {
+    // Use plain docker network ls and parse output in JS (avoids Alpine shell quote issues with --format)
+    const output = execDocker('docker network ls');
+    const lines = output.split('\n').slice(1); // Skip header
+    const networkNames = lines.map(line => {
+      const parts = line.trim().split(/\s+/);
+      // NAME is the second column (index 1); check length to avoid undefined
+      return parts.length > 1 ? parts[1] : '';
+    }).filter(name => name);
+    if (!networkNames.includes(DOCKER_NETWORK)) {
       execDocker(`docker network create ${DOCKER_NETWORK}`);
       console.log(`Created Docker network: ${DOCKER_NETWORK}`);
     }
@@ -806,8 +813,20 @@ function getContainerName(projectId) {
 function getContainerIP(projectId) {
   try {
     const containerName = getContainerName(projectId);
-    const ip = execDocker(`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${containerName}`).trim();
-    return ip || null;
+    // Use JSON output and parse in JS (avoids Alpine shell quote issues with Go templates)
+    const output = execDocker(`docker inspect ${containerName}`);
+    const inspectData = JSON.parse(output);
+    if (inspectData && inspectData[0] && inspectData[0].NetworkSettings && inspectData[0].NetworkSettings.Networks) {
+      const networks = inspectData[0].NetworkSettings.Networks;
+      const networkKeys = Object.keys(networks);
+      for (let i = 0; i < networkKeys.length; i++) {
+        const netName = networkKeys[i];
+        if (networks[netName].IPAddress) {
+          return networks[netName].IPAddress;
+        }
+      }
+    }
+    return null;
   } catch (e) {
     return null;
   }
@@ -817,8 +836,13 @@ function getContainerIP(projectId) {
 function isContainerRunning(projectId) {
   try {
     const containerName = getContainerName(projectId);
-    const status = execDocker(`docker inspect -f '{{.State.Running}}' ${containerName}`).trim();
-    return status === 'true';
+    // Use JSON output and parse in JS (avoids Alpine shell quote issues with Go templates)
+    const output = execDocker(`docker inspect ${containerName}`);
+    const inspectData = JSON.parse(output);
+    if (inspectData && inspectData[0] && inspectData[0].State) {
+      return inspectData[0].State.Running === true;
+    }
+    return false;
   } catch (e) {
     return false;
   }
