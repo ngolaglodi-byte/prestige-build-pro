@@ -922,38 +922,45 @@ async function sendChatMessage(message) {
     }
     const { job_id } = await startRes.json();
     
-    // Poll for job status every 1 second
+    // Poll for job status (timeout after 10 minutes)
     let lastProgress = 0;
-    while (true) {
+    const pollDeadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
       await new Promise(r => setTimeout(r, 1000));
-      const pollRes = await fetch('/api/jobs/' + job_id, {
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      if (!pollRes.ok) throw new Error('Erreur lors du polling');
-      const job = await pollRes.json();
-      
-      // Update progress display
-      if (job.progress > lastProgress) {
-        lastProgress = job.progress;
-        assistantDiv.textContent = 'Génération en cours... (' + job.progress + ' caractères)';
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!pollRes.ok) throw new Error('Erreur serveur');
+        job = await pollRes.json();
+      } catch (pollErr) {
+        assistantDiv.textContent = 'Connexion interrompue, nouvelle tentative...';
+        continue;
       }
-      
+
+      // Update progress display with server message
+      if (job.progress_message) {
+        assistantDiv.textContent = job.progress_message;
+      } else if (job.progress > lastProgress) {
+        lastProgress = job.progress;
+        assistantDiv.textContent = 'Génération en cours... (' + job.progress + ' car.)';
+      }
+
       if (job.status === 'done') {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
-        assistantDiv.textContent = 'Code généré avec succès (' + job.code.length + ' caractères)';
+        assistantDiv.textContent = 'Code généré avec succès !';
         if (job.credentials) {
           projectCredentials = job.credentials;
           addChatMessage('assistant', '\u2705 Projet prêt ! Identifiants admin : ' + job.credentials.email + ' / ' + job.credentials.password);
         }
-        if (job.preview_url) loadPreview(job.preview_url);
-        await refreshPreviewWithCode();
         await autoCompile();
         break;
       }
 
       if (job.status === 'error') {
-        assistantDiv.textContent = 'Erreur: ' + job.error;
+        assistantDiv.textContent = 'Erreur: ' + (job.error || 'Erreur inconnue');
         break;
       }
     }
@@ -983,38 +990,44 @@ async function generateFromImage(prompt) {
     }
     const { job_id } = await startRes.json();
     
-    // Poll for job status every 1 second
+    // Poll for job status (timeout after 10 minutes)
     let lastProgress = 0;
-    while (true) {
+    const pollDeadline = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
       await new Promise(r => setTimeout(r, 1000));
-      const pollRes = await fetch('/api/jobs/' + job_id, {
-        headers: { 'Authorization': 'Bearer ' + token }
-      });
-      if (!pollRes.ok) throw new Error('Erreur lors du polling');
-      const job = await pollRes.json();
-      
-      // Update progress display
-      if (job.progress > lastProgress) {
-        lastProgress = job.progress;
-        assistantDiv.textContent = 'Génération depuis image... (' + job.progress + ' caractères)';
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (!pollRes.ok) throw new Error('Erreur serveur');
+        job = await pollRes.json();
+      } catch (pollErr) {
+        assistantDiv.textContent = 'Connexion interrompue, nouvelle tentative...';
+        continue;
       }
-      
+
+      if (job.progress_message) {
+        assistantDiv.textContent = job.progress_message;
+      } else if (job.progress > lastProgress) {
+        lastProgress = job.progress;
+        assistantDiv.textContent = 'Génération depuis image... (' + job.progress + ' car.)';
+      }
+
       if (job.status === 'done') {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
-        assistantDiv.textContent = 'Design reproduit avec succès!';
+        assistantDiv.textContent = 'Design reproduit avec succès !';
         if (job.credentials) {
           projectCredentials = job.credentials;
           addChatMessage('assistant', '\u2705 Projet prêt ! Identifiants admin : ' + job.credentials.email + ' / ' + job.credentials.password);
         }
-        if (job.preview_url) loadPreview(job.preview_url);
-        await refreshPreviewWithCode();
         await autoCompile();
         break;
       }
 
       if (job.status === 'error') {
-        assistantDiv.textContent = 'Erreur: ' + job.error;
+        assistantDiv.textContent = 'Erreur: ' + (job.error || 'Erreur inconnue');
         break;
       }
     }

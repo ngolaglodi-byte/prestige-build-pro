@@ -3042,31 +3042,31 @@ async function proxyToContainer(req, res, projectId, targetPath) {
     res.writeHead(proxyRes.statusCode, headers);
 
     if (isHtml) {
-      // Collect HTML body, inject <base> tag so relative URLs (fetch, CSS, images)
-      // resolve to /run/{id}/ instead of / (which would hit Prestige, not the container)
+      // Collect HTML body, inject <base> + fetch patch so all URLs route through proxy
       let body = '';
       proxyRes.on('data', chunk => body += chunk.toString());
       proxyRes.on('end', () => {
-        const baseTag = `<base href="/run/${projectId}/">`;
-        // Patch fetch: intercept absolute /api/ calls and rewrite to relative paths
-        // so they route through the proxy instead of hitting Prestige directly
-        const fetchPatch = `<script>
-(function(){var _f=window.fetch;window.fetch=function(u,o){
-if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);
-return _f.call(this,u,o);};})();
-</script>`;
-        const injection = baseTag + fetchPatch;
-        if (body.includes('<head>')) {
-          body = body.replace('<head>', `<head>${injection}`);
-        } else if (body.includes('<head ')) {
-          body = body.replace(/<head\s[^>]*>/, `$&${injection}`);
-        } else if (body.includes('<html')) {
-          body = body.replace(/<html[^>]*>/, `$&<head>${injection}</head>`);
-        } else {
-          body = injection + body;
+        try {
+          const pid = Number(projectId);
+          const baseTag = `<base href="/run/${pid}/">`;
+          const fetchPatch = `<script>(function(){var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};\nvar _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};})();</script>`;
+          const injection = baseTag + fetchPatch;
+          if (body.includes('<head>')) {
+            body = body.replace('<head>', `<head>${injection}`);
+          } else if (body.includes('<head ')) {
+            body = body.replace(/<head\s[^>]*>/, `$&${injection}`);
+          } else if (body.includes('<html')) {
+            body = body.replace(/<html[^>]*>/, `$&<head>${injection}</head>`);
+          } else {
+            body = injection + body;
+          }
+          res.end(body);
+        } catch (injErr) {
+          console.error(`[Proxy] HTML injection error for project ${projectId}:`, injErr.message);
+          res.end(body);
         }
-        res.end(body);
       });
+      proxyRes.on('error', () => { try { res.end(); } catch(e) {} });
     } else {
       proxyRes.pipe(res);
     }
