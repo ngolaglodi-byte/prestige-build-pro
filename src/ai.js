@@ -393,7 +393,7 @@ VERSIONS OBLIGATOIRES — utilise EXACTEMENT ces versions dans package.json et s
 - compression 1.7.4
 
 SYNTAXE EXPRESS 4.18.2 OBLIGATOIRE :
-- Route wildcard : app.get('/*', ...) — JAMAIS app.get('*', ...)
+- Route catch-all OBLIGATOIRE : app.get(/.*/, (req, res) => {...}) — JAMAIS app.get('*') ni app.get('/*')
 - Middleware : app.use(express.json()) — pas bodyParser séparé
 - Static files : app.use(express.static('public'))
 - Error handler : (err, req, res, next) avec 4 paramètres
