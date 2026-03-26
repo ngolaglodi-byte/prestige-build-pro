@@ -1981,24 +1981,17 @@ async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT
     try {
       const result = await new Promise((resolve) => {
         const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
-          let data = '';
-          res.on('data', chunk => data += chunk);
-          res.on('end', () => {
-            if (res.statusCode === 200) {
-              try {
-                const json = JSON.parse(data);
-                if (json.status === 'ok') {
-                  resolve({ ok: true });
-                } else {
-                  resolve({ ok: false, reason: `status=${json.status}`, body: data.substring(0, 200) });
-                }
-              } catch {
-                resolve({ ok: false, reason: 'invalid JSON', body: data.substring(0, 200) });
-              }
-            } else {
+          // HTTP 200 = healthy, regardless of body content
+          if (res.statusCode === 200) {
+            res.resume(); // drain the response
+            resolve({ ok: true, statusCode: 200 });
+          } else {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
               resolve({ ok: false, reason: `HTTP ${res.statusCode}`, body: data.substring(0, 200) });
-            }
-          });
+            });
+          }
         });
         req.on('error', (e) => resolve({ ok: false, reason: `error: ${e.code || e.message}` }));
         req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout (2s)' }); });
