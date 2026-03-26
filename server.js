@@ -73,12 +73,13 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
   main: "server.js",
   scripts: { start: "node server.js" },
   dependencies: {
-    express: "^4.18.2",
-    "better-sqlite3": "^9.0.0",
-    bcryptjs: "^2.4.3",
-    jsonwebtoken: "^9.0.0",
-    cors: "^2.8.5",
-    helmet: "^7.1.0"
+    express: "4.18.2",
+    "better-sqlite3": "9.4.3",
+    bcryptjs: "2.4.3",
+    jsonwebtoken: "9.0.2",
+    cors: "2.8.5",
+    helmet: "7.1.0",
+    compression: "1.7.4"
   }
 }, null, 2);
 
@@ -1336,7 +1337,7 @@ async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT
   return false;
 }
 
-// Clean generated file content - remove all markdown artifacts
+// Clean generated file content - remove all markdown artifacts and fix incompatible patterns
 function cleanGeneratedContent(content) {
   if (!content) return '';
   
@@ -1347,6 +1348,25 @@ function cleanGeneratedContent(content) {
   // - Closing markers: ``` at end of line
   // - Standalone ``` markers on their own line (indicating code block boundaries)
   cleaned = cleaned.replace(/^```(?:javascript|js|json|html|css|jsx|tsx|typescript|ts|bash|sh|sql|yaml|yml|xml|text|txt|plain)?\s*$/gm, '');
+  
+  // CORRECTION 3: Fix Express 4.x incompatible patterns
+  // Fix wildcard routes - Express 4.x requires '/*' not '*'
+  cleaned = cleaned.replace(/app\.get\(\s*['"]?\*['"]?\s*,/g, "app.get('/*',");
+  cleaned = cleaned.replace(/app\.use\(\s*['"]?\*['"]?\s*,/g, "app.use('/*',");
+  cleaned = cleaned.replace(/router\.get\(\s*['"]?\*['"]?\s*,/g, "router.get('/*',");
+  cleaned = cleaned.replace(/router\.use\(\s*['"]?\*['"]?\s*,/g, "router.use('/*',");
+  
+  // Fix Express 5.x version references to use 4.18.2
+  cleaned = cleaned.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
+  
+  // Ensure all dependency versions are pinned (no ^ prefix) for critical packages
+  cleaned = cleaned.replace(/"express"\s*:\s*"\^4/g, '"express": "4');
+  cleaned = cleaned.replace(/"better-sqlite3"\s*:\s*"\^/g, '"better-sqlite3": "');
+  cleaned = cleaned.replace(/"bcryptjs"\s*:\s*"\^/g, '"bcryptjs": "');
+  cleaned = cleaned.replace(/"jsonwebtoken"\s*:\s*"\^/g, '"jsonwebtoken": "');
+  cleaned = cleaned.replace(/"cors"\s*:\s*"\^/g, '"cors": "');
+  cleaned = cleaned.replace(/"helmet"\s*:\s*"\^/g, '"helmet": "');
+  cleaned = cleaned.replace(/"compression"\s*:\s*"\^/g, '"compression": "');
   
   // Remove any leading/trailing whitespace and blank lines at start/end
   cleaned = cleaned.trim();
@@ -1468,6 +1488,74 @@ async function buildDockerProject(projectId, code, onProgress) {
       }
       fs.writeFileSync(filePath, content);
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
+    }
+
+    // Step 2.1: INTELLIGENT PATTERN VALIDATION - Scan and fix incompatible patterns
+    console.log(`[Docker Build] Step 2.1: Intelligent pattern validation...`);
+    onProgress({ step: 2, progress: 31, message: 'Correction automatique des patterns incompatibles...' });
+    
+    const serverJsPathForScan = path.join(projectDir, 'server.js');
+    if (fs.existsSync(serverJsPathForScan)) {
+      let serverContent = fs.readFileSync(serverJsPathForScan, 'utf8');
+      let patternsCorrected = false;
+      
+      // Fix Express wildcard routes (Express 4.x requires '/*' not '*')
+      if (serverContent.match(/\.(get|use|post|put|delete)\(\s*['"]?\*['"]?\s*,/)) {
+        serverContent = serverContent.replace(/\.get\(\s*['"]?\*['"]?\s*,/g, ".get('/*',");
+        serverContent = serverContent.replace(/\.use\(\s*['"]?\*['"]?\s*,/g, ".use('/*',");
+        serverContent = serverContent.replace(/\.post\(\s*['"]?\*['"]?\s*,/g, ".post('/*',");
+        serverContent = serverContent.replace(/\.put\(\s*['"]?\*['"]?\s*,/g, ".put('/*',");
+        serverContent = serverContent.replace(/\.delete\(\s*['"]?\*['"]?\s*,/g, ".delete('/*',");
+        console.log(`[Docker Build] ✓ Fixed wildcard routes to use '/*' syntax`);
+        patternsCorrected = true;
+      }
+      
+      // Fix router wildcard routes
+      if (serverContent.match(/router\.(get|use|post|put|delete)\(\s*['"]?\*['"]?\s*,/)) {
+        serverContent = serverContent.replace(/router\.get\(\s*['"]?\*['"]?\s*,/g, "router.get('/*',");
+        serverContent = serverContent.replace(/router\.use\(\s*['"]?\*['"]?\s*,/g, "router.use('/*',");
+        serverContent = serverContent.replace(/router\.post\(\s*['"]?\*['"]?\s*,/g, "router.post('/*',");
+        serverContent = serverContent.replace(/router\.put\(\s*['"]?\*['"]?\s*,/g, "router.put('/*',");
+        serverContent = serverContent.replace(/router\.delete\(\s*['"]?\*['"]?\s*,/g, "router.delete('/*',");
+        console.log(`[Docker Build] ✓ Fixed router wildcard routes to use '/*' syntax`);
+        patternsCorrected = true;
+      }
+      
+      if (patternsCorrected) {
+        fs.writeFileSync(serverJsPathForScan, serverContent);
+        console.log(`[Docker Build] ✓ server.js patterns corrected and saved`);
+      } else {
+        console.log(`[Docker Build] ✓ No incompatible patterns found in server.js`);
+      }
+    }
+    
+    // Also fix package.json to use pinned versions
+    const packageJsonPathForScan = path.join(projectDir, 'package.json');
+    if (fs.existsSync(packageJsonPathForScan)) {
+      let packageContent = fs.readFileSync(packageJsonPathForScan, 'utf8');
+      let packageCorrected = false;
+      
+      // Fix Express 5.x references
+      if (packageContent.includes('"express": "^5') || packageContent.includes('"express": "5')) {
+        packageContent = packageContent.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
+        console.log(`[Docker Build] ✓ Fixed Express 5.x to 4.18.2 in package.json`);
+        packageCorrected = true;
+      }
+      
+      // Remove ^ prefix from critical dependencies
+      const criticalDeps = ['express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression'];
+      for (const dep of criticalDeps) {
+        const regex = new RegExp(`"${dep}"\\s*:\\s*"\\^`, 'g');
+        if (packageContent.match(regex)) {
+          packageContent = packageContent.replace(regex, `"${dep}": "`);
+          packageCorrected = true;
+        }
+      }
+      
+      if (packageCorrected) {
+        fs.writeFileSync(packageJsonPathForScan, packageContent);
+        console.log(`[Docker Build] ✓ package.json versions pinned and saved`);
+      }
     }
 
     // Step 2.25: STRICT VALIDATION of all three mandatory files

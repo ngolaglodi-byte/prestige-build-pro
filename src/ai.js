@@ -383,12 +383,27 @@ FORMAT DE SORTIE OBLIGATOIRE — utilise exactement ces marqueurs sans backticks
 ### public/index.html
 {code HTML pur}
 
+VERSIONS OBLIGATOIRES — utilise EXACTEMENT ces versions dans package.json et server.js :
+- express 4.18.2 — JAMAIS express 5.x
+- better-sqlite3 9.4.3
+- bcryptjs 2.4.3
+- jsonwebtoken 9.0.2
+- cors 2.8.5
+- helmet 7.1.0
+- compression 1.7.4
+
+SYNTAXE EXPRESS 4.18.2 OBLIGATOIRE :
+- Route wildcard : app.get('/*', ...) — JAMAIS app.get('*', ...)
+- Middleware : app.use(express.json()) — pas bodyParser séparé
+- Static files : app.use(express.static('public'))
+- Error handler : (err, req, res, next) avec 4 paramètres
+
 RÈGLES ABSOLUES :
 1. JAMAIS de backticks markdown \`\`\` dans ta réponse
 2. JAMAIS de texte explicatif avant ou après le code
 3. Le code commence directement après le marqueur ### filename
 4. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
-5. package.json : JSON strict valide UNIQUEMENT — dépendances : express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet
+5. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
 6. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage, compte admin par défaut admin@project.com / Admin2024!
 
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
