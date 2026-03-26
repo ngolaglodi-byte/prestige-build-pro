@@ -1,3 +1,24 @@
+/*
+ * PRESTIGE BUILD PRO - Server
+ * 
+ * ARCHITECTURE: Claude Code Server-Side Generation
+ * ─────────────────────────────────────────────────────────────────
+ * Code generation is handled by Claude Code running as a child process on the server.
+ * Each project gets its own isolated directory: /data/projects/[project_id]/
+ * 
+ * Generation workflow:
+ * 1. Create project directory /data/projects/[project_id]/
+ * 2. Write BRIEF.md with the project brief
+ * 3. Write CLAUDE.md with generation instructions
+ * 4. Spawn Claude Code: claude --dangerously-skip-permissions --print [prompt]
+ * 5. Claude Code generates files, tests, and creates READY file on success
+ * 6. Server reads the generated files and starts Docker container
+ * 
+ * Security: Claude Code is isolated to the project directory via cwd parameter.
+ * API usage: Direct Anthropic API calls are kept only for small non-generation 
+ * operations like error auto-correction.
+ */
+
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -317,177 +338,436 @@ function cors(res) { res.setHeader('Access-Control-Allow-Origin','*'); res.setHe
 function getBody(req) { return new Promise(r=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{r(JSON.parse(b))}catch{r({})}})}); }
 
 // ─── STREAM CLAUDE ───
+// ─── STREAM CLAUDE (DEPRECATED - KEPT FOR BACKWARDS COMPATIBILITY) ───
+// NOTE: For project generation, use generateClaudeCode() instead which spawns Claude Code server-side
 function streamClaude(messages, res, onDone, brief, options = {}) {
-  if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
+  // Send deprecation notice and end stream
+  console.warn('[streamClaude] Deprecated: This function should not be used for project generation. Use Claude Code instead.');
+  res.write(`data: ${JSON.stringify({type:'info',content:'Utilisation de Claude Code pour la génération...'})}\n\n`);
+  res.write(`data: ${JSON.stringify({type:'done'})}\n\n`);
+  res.end();
+  if (onDone) onDone('');
+}
+
+// ─── STREAM CLAUDE WITH IMAGE (DEPRECATED - KEPT FOR BACKWARDS COMPATIBILITY) ───
+// NOTE: For image-based generation, use generateClaudeWithImage() instead which spawns Claude Code server-side
+function streamClaudeWithImage(imageBase64, mediaType, prompt, res, onDone) {
+  // Send deprecation notice and end stream
+  console.warn('[streamClaudeWithImage] Deprecated: This function should not be used for project generation. Use Claude Code instead.');
+  res.write(`data: ${JSON.stringify({type:'info',content:'Utilisation de Claude Code pour la génération...'})}\n\n`);
+  res.write(`data: ${JSON.stringify({type:'done'})}\n\n`);
+  res.end();
+  if (onDone) onDone('');
+}
+
+// ─── CLAUDE.MD TEMPLATE GENERATOR ───
+function generateClaudeMdTemplate(brief, sectorProfile, savedApis) {
+  const apiSection = savedApis && savedApis.length > 0 
+    ? `\n## APIs disponibles\n${savedApis.map(a => `- ${a.name} (${a.service}): ${a.description || 'Disponible'}`).join('\n')}\n`
+    : '';
   
-  const baseSystemPrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
+  return `# Prestige AI — Instructions
+
+Tu es Prestige AI, le meilleur générateur d'applications web. Tu travailles dans le dossier courant uniquement.
+
+## Brief
+${brief}
+${sectorProfile ? `\n## Profil détecté\n${sectorProfile}\n` : ''}${apiSection}
+## Fichiers à créer
+
+Crée exactement ces 3 fichiers dans le dossier courant :
+
+**package.json** — JSON valide, dépendances fixes :
+express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2.8.5, helmet 7.1.0, compression 1.7.4
+
+**server.js** — Backend Express 4.18.2 :
+- Port 3000, route /health, fichiers statiques depuis /public
+- SQLite avec tables selon le secteur
+- JWT auth, compte admin par défaut admin@project.com / Admin2024!
+- Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
+
+**public/index.html** — Frontend vanilla uniquement :
+- JAMAIS require(), exports, import
+- fetch('/api/...') pour le backend
+- Design professionnel, responsive, animations CSS
+- Contenu réel adapté au secteur, zéro lorem ipsum
+
+## Processus
+
+1. Recherche web pour trouver des inspirations visuelles
+2. Génère les 3 fichiers
+3. Teste : \`node --check server.js\`
+4. Lance : \`node server.js &\`
+5. Teste : \`curl http://localhost:3000/health\`
+6. Corrige si erreur, reteste
+7. Quand tout fonctionne, écris le fichier \`READY\`
+8. Si échec après 5 tentatives, écris \`ERROR\`
+
+## Profils sectoriels automatiques
+
+SANTÉ → patients/médecins/rendez-vous, design bleu médical
+RESTAURANT → menu/commandes/réservations, design chaleureux
+E-COMMERCE → produits/panier/checkout, catalogue avec filtres
+CORPORATE → services/équipe/témoignages, design professionnel
+SAAS → users/plans/dashboard, landing moderne
+ÉDUCATION → cours/étudiants/formateurs, espace étudiant
+IMMOBILIER → biens/agents/visites, recherche avec filtres
+HÔTELLERIE → chambres/réservations, galerie immersive
+FITNESS → cours/coachs/membres, planning interactif
+DASHBOARD → sidebar, Chart.js, CRUD complet, exports
+`;
+}
+
+// ─── CLAUDE CODE PROCESS MANAGER ───
+// Track active Claude Code processes per project
+const claudeCodeProcesses = new Map();
+
+// ─── GENERATE CLAUDE CODE (SERVER-SIDE, ISOLATED PER PROJECT) ───
+function generateClaudeCode(projectId, brief, jobId, options = {}) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
+  
+  if (!ANTHROPIC_API_KEY) { 
+    job.status = 'error';
+    job.error = 'Clé API non configurée sur le serveur.';
+    return; 
+  }
+  
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  
+  // Create project directory if it doesn't exist
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true });
+  }
+  
+  // Create public directory
+  const publicDir = path.join(projectDir, 'public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+  
+  // Detect sector profile
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   
-  // Enhanced system prompt with content generation and API integration instructions
-  const contentGenPrompt = `
-
-## GÉNÉRATION DE CONTENU AUTOMATIQUE
-AVANT de générer le code, crée automatiquement du contenu contextuel adapté au secteur :
-- Un slogan accrocheur et mémorable
-- Des textes professionnels pour chaque section (hero, about, services, témoignages)
-- Des noms fictifs réalistes pour l'équipe (avec titres et courtes bios)
-- Des prix et tarifs cohérents avec le marché français
-- 3-5 témoignages clients convaincants et réalistes
-- Utilise https://picsum.photos/WIDTH/HEIGHT pour les images placeholder (ex: https://picsum.photos/800/600)
-
-RÈGLE ABSOLUE : Zéro "Lorem ipsum" — tout le contenu doit être réaliste et contextuel.`;
-
-  // API auto-integration instructions
-  const savedApis = db ? db.prepare('SELECT name,service,key_value,description FROM api_keys').all() : [];
-  let apiIntegrationPrompt = '';
-  if (savedApis.length > 0) {
-    apiIntegrationPrompt = `
-
-## APIS DISPONIBLES POUR INTÉGRATION AUTOMATIQUE
-Les APIs suivantes sont configurées dans le système. Intègre-les automatiquement si pertinentes :
-${savedApis.map(a => `- ${a.name} (${a.service}): ${a.description || 'Disponible'}`).join('\n')}
-
-Règles d'intégration automatique :
-- Stripe disponible + projet e-commerce/paiement → intègre le checkout Stripe
-- Google Maps disponible + projet restaurant/immobilier/local → intègre une carte
-- Twilio disponible → ajoute formulaire contact avec notification SMS
-- OpenAI disponible → intègre un chatbot client
-- Mailchimp disponible → ajoute formulaire newsletter`;
-  }
-
-  const systemPrompt = sectorProfile 
-    ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
-    : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
+  // Get available APIs
+  const savedApis = db ? db.prepare('SELECT name,service,description FROM api_keys').all() : [];
   
-  // INTELLIGENT MAX_TOKENS: Use getMaxTokensForProject based on brief complexity
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  console.log(`[Claude API] Using max_tokens: ${maxTokens} for brief complexity: ${ai && ai.detectProjectComplexity ? ai.detectProjectComplexity(brief) : 'unknown'}`);
+  // Write BRIEF.md
+  const briefPath = path.join(projectDir, 'BRIEF.md');
+  fs.writeFileSync(briefPath, `# Brief du Projet\n\n${brief}\n`);
+  
+  // Write CLAUDE.md with instructions
+  const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
+  const claudeMdContent = generateClaudeMdTemplate(brief, sectorProfile, savedApis);
+  fs.writeFileSync(claudeMdPath, claudeMdContent);
+  
+  // Update job status
+  job.status = 'running';
+  job.claudeCodeOutput = '';
+  job.progressMessage = 'Démarrage de Claude Code...';
+  
+  console.log(`[Claude Code] Starting generation for project ${projectId}`);
+  console.log(`[Claude Code] Project directory: ${projectDir}`);
+  
+  // Build the prompt for Claude Code
+  const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application web complète basée sur le brief. Génère les 3 fichiers (package.json, server.js, public/index.html), teste-les, et crée le fichier READY quand tout fonctionne.`;
+  
+  // Spawn Claude Code process
+  const claudeProcess = spawn('claude', [
+    '--dangerously-skip-permissions',
+    '--print',
+    prompt
+  ], {
+    cwd: projectDir,
+    env: {
+      ...process.env,
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+    }
+  });
+  
+  // Store process reference
+  claudeCodeProcesses.set(projectId, claudeProcess);
+  
+  // Capture stdout in real-time
+  claudeProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    job.claudeCodeOutput += output;
+    job.progress = job.claudeCodeOutput.length;
     
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:maxTokens, system:systemPrompt, stream:true, messages });
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
-  const r = https.request(opts, apiRes => {
-    let full='';
-    apiRes.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d=JSON.parse(line.slice(6));
-          if (d.type==='content_block_delta'&&d.delta?.text) { full+=d.delta.text; res.write(`data: ${JSON.stringify({type:'delta',content:d.delta.text})}\n\n`); }
-          if (d.type==='message_stop') { 
-            // Call onDone BEFORE ending response, so callbacks can still write to res
-            if(onDone) onDone(full); 
-            res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); 
-            res.end(); 
-          }
-        } catch(e) {
-          console.error('Stream parse error:', e.message);
-        }
-      }
-    });
-    apiRes.on('error', e=>{ 
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
-        res.end(); 
-      }
-    });
+    // Parse output for user-friendly messages
+    if (output.includes('package.json')) {
+      job.progressMessage = 'Création du fichier package.json...';
+    } else if (output.includes('server.js')) {
+      job.progressMessage = 'Génération du backend Express...';
+    } else if (output.includes('index.html') || output.includes('public/')) {
+      job.progressMessage = 'Création du frontend...';
+    } else if (output.includes('node --check') || output.includes('syntax')) {
+      job.progressMessage = 'Vérification de la syntaxe...';
+    } else if (output.includes('curl') || output.includes('health')) {
+      job.progressMessage = 'Test du serveur...';
+    } else if (output.includes('READY') || output.includes('Success')) {
+      job.progressMessage = 'Génération terminée avec succès !';
+    } else if (output.includes('ERROR') || output.includes('error')) {
+      job.progressMessage = 'Correction en cours...';
+    }
+    
+    console.log(`[Claude Code] Output: ${output.substring(0, 200)}...`);
   });
-  r.on('error', e=>{ 
-    if (!res.writableEnded) {
-      res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
-      res.end(); 
+  
+  // Capture stderr
+  claudeProcess.stderr.on('data', (data) => {
+    const errorOutput = data.toString();
+    job.claudeCodeOutput += `[stderr] ${errorOutput}`;
+    console.error(`[Claude Code] stderr: ${errorOutput}`);
+  });
+  
+  // Handle process completion
+  claudeProcess.on('close', (code) => {
+    console.log(`[Claude Code] Process exited with code ${code}`);
+    claudeCodeProcesses.delete(projectId);
+    
+    // Check if files were created successfully
+    const packageJsonPath = path.join(projectDir, 'package.json');
+    const serverJsPath = path.join(projectDir, 'server.js');
+    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
+    const readyPath = path.join(projectDir, 'READY');
+    const errorPath = path.join(projectDir, 'ERROR');
+    
+    const packageExists = fs.existsSync(packageJsonPath);
+    const serverExists = fs.existsSync(serverJsPath);
+    const indexExists = fs.existsSync(indexHtmlPath);
+    const readyExists = fs.existsSync(readyPath);
+    const errorExists = fs.existsSync(errorPath);
+    
+    if (errorExists) {
+      job.status = 'error';
+      job.error = 'Claude Code a rencontré des erreurs après plusieurs tentatives.';
+      return;
+    }
+    
+    if (packageExists && serverExists && indexExists) {
+      // Read the generated files and format as code for storage
+      try {
+        const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
+        const serverJs = fs.readFileSync(serverJsPath, 'utf8');
+        const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+        
+        // Format as the expected code output with markers
+        job.code = `### package.json
+${packageJson}
+
+### server.js
+${serverJs}
+
+### public/index.html
+${indexHtml}`;
+        
+        job.status = 'done';
+        job.progressMessage = 'Projet généré avec succès !';
+        console.log(`[Claude Code] Generation successful for project ${projectId}`);
+      } catch (readErr) {
+        job.status = 'error';
+        job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
+        console.error(`[Claude Code] Error reading files: ${readErr.message}`);
+      }
+    } else {
+      // Files missing - use default files as fallback
+      console.warn(`[Claude Code] Some files missing, using defaults. Package: ${packageExists}, Server: ${serverExists}, Index: ${indexExists}`);
+      
+      // Write default files
+      if (!packageExists) {
+        fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
+      }
+      if (!serverExists) {
+        fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
+      }
+      if (!indexExists) {
+        fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
+      }
+      
+      // Read the files (now including defaults)
+      const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
+      const serverJs = fs.readFileSync(serverJsPath, 'utf8');
+      const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+      
+      job.code = `### package.json
+${packageJson}
+
+### server.js
+${serverJs}
+
+### public/index.html
+${indexHtml}`;
+      
+      job.status = 'done';
+      job.progressMessage = 'Projet généré avec fichiers par défaut.';
     }
   });
-  r.write(payload); r.end();
+  
+  // Handle process errors
+  claudeProcess.on('error', (err) => {
+    console.error(`[Claude Code] Process error: ${err.message}`);
+    claudeCodeProcesses.delete(projectId);
+    job.status = 'error';
+    job.error = `Erreur Claude Code: ${err.message}`;
+  });
 }
 
-// ─── STREAM CLAUDE WITH IMAGE (VISION) ───
-function streamClaudeWithImage(imageBase64, mediaType, prompt, res, onDone) {
-  if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
+// ─── GENERATE CLAUDE CODE FOR CHAT/MODIFICATIONS ───
+function generateClaudeCodeChat(projectId, message, jobId) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
   
-  const systemPrompt = ABSOLUTE_BROWSER_RULE + `Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
-
-## TA MISSION
-Analyse l'image fournie et reproduis FIDÈLEMENT ce design en HTML/CSS/JS moderne, responsive et professionnel.
-
-## INSTRUCTIONS DE REPRODUCTION
-1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
-2. Identifie la palette de couleurs exacte utilisée
-3. Note la typographie et les tailles de police
-4. Reproduis les espacements et marges
-5. Adapte pour le responsive (mobile-first)
-
-## CODE À GÉNÉRER
-- HTML5 sémantique avec structure complète
-- CSS moderne (Flexbox/Grid, variables CSS)
-- Tailwind CSS pour le styling rapide
-- JavaScript pour les interactions si nécessaire
-- Images via https://picsum.photos avec dimensions appropriées
-- Contenu réaliste et professionnel (jamais de Lorem ipsum)
-
-## FORMAT DE SORTIE
-Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans une balise <style>.`;
-
-  const messages = [{
-    role: 'user',
-    content: [
-      {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: mediaType,
-          data: imageBase64
-        }
-      },
-      {
-        type: 'text',
-        text: prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image."
-      }
-    ]
-  }];
-
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:16000, system:systemPrompt, stream:true, messages });
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+  if (!ANTHROPIC_API_KEY) { 
+    job.status = 'error';
+    job.error = 'Clé API non configurée sur le serveur.';
+    return; 
+  }
   
-  const r = https.request(opts, apiRes => {
-    let full='';
-    apiRes.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d=JSON.parse(line.slice(6));
-          if (d.type==='content_block_delta'&&d.delta?.text) { full+=d.delta.text; res.write(`data: ${JSON.stringify({type:'delta',content:d.delta.text})}\n\n`); }
-          if (d.type==='message_stop') { 
-            // Call onDone BEFORE ending response, so callbacks can still write to res
-            if(onDone) onDone(full); 
-            res.write(`data: ${JSON.stringify({type:'done'})}\n\n`); 
-            res.end(); 
-          }
-        } catch(e) {
-          console.error('Stream parse error:', e.message);
-        }
-      }
-    });
-    apiRes.on('error', e=>{ 
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
-        res.end(); 
-      }
-    });
-  });
-  r.on('error', e=>{ 
-    if (!res.writableEnded) {
-      res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
-      res.end(); 
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  
+  // Verify project directory exists
+  if (!fs.existsSync(projectDir)) {
+    job.status = 'error';
+    job.error = 'Dossier projet introuvable. Générez d\'abord le projet.';
+    return;
+  }
+  
+  // Update job status
+  job.status = 'running';
+  job.claudeCodeOutput = '';
+  job.progressMessage = 'Modification en cours...';
+  
+  console.log(`[Claude Code Chat] Starting modification for project ${projectId}: ${message.substring(0, 100)}...`);
+  
+  // Build the prompt for modification
+  const prompt = `Modifie les fichiers existants dans ce dossier selon cette instruction: "${message}". Teste les modifications avec node --check server.js, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
+  
+  // Spawn Claude Code process
+  const claudeProcess = spawn('claude', [
+    '--dangerously-skip-permissions',
+    '--print',
+    prompt
+  ], {
+    cwd: projectDir,
+    env: {
+      ...process.env,
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
     }
   });
-  r.write(payload); r.end();
+  
+  // Store process reference
+  claudeCodeProcesses.set(projectId, claudeProcess);
+  
+  // Capture stdout in real-time
+  claudeProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    job.claudeCodeOutput += output;
+    job.progress = job.claudeCodeOutput.length;
+    
+    // Parse output for user-friendly messages
+    if (output.includes('Modifying') || output.includes('Editing')) {
+      job.progressMessage = 'Modification des fichiers...';
+    } else if (output.includes('Testing') || output.includes('node --check')) {
+      job.progressMessage = 'Vérification des modifications...';
+    } else if (output.includes('READY') || output.includes('Success')) {
+      job.progressMessage = 'Modifications appliquées !';
+    }
+    
+    console.log(`[Claude Code Chat] Output: ${output.substring(0, 200)}...`);
+  });
+  
+  // Capture stderr
+  claudeProcess.stderr.on('data', (data) => {
+    const errorOutput = data.toString();
+    job.claudeCodeOutput += `[stderr] ${errorOutput}`;
+    console.error(`[Claude Code Chat] stderr: ${errorOutput}`);
+  });
+  
+  // Handle process completion
+  claudeProcess.on('close', (code) => {
+    console.log(`[Claude Code Chat] Process exited with code ${code}`);
+    claudeCodeProcesses.delete(projectId);
+    
+    // Read the modified files
+    const packageJsonPath = path.join(projectDir, 'package.json');
+    const serverJsPath = path.join(projectDir, 'server.js');
+    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
+    const errorPath = path.join(projectDir, 'ERROR');
+    
+    if (fs.existsSync(errorPath)) {
+      job.status = 'error';
+      job.error = 'Claude Code n\'a pas pu appliquer les modifications.';
+      // Clean up ERROR file for next attempt
+      fs.unlinkSync(errorPath);
+      return;
+    }
+    
+    try {
+      const packageJson = fs.existsSync(packageJsonPath) ? fs.readFileSync(packageJsonPath, 'utf8') : DEFAULT_PACKAGE_JSON;
+      const serverJs = fs.existsSync(serverJsPath) ? fs.readFileSync(serverJsPath, 'utf8') : DEFAULT_SERVER_JS;
+      const indexHtml = fs.existsSync(indexHtmlPath) ? fs.readFileSync(indexHtmlPath, 'utf8') : DEFAULT_INDEX_HTML;
+      
+      // Format as the expected code output with markers
+      job.code = `### package.json
+${packageJson}
+
+### server.js
+${serverJs}
+
+### public/index.html
+${indexHtml}`;
+      
+      job.status = 'done';
+      job.progressMessage = 'Modifications appliquées avec succès !';
+      console.log(`[Claude Code Chat] Modification successful for project ${projectId}`);
+      
+      // Clean up READY file if exists
+      const readyPath = path.join(projectDir, 'READY');
+      if (fs.existsSync(readyPath)) {
+        fs.unlinkSync(readyPath);
+      }
+    } catch (readErr) {
+      job.status = 'error';
+      job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
+      console.error(`[Claude Code Chat] Error reading files: ${readErr.message}`);
+    }
+  });
+  
+  // Handle process errors
+  claudeProcess.on('error', (err) => {
+    console.error(`[Claude Code Chat] Process error: ${err.message}`);
+    claudeCodeProcesses.delete(projectId);
+    job.status = 'error';
+    job.error = `Erreur Claude Code: ${err.message}`;
+  });
 }
 
-// ─── GENERATE CLAUDE (NON-STREAMING, FOR POLLING) ───
+// ─── LEGACY GENERATE CLAUDE (KEPT FOR SMALL OPERATIONS) ───
 function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
   
+  // Use Claude Code for project generation instead of direct API
+  if (job.project_id) {
+    const projectDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+    const serverJsPath = path.join(projectDir, 'server.js');
+    
+    // Check if this is a modification (existing project with files) vs new generation
+    const isModification = fs.existsSync(serverJsPath);
+    
+    if (isModification) {
+      // Use chat modification function for existing projects
+      const userMessage = messages[messages.length - 1]?.content || '';
+      generateClaudeCodeChat(job.project_id, userMessage, jobId);
+    } else {
+      // New generation
+      generateClaudeCode(job.project_id, brief || (messages[messages.length - 1]?.content || ''), jobId, options);
+    }
+    return;
+  }
+  
+  // For non-project operations, fall back to API (kept for compatibility)
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
     job.error = 'Clé API non configurée sur le serveur.';
@@ -569,6 +849,7 @@ Règles d'intégration automatique :
 }
 
 // ─── GENERATE CLAUDE WITH IMAGE (NON-STREAMING, FOR POLLING) ───
+// ─── GENERATE CLAUDE CODE FROM IMAGE ───
 function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
   const job = generationJobs.get(jobId);
   if (!job) return;
@@ -579,78 +860,226 @@ function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
     return; 
   }
   
-  const systemPrompt = ABSOLUTE_BROWSER_RULE + `Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
+  const projectId = job.project_id;
+  if (!projectId) {
+    job.status = 'error';
+    job.error = 'ID du projet manquant pour la génération à partir d\'image.';
+    return;
+  }
+  
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  
+  // Create project directory if it doesn't exist
+  if (!fs.existsSync(projectDir)) {
+    fs.mkdirSync(projectDir, { recursive: true });
+  }
+  
+  // Create public directory
+  const publicDir = path.join(projectDir, 'public');
+  if (!fs.existsSync(publicDir)) {
+    fs.mkdirSync(publicDir, { recursive: true });
+  }
+  
+  // Save the image to the project directory for Claude Code to analyze
+  const imagePath = path.join(projectDir, 'design-reference.png');
+  const imageBuffer = Buffer.from(imageBase64, 'base64');
+  fs.writeFileSync(imagePath, imageBuffer);
+  
+  // Write BRIEF.md with image reference
+  const briefContent = `# Brief du Projet
 
-## TA MISSION
-Analyse l'image fournie et reproduis FIDÈLEMENT ce design en HTML/CSS/JS moderne, responsive et professionnel.
+## Design de référence
+Une image de design a été fournie : design-reference.png
 
-## INSTRUCTIONS DE REPRODUCTION
+${prompt || 'Reproduire fidèlement ce design en HTML/CSS/JS moderne, responsive et professionnel.'}
+`;
+  fs.writeFileSync(path.join(projectDir, 'BRIEF.md'), briefContent);
+  
+  // Write CLAUDE.md with image-specific instructions
+  const claudeMdContent = `# Prestige AI — Instructions (Design Image)
+
+Tu es Prestige AI, le meilleur générateur d'applications web. Tu travailles dans le dossier courant uniquement.
+
+## Brief
+Analyse l'image design-reference.png et reproduis FIDÈLEMENT ce design.
+
+## Instructions de reproduction
 1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
 2. Identifie la palette de couleurs exacte utilisée
 3. Note la typographie et les tailles de police
 4. Reproduis les espacements et marges
 5. Adapte pour le responsive (mobile-first)
 
-## CODE À GÉNÉRER
-- HTML5 sémantique avec structure complète
+## Fichiers à créer
+
+Crée exactement ces 3 fichiers dans le dossier courant :
+
+**package.json** — JSON valide, dépendances fixes :
+express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2.8.5, helmet 7.1.0, compression 1.7.4
+
+**server.js** — Backend Express 4.18.2 :
+- Port 3000, route /health, fichiers statiques depuis /public
+- SQLite basique
+- JWT auth, compte admin par défaut admin@project.com / Admin2024!
+- Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
+
+**public/index.html** — Frontend vanilla uniquement :
+- REPRODUIS FIDÈLEMENT le design de l'image
+- JAMAIS require(), exports, import
+- fetch('/api/...') pour le backend
 - CSS moderne (Flexbox/Grid, variables CSS)
-- Tailwind CSS pour le styling rapide
-- JavaScript pour les interactions si nécessaire
 - Images via https://picsum.photos avec dimensions appropriées
 - Contenu réaliste et professionnel (jamais de Lorem ipsum)
 
-## FORMAT DE SORTIE
-Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans une balise <style>.`;
+## Processus
 
-  const messages = [{
-    role: 'user',
-    content: [
-      {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: mediaType,
-          data: imageBase64
-        }
-      },
-      {
-        type: 'text',
-        text: prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image."
-      }
-    ]
-  }];
-
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:16000, system:systemPrompt, stream:true, messages });
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+1. Analyse l'image design-reference.png
+2. Génère les 3 fichiers reproduisant le design
+3. Teste : \`node --check server.js\`
+4. Lance : \`node server.js &\`
+5. Teste : \`curl http://localhost:3000/health\`
+6. Corrige si erreur, reteste
+7. Quand tout fonctionne, écris le fichier \`READY\`
+8. Si échec après 5 tentatives, écris \`ERROR\`
+`;
+  fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMdContent);
   
-  const r = https.request(opts, apiRes => {
-    apiRes.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d = JSON.parse(line.slice(6));
-          if (d.type === 'content_block_delta' && d.delta?.text) { 
-            job.code += d.delta.text; 
-            job.progress = job.code.length;
-          }
-          if (d.type === 'message_stop') { 
-            job.status = 'done';
-          }
-        } catch(e) {
-          console.error('Generate image parse error:', e.message);
-        }
-      }
-    });
-    apiRes.on('error', e => { 
+  // Update job status
+  job.status = 'running';
+  job.claudeCodeOutput = '';
+  job.progressMessage = 'Analyse du design...';
+  
+  console.log(`[Claude Code Image] Starting generation from image for project ${projectId}`);
+  console.log(`[Claude Code Image] Project directory: ${projectDir}`);
+  
+  // Build the prompt for Claude Code
+  const claudePrompt = `Lis le fichier CLAUDE.md et analyse l'image design-reference.png dans ce dossier. Reproduis fidèlement ce design en créant les 3 fichiers requis (package.json, server.js, public/index.html). Teste-les et crée le fichier READY quand tout fonctionne.`;
+  
+  // Spawn Claude Code process
+  const claudeProcess = spawn('claude', [
+    '--dangerously-skip-permissions',
+    '--print',
+    claudePrompt
+  ], {
+    cwd: projectDir,
+    env: {
+      ...process.env,
+      ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+    }
+  });
+  
+  // Store process reference
+  claudeCodeProcesses.set(projectId, claudeProcess);
+  
+  // Capture stdout in real-time
+  claudeProcess.stdout.on('data', (data) => {
+    const output = data.toString();
+    job.claudeCodeOutput += output;
+    job.progress = job.claudeCodeOutput.length;
+    
+    // Parse output for user-friendly messages
+    if (output.includes('Analyzing') || output.includes('image')) {
+      job.progressMessage = 'Analyse du design...';
+    } else if (output.includes('package.json')) {
+      job.progressMessage = 'Création du fichier package.json...';
+    } else if (output.includes('server.js')) {
+      job.progressMessage = 'Génération du backend...';
+    } else if (output.includes('index.html') || output.includes('HTML')) {
+      job.progressMessage = 'Reproduction du design en HTML/CSS...';
+    } else if (output.includes('Testing') || output.includes('node --check')) {
+      job.progressMessage = 'Vérification de la syntaxe...';
+    } else if (output.includes('READY') || output.includes('Success')) {
+      job.progressMessage = 'Design reproduit avec succès !';
+    }
+    
+    console.log(`[Claude Code Image] Output: ${output.substring(0, 200)}...`);
+  });
+  
+  // Capture stderr
+  claudeProcess.stderr.on('data', (data) => {
+    const errorOutput = data.toString();
+    job.claudeCodeOutput += `[stderr] ${errorOutput}`;
+    console.error(`[Claude Code Image] stderr: ${errorOutput}`);
+  });
+  
+  // Handle process completion
+  claudeProcess.on('close', (code) => {
+    console.log(`[Claude Code Image] Process exited with code ${code}`);
+    claudeCodeProcesses.delete(projectId);
+    
+    // Check if files were created successfully
+    const packageJsonPath = path.join(projectDir, 'package.json');
+    const serverJsPath = path.join(projectDir, 'server.js');
+    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
+    const errorPath = path.join(projectDir, 'ERROR');
+    
+    const packageExists = fs.existsSync(packageJsonPath);
+    const serverExists = fs.existsSync(serverJsPath);
+    const indexExists = fs.existsSync(indexHtmlPath);
+    const errorExists = fs.existsSync(errorPath);
+    
+    if (errorExists) {
       job.status = 'error';
-      job.error = e.message;
-    });
+      job.error = 'Claude Code a rencontré des erreurs lors de la reproduction du design.';
+      return;
+    }
+    
+    if (packageExists && serverExists && indexExists) {
+      try {
+        const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
+        const serverJs = fs.readFileSync(serverJsPath, 'utf8');
+        const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+        
+        job.code = `### package.json
+${packageJson}
+
+### server.js
+${serverJs}
+
+### public/index.html
+${indexHtml}`;
+        
+        job.status = 'done';
+        job.progressMessage = 'Design reproduit avec succès !';
+        console.log(`[Claude Code Image] Generation successful for project ${projectId}`);
+      } catch (readErr) {
+        job.status = 'error';
+        job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
+        console.error(`[Claude Code Image] Error reading files: ${readErr.message}`);
+      }
+    } else {
+      // Files missing - use default files as fallback
+      console.warn(`[Claude Code Image] Some files missing, using defaults.`);
+      
+      if (!packageExists) fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
+      if (!serverExists) fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
+      if (!indexExists) fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
+      
+      const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
+      const serverJs = fs.readFileSync(serverJsPath, 'utf8');
+      const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+      
+      job.code = `### package.json
+${packageJson}
+
+### server.js
+${serverJs}
+
+### public/index.html
+${indexHtml}`;
+      
+      job.status = 'done';
+      job.progressMessage = 'Projet généré avec fichiers par défaut.';
+    }
   });
-  r.on('error', e => { 
+  
+  // Handle process errors
+  claudeProcess.on('error', (err) => {
+    console.error(`[Claude Code Image] Process error: ${err.message}`);
+    claudeCodeProcesses.delete(projectId);
     job.status = 'error';
-    job.error = e.message;
+    job.error = `Erreur Claude Code: ${err.message}`;
   });
-  r.write(payload); r.end();
 }
 
 // ─── SAVE PROJECT VERSION ───
@@ -2601,12 +3030,19 @@ const server = http.createServer(async (req, res) => {
       job.finalized = true;
     }
     
+    // Return user-friendly message from Claude Code progress
+    const progressMessage = job.progressMessage || (job.status === 'pending' ? 'En attente...' : 
+      job.status === 'running' ? 'Génération en cours...' : 
+      job.status === 'done' ? 'Terminé !' : 
+      job.status === 'error' ? 'Erreur' : 'En cours...');
+    
     json(res, 200, { 
       job_id: jobId, 
       status: job.status, 
       code: job.code, 
       error: job.error, 
       progress: job.progress,
+      progress_message: progressMessage,
       preview_url: job.preview_url,
       framework: job.framework
     });
