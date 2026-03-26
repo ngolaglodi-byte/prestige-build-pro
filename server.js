@@ -398,7 +398,7 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
 
 **public/index.html** — Frontend vanilla uniquement :
 - JAMAIS require(), exports, import
-- fetch('/api/...') pour le backend
+- fetch RELATIF sans slash initial : fetch('api/menu') PAS fetch('/api/menu')
 - Design professionnel, responsive, animations CSS
 - Contenu réel adapté au secteur, zéro lorem ipsum
 
@@ -3045,14 +3045,22 @@ async function proxyToContainer(req, res, projectId, targetPath) {
       proxyRes.on('data', chunk => body += chunk.toString());
       proxyRes.on('end', () => {
         const baseTag = `<base href="/run/${projectId}/">`;
+        // Patch fetch: intercept absolute /api/ calls and rewrite to relative paths
+        // so they route through the proxy instead of hitting Prestige directly
+        const fetchPatch = `<script>
+(function(){var _f=window.fetch;window.fetch=function(u,o){
+if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);
+return _f.call(this,u,o);};})();
+</script>`;
+        const injection = baseTag + fetchPatch;
         if (body.includes('<head>')) {
-          body = body.replace('<head>', `<head>${baseTag}`);
+          body = body.replace('<head>', `<head>${injection}`);
         } else if (body.includes('<head ')) {
-          body = body.replace(/<head\s[^>]*>/, `$&${baseTag}`);
+          body = body.replace(/<head\s[^>]*>/, `$&${injection}`);
         } else if (body.includes('<html')) {
-          body = body.replace(/<html[^>]*>/, `$&<head>${baseTag}</head>`);
+          body = body.replace(/<html[^>]*>/, `$&<head>${injection}</head>`);
         } else {
-          body = baseTag + body;
+          body = injection + body;
         }
         res.end(body);
       });

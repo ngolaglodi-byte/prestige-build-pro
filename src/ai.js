@@ -412,6 +412,10 @@ RÈGLES ABSOLUES :
 2. JAMAIS de texte explicatif avant ou après le code
 3. Le code commence directement après le marqueur ### filename
 4. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
+   IMPORTANT pour les fetch : utiliser des URLs RELATIVES sans slash initial.
+   CORRECT : fetch('api/menu')  fetch('api/auth/login')
+   INTERDIT : fetch('/api/menu')  fetch('/api/auth/login')
+   Le site sera servi derrière un reverse proxy avec un préfixe de chemin. Les URLs absolues (/api/...) casseront le routage.
 5. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
 6. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
 7. COMPTE ADMIN OBLIGATOIRE : crée un compte admin avec email basé sur le nom/secteur du projet (ex: admin@monrestaurant.com, admin@luxehotel.com) et mot de passe fort (ex: Admin2024!, Prestige2024!). À la TOUTE FIN du fichier server.js, ajoute ce commentaire exact sur une seule ligne :
