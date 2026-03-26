@@ -59,9 +59,27 @@ const ERROR_TYPES = {
 };
 
 // ─── ABSOLUTE RULE FOR BROWSER-ONLY CODE ───
-const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE : Le fichier public/index.html doit être du HTML/CSS/JavaScript vanilla pur pour le navigateur. INTERDIT dans index.html : require(), module.exports, exports, import/export ES6, process, __dirname, Buffer, fs, path. Ces mots-clés Node.js ne fonctionnent pas dans un navigateur. Le fichier server.js peut utiliser require() mais jamais index.html.
+const ABSOLUTE_BROWSER_RULE = `RÈGLE 1 ABSOLUE : Le fichier public/index.html doit contenir UNIQUEMENT du HTML/CSS/JavaScript vanilla compatible navigateur. STRICTEMENT INTERDIT dans public/index.html : require(), module.exports, exports, import from, process, __dirname, Buffer, fs, path. Le frontend appelle le backend via fetch('/api/...').
+
+RÈGLE 2 ABSOLUE : Le fichier package.json doit être du JSON strict et valide sans commentaires ni virgules trailing. Dépendances autorisées uniquement : express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet.
 
 `;
+
+// Default valid package.json for fallback
+const DEFAULT_PACKAGE_JSON = JSON.stringify({
+  name: "project",
+  version: "1.0.0",
+  main: "server.js",
+  scripts: { start: "node server.js" },
+  dependencies: {
+    express: "^4.18.2",
+    "better-sqlite3": "^9.0.0",
+    bcryptjs: "^2.4.3",
+    jsonwebtoken: "^9.0.0",
+    cors: "^2.8.5",
+    helmet: "^7.1.0"
+  }
+}, null, 2);
 
 // In-memory tracking of auto-correction attempts per project
 const correctionAttempts = new Map();
@@ -1283,6 +1301,30 @@ async function buildDockerProject(projectId, code, onProgress) {
       }
       fs.writeFileSync(filePath, content);
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
+    }
+
+    // Step 2.25: Validate package.json before Docker build
+    console.log(`[Docker Build] Step 2.25: Validating package.json...`);
+    const packageJsonPath = path.join(projectDir, 'package.json');
+    let packageJsonValid = false;
+    
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageContent = fs.readFileSync(packageJsonPath, 'utf8');
+        JSON.parse(packageContent);
+        packageJsonValid = true;
+        console.log(`[Docker Build] package.json is valid JSON`);
+      } catch (parseError) {
+        console.warn(`[Docker Build] WARNING: package.json is invalid JSON: ${parseError.message}`);
+      }
+    } else {
+      console.warn(`[Docker Build] WARNING: package.json is missing`);
+    }
+    
+    if (!packageJsonValid) {
+      console.log(`[Docker Build] Replacing with default valid package.json`);
+      fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
+      console.log(`[Docker Build] Default package.json written successfully`);
     }
 
     // Step 2.5: Syntax check before building (35%)
