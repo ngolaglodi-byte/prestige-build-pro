@@ -404,7 +404,9 @@ RÈGLES ABSOLUES :
 3. Le code commence directement après le marqueur ### filename
 4. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
 5. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
-6. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage, compte admin par défaut admin@project.com / Admin2024!
+6. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
+7. COMPTE ADMIN OBLIGATOIRE : crée un compte admin avec email basé sur le nom/secteur du projet (ex: admin@monrestaurant.com, admin@luxehotel.com) et mot de passe fort (ex: Admin2024!, Prestige2024!). À la TOUTE FIN du fichier server.js, ajoute ce commentaire exact sur une seule ligne :
+// CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
 
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
 - Design moderne inspiré des meilleures applications SaaS mondiales

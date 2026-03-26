@@ -380,8 +380,10 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
 **server.js** — Backend Express 4.18.2 :
 - Port 3000, route /health, fichiers statiques depuis /public
 - SQLite avec tables selon le secteur
-- JWT auth, compte admin par défaut admin@project.com / Admin2024!
+- JWT auth, compte admin avec email basé sur le nom du projet (ex: admin@monrestaurant.com) et mot de passe fort
 - Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
+- À la TOUTE FIN du fichier, ajouter ce commentaire exact :
+  // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
 
 **public/index.html** — Frontend vanilla uniquement :
 - JAMAIS require(), exports, import
@@ -837,7 +839,7 @@ function generateViaAPI(projectId, brief, jobId) {
   const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
   const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
 
-  const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.`;
+  const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
 
   const payload = JSON.stringify({
     model: 'claude-sonnet-4-20250514',
@@ -1974,6 +1976,16 @@ async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT
 }
 
 // Clean generated file content - remove all markdown artifacts and fix incompatible patterns
+// Extract admin credentials from generated code (// CREDENTIALS: email=... password=...)
+function extractCredentials(code) {
+  if (!code) return null;
+  const match = code.match(/\/\/\s*CREDENTIALS:\s*email=(\S+)\s+password=(\S+)/);
+  if (match) {
+    return { email: match[1], password: match[2] };
+  }
+  return null;
+}
+
 function cleanGeneratedContent(content) {
   if (!content) return '';
   
@@ -3004,33 +3016,33 @@ const server = http.createServer(async (req, res) => {
   // ═══════════════════════════════════════════════════════════════════════════
   // DOCKER PROXY ROUTE: /run/:projectId/*
   // Proxies requests to isolated Docker containers running project previews
+  // Path rewriting: /run/23/ → /, /run/23/api/login → /api/login
   // ═══════════════════════════════════════════════════════════════════════════
   if (url.startsWith('/run/')) {
-    const parts = url.split('/').filter(Boolean); // ['run', 'projectId', ...]
-    const projectId = parseInt(parts[1]);
-    
-    if (!projectId || isNaN(projectId)) {
+    const runMatch = req.url.match(/^\/run\/(\d+)(\/.*)?$/);
+    if (!runMatch) {
       json(res, 400, { error: 'ID de projet invalide' });
       return;
     }
-    
+    const projectId = parseInt(runMatch[1]);
+
     // Authentication check for Docker proxy
     const user = getAuth(req);
     if (!user) {
       json(res, 401, { error: 'Non autorisé. Connectez-vous pour accéder au projet.' });
       return;
     }
-    
+
     // Authorization check: user must own the project or be admin
     const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
     if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
       json(res, 403, { error: 'Accès refusé à ce projet.' });
       return;
     }
-    
-    // Build the target path (everything after /run/projectId)
-    const targetPath = '/' + parts.slice(2).join('/') || '/';
-    
+
+    // Build the target path: strip /run/{id} prefix, preserve rest + query string
+    const targetPath = runMatch[2] || '/';
+
     // Proxy to the container
     proxyToContainer(req, res, projectId, targetPath);
     return;
@@ -3156,8 +3168,15 @@ const server = http.createServer(async (req, res) => {
       } catch(e) {
         console.error('Preview save error:', e.message);
       }
-      notifyProjectClients(job.project_id, 'code_updated', { 
-        userName: user.name, 
+      // Extract admin credentials from generated code
+      const creds = extractCredentials(fullCode);
+      if (creds) {
+        job.credentials = creds;
+        const credMsg = `✅ Projet prêt ! Identifiants admin : ${creds.email} / ${creds.password}`;
+        db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(job.project_id, 'assistant', credMsg);
+      }
+      notifyProjectClients(job.project_id, 'code_updated', {
+        userName: user.name,
         previewUrl: `/preview/${job.project_id}/`,
         message: `${user.name} a généré une nouvelle version`
       }, user.id);
@@ -3170,15 +3189,16 @@ const server = http.createServer(async (req, res) => {
       job.status === 'done' ? 'Terminé !' : 
       job.status === 'error' ? 'Erreur' : 'En cours...');
     
-    json(res, 200, { 
-      job_id: jobId, 
-      status: job.status, 
-      code: job.code, 
-      error: job.error, 
+    json(res, 200, {
+      job_id: jobId,
+      status: job.status,
+      code: job.code,
+      error: job.error,
       progress: job.progress,
       progress_message: progressMessage,
       preview_url: job.preview_url,
-      framework: job.framework
+      framework: job.framework,
+      credentials: job.credentials || null
     });
     return;
   }

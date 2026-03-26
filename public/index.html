@@ -294,6 +294,39 @@ button.card { padding: 0; }
 .domain-input-group { display: flex; gap: var(--space-sm); }
 .domain-input-group .input { flex: 1; }
 .domain-hint { font-size: 0.75rem; color: var(--text-muted); margin-top: var(--space-xs); }
+
+/* Credentials overlay on preview */
+.credentials-overlay {
+  position: absolute; top: 48px; right: 12px; z-index: 50;
+  background: rgba(13, 17, 32, 0.95); border: 1px solid rgba(212, 168, 32, 0.3);
+  border-radius: 12px; padding: 16px 20px; min-width: 280px;
+  backdrop-filter: blur(12px); box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  animation: credsFadeIn 0.3s ease;
+}
+@keyframes credsFadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.credentials-overlay .creds-title {
+  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--gold); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.credentials-overlay .creds-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 0;
+  font-size: 0.85rem; color: var(--text-secondary);
+}
+.credentials-overlay .creds-value {
+  font-family: var(--font-mono); color: var(--text-primary); font-weight: 500;
+  background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 4px; flex: 1;
+}
+.credentials-overlay .creds-copy {
+  background: none; border: 1px solid rgba(255,255,255,0.1); color: var(--text-muted);
+  cursor: pointer; padding: 4px 8px; border-radius: 4px; font-size: 0.7rem;
+  transition: all 0.2s;
+}
+.credentials-overlay .creds-copy:hover { border-color: var(--gold); color: var(--gold); }
+.credentials-overlay .creds-close {
+  position: absolute; top: 8px; right: 8px; background: none; border: none;
+  color: var(--text-muted); cursor: pointer; font-size: 1.1rem; line-height: 1;
+}
+.credentials-overlay .creds-close:hover { color: var(--text-primary); }
 </style>
 </head>
 <body>
@@ -564,6 +597,7 @@ let currentModalStep = 1;
 let projectSSE = null;
 let generatedCode = '';
 let uploadedImage = null;
+let projectCredentials = null;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API HELPER
@@ -899,12 +933,16 @@ async function sendChatMessage(message) {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
         assistantDiv.textContent = 'Code généré avec succès (' + job.code.length + ' caractères)';
+        if (job.credentials) {
+          projectCredentials = job.credentials;
+          addChatMessage('assistant', '\u2705 Projet prêt ! Identifiants admin : ' + job.credentials.email + ' / ' + job.credentials.password);
+        }
         if (job.preview_url) loadPreview(job.preview_url);
         await refreshPreviewWithCode();
         await autoCompile();
         break;
       }
-      
+
       if (job.status === 'error') {
         assistantDiv.textContent = 'Erreur: ' + job.error;
         break;
@@ -956,12 +994,16 @@ async function generateFromImage(prompt) {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
         assistantDiv.textContent = 'Design reproduit avec succès!';
+        if (job.credentials) {
+          projectCredentials = job.credentials;
+          addChatMessage('assistant', '\u2705 Projet prêt ! Identifiants admin : ' + job.credentials.email + ' / ' + job.credentials.password);
+        }
         if (job.preview_url) loadPreview(job.preview_url);
         await refreshPreviewWithCode();
         await autoCompile();
         break;
       }
-      
+
       if (job.status === 'error') {
         assistantDiv.textContent = 'Erreur: ' + job.error;
         break;
@@ -1259,16 +1301,49 @@ function loadDockerPreview(url) {
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
   const previewUrl = url || `/run/${currentProject.id}/`;
-  
+
   document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
   frame.src = previewUrl;
   frame.style.display = 'block';
   loading.style.display = 'none';
   document.getElementById('preview-status').className = 'preview-status live';
-  document.getElementById('preview-status').innerHTML = '<span>✓ Docker isolé</span>';
-  
+  document.getElementById('preview-status').innerHTML = '<span>\u2713 Docker isolé</span>';
+
+  // Show credentials overlay if available
+  if (projectCredentials) showCredentialsOverlay(projectCredentials);
+
   // Start logs polling when preview is loaded
   startLogsPolling();
+}
+
+function showCredentialsOverlay(creds) {
+  // Remove any existing overlay
+  const existing = document.getElementById('credentials-overlay');
+  if (existing) existing.remove();
+
+  const wrapper = document.getElementById('preview-frame-wrapper');
+  if (!wrapper) return;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'credentials-overlay';
+  overlay.className = 'credentials-overlay';
+  overlay.innerHTML = `
+    <button class="creds-close" onclick="this.parentElement.remove()">&times;</button>
+    <div class="creds-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Identifiants admin</div>
+    <div class="creds-row"><span>Email</span><span class="creds-value" id="creds-email">${escapeHtml(creds.email)}</span><button class="creds-copy" onclick="copyCredential('creds-email')">Copier</button></div>
+    <div class="creds-row"><span>Mot de passe</span><span class="creds-value" id="creds-password">${escapeHtml(creds.password)}</span><button class="creds-copy" onclick="copyCredential('creds-password')">Copier</button></div>
+  `;
+  wrapper.style.position = 'relative';
+  wrapper.appendChild(overlay);
+}
+
+function copyCredential(elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    const btn = el.nextElementSibling;
+    if (btn) { btn.textContent = '\u2713'; setTimeout(() => { btn.textContent = 'Copier'; }, 1500); }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
