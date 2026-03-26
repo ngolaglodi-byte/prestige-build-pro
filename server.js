@@ -1783,41 +1783,61 @@ async function ensureDockerNetwork() {
 }
 
 // Join main container to pbp-projects network if not already connected
-// This allows the main server to make health check requests to project containers
+// This allows the main server to make health check requests to project containers via DNS
 async function joinPbpProjectsNetwork() {
   if (!docker) return;
   try {
-    // Get container ID from hostname (Docker sets hostname to container ID)
+    // Get container ID from hostname (Docker sets HOSTNAME to container ID)
     const hostname = process.env.HOSTNAME || os.hostname();
+    console.log(`[Network] Main container hostname: ${hostname}`);
     if (!hostname) {
-      console.warn('Could not determine container hostname, skipping network join');
+      console.warn('[Network] Could not determine container hostname, skipping network join');
       return;
     }
-    
+
     const container = docker.getContainer(hostname);
     let inspectData;
     try {
       inspectData = await container.inspect();
     } catch (e) {
-      // Not running in a container or container not found
-      console.log('Not running in Docker container, skipping network join');
+      // Not running in a container or container not found — try by name from Coolify
+      console.log(`[Network] Container lookup by hostname '${hostname}' failed: ${e.message}`);
+      console.log('[Network] Not running in Docker container, skipping network join');
       return;
     }
-    
+
+    const containerName = inspectData.Name ? inspectData.Name.replace(/^\//, '') : hostname;
+    console.log(`[Network] Container resolved: ${containerName} (ID: ${inspectData.Id ? inspectData.Id.substring(0, 12) : 'unknown'})`);
+
     // Check if already connected to pbp-projects network
     const networks = inspectData.NetworkSettings && inspectData.NetworkSettings.Networks;
+    const networkNames = networks ? Object.keys(networks) : [];
+    console.log(`[Network] Container current networks: ${networkNames.join(', ') || 'none'}`);
+
     if (networks && networks[DOCKER_NETWORK]) {
-      console.log(`Already connected to ${DOCKER_NETWORK} network`);
+      const ip = networks[DOCKER_NETWORK].IPAddress;
+      console.log(`[Network] Already connected to ${DOCKER_NETWORK} (IP: ${ip})`);
       return;
     }
-    
+
     // Connect to pbp-projects network
+    console.log(`[Network] Connecting container '${containerName}' to ${DOCKER_NETWORK}...`);
     const network = docker.getNetwork(DOCKER_NETWORK);
-    await network.connect({ Container: hostname });
-    console.log(`Successfully connected to ${DOCKER_NETWORK} network`);
+    await network.connect({ Container: inspectData.Id || hostname });
+    console.log(`[Network] Successfully connected to ${DOCKER_NETWORK}`);
+
+    // Verify the connection
+    const verifyData = await container.inspect();
+    const verifyNetworks = verifyData.NetworkSettings && verifyData.NetworkSettings.Networks;
+    if (verifyNetworks && verifyNetworks[DOCKER_NETWORK]) {
+      console.log(`[Network] Verified: IP in ${DOCKER_NETWORK} = ${verifyNetworks[DOCKER_NETWORK].IPAddress}`);
+    } else {
+      console.error(`[Network] WARNING: Connection to ${DOCKER_NETWORK} not verified after join!`);
+    }
   } catch (e) {
     const hostname = process.env.HOSTNAME || os.hostname() || 'unknown';
-    console.error(`Failed to join ${DOCKER_NETWORK} network (container: ${hostname}):`, e.message);
+    console.error(`[Network] Failed to join ${DOCKER_NETWORK} (container: ${hostname}): ${e.message}`);
+    console.error(`[Network] Health checks to project containers will FAIL — DNS resolution requires same network`);
   }
 }
 
@@ -1951,27 +1971,57 @@ async function startContainerAsync(projectId) {
 async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT) {
   const startTime = Date.now();
   const hostname = getContainerHostname(projectId);
+  const healthUrl = `http://${hostname}:3000/health`;
+  let attempt = 0;
+
+  console.log(`[Health] Starting health check for project ${projectId} → ${healthUrl} (timeout: ${maxWait / 1000}s)`);
 
   while (Date.now() - startTime < maxWait) {
+    attempt++;
     try {
-      const response = await new Promise((resolve, reject) => {
-        const req = http.get(`http://${hostname}:3000/health`, { timeout: 2000 }, (res) => {
+      const result = await new Promise((resolve) => {
+        const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
           let data = '';
           res.on('data', chunk => data += chunk);
           res.on('end', () => {
-            try {
-              const json = JSON.parse(data);
-              resolve(json.status === 'ok');
-            } catch { resolve(false); }
+            if (res.statusCode === 200) {
+              try {
+                const json = JSON.parse(data);
+                if (json.status === 'ok') {
+                  resolve({ ok: true });
+                } else {
+                  resolve({ ok: false, reason: `status=${json.status}`, body: data.substring(0, 200) });
+                }
+              } catch {
+                resolve({ ok: false, reason: 'invalid JSON', body: data.substring(0, 200) });
+              }
+            } else {
+              resolve({ ok: false, reason: `HTTP ${res.statusCode}`, body: data.substring(0, 200) });
+            }
           });
         });
-        req.on('error', () => resolve(false));
-        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.on('error', (e) => resolve({ ok: false, reason: `error: ${e.code || e.message}` }));
+        req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout (2s)' }); });
       });
-      if (response) return true;
-    } catch (e) {}
+
+      if (result.ok) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[Health] ${hostname} OK after ${attempt} attempts (${elapsed}s)`);
+        return true;
+      }
+
+      // Log every attempt for first 3, then every 5th
+      if (attempt <= 3 || attempt % 5 === 0) {
+        console.log(`[Health] ${hostname} attempt ${attempt}: ${result.reason}${result.body ? ' — ' + result.body : ''}`);
+      }
+    } catch (e) {
+      console.error(`[Health] ${hostname} attempt ${attempt}: unexpected error: ${e.message}`);
+    }
     await new Promise(r => setTimeout(r, 1000));
   }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.error(`[Health] ${hostname} FAILED after ${attempt} attempts (${elapsed}s). DNS resolution may be failing — ensure main container is on ${DOCKER_NETWORK} network.`);
   return false;
 }
 
