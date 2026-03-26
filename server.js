@@ -3646,7 +3646,7 @@ const server = http.createServer(async (req, res) => {
         db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress, friendly[p.step]||'Construction en cours...', buildId);
       }).then(result=>{
         if (result.success) {
-          const url2=`/preview/${buildId}/`;
+          const url2=`/run/${project_id}/`;
           db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(url2,buildId);
           db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(url2,project_id);
           db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id,`Projet "${project.title}" prêt à explorer !`, 'success');

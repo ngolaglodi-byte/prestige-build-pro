@@ -1250,7 +1250,7 @@ async function pollBuildStatus(buildId) {
       
       if (b.status === 'done') {
         // Use Docker proxy URL for preview
-        const previewUrl = b.url.startsWith('/run/') ? b.url : `/run/${currentProject.id}/`;
+        const previewUrl = (b.url && b.url.startsWith('/run/')) ? b.url : `/run/${currentProject.id}/`;
         loadDockerPreview(previewUrl);
       } else if (b.status === 'error') {
         status.className = 'preview-status';
@@ -1323,23 +1323,28 @@ function loadDockerPreview(url) {
 
   document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
 
-  // Keep spinner visible until iframe actually loads
+  // Show spinner while iframe loads
+  loading.style.display = 'flex';
   loading.querySelector('span').textContent = 'Chargement du site...';
+  frame.style.display = 'none';
 
   // Hide spinner and show iframe once loaded (or after timeout)
+  let settled = false;
   const onLoaded = () => {
+    if (settled) return;
+    settled = true;
     frame.removeEventListener('load', onLoaded);
     clearTimeout(fallbackTimer);
     frame.style.display = 'block';
     loading.style.display = 'none';
     document.getElementById('preview-status').className = 'preview-status live';
     document.getElementById('preview-status').innerHTML = '<span>\u2713 Docker isolé</span>';
-    if (projectCredentials) showCredentialsOverlay(projectCredentials);
+    try { if (projectCredentials) showCredentialsOverlay(projectCredentials); } catch(e) {}
   };
   frame.addEventListener('load', onLoaded);
 
-  // Fallback: if load event never fires (e.g. network error), show iframe after 10s
-  const fallbackTimer = setTimeout(onLoaded, 10000);
+  // Fallback: show iframe after 8s even if load event doesn't fire
+  const fallbackTimer = setTimeout(onLoaded, 8000);
 
   frame.src = authenticatedUrl;
 
