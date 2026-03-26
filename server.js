@@ -3073,62 +3073,24 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   });
 
   proxyReq.on('error', async (e) => {
-    console.error(`Proxy error for project ${projectId} (${containerHost}):`, e.message);
-    // Container might have crashed, try to restart (with lock to prevent multiple attempts)
+    console.error(`[Proxy] Error for project ${projectId} (${containerHost}):`, e.message);
     const running = await isContainerRunningAsync(projectId);
     if (!running && !restartLocks.get(projectId)) {
       restartLocks.set(projectId, true);
       restartContainerAsync(projectId).catch(err => console.error('Restart error:', err.message));
-      // Clear lock after 30 seconds
       setTimeout(() => restartLocks.delete(projectId), 30000);
     }
-
-    res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Redémarrage en cours</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: linear-gradient(135deg, #0d1120 0%, #1a2744 100%);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #e2e8f0;
+    if (!res.headersSent) {
+      res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
     }
-    .container { text-align: center; padding: 40px; }
-    .loader {
-      width: 50px; height: 50px;
-      border: 4px solid rgba(212, 168, 32, 0.2);
-      border-top-color: #D4A820;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 24px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    h1 { font-size: 1.5rem; margin-bottom: 12px; color: #D4A820; }
-    p { color: #8896c4; margin-bottom: 20px; }
-  </style>
-  <script>setTimeout(() => location.reload(), 3000);</script>
-</head>
-<body>
-  <div class="container">
-    <div class="loader"></div>
-    <h1>Votre projet redémarre automatiquement</h1>
-    <p>Un petit souci technique. Nous relançons tout pour vous...</p>
-  </div>
-</body>
-</html>`);
+    res.end(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Redémarrage</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:linear-gradient(135deg,#0d1120,#1a2744);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e2e8f0}.c{text-align:center;padding:40px}.l{width:50px;height:50px;border:4px solid rgba(212,168,32,.2);border-top-color:#D4A820;border-radius:50%;animation:s 1s linear infinite;margin:0 auto 24px}@keyframes s{to{transform:rotate(360deg)}}h1{font-size:1.5rem;margin-bottom:12px;color:#D4A820}p{color:#8896c4}</style><script>setTimeout(()=>location.reload(),3000)</script></head><body><div class="c"><div class="l"></div><h1>Votre projet redémarre</h1><p>Veuillez patienter quelques instants...</p></div></body></html>`);
   });
 
   proxyReq.on('timeout', () => {
     proxyReq.destroy();
-    res.writeHead(504, { 'Content-Type': 'application/json' });
+    if (!res.headersSent) {
+      res.writeHead(504, { 'Content-Type': 'application/json' });
+    }
     res.end(JSON.stringify({ error: 'Le projet met trop de temps à répondre.' }));
   });
 

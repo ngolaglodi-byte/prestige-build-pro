@@ -964,6 +964,10 @@ async function sendChatMessage(message) {
         break;
       }
     }
+    // If loop ended without break (timeout), inform user
+    if (Date.now() >= pollDeadline) {
+      assistantDiv.textContent = 'La génération a pris trop de temps. Réessayez avec un brief plus simple.';
+    }
   } catch (e) { addChatMessage('assistant', 'Erreur: ' + e.message); }
   setGeneratingState(false);
 }
@@ -1030,6 +1034,9 @@ async function generateFromImage(prompt) {
         assistantDiv.textContent = 'Erreur: ' + (job.error || 'Erreur inconnue');
         break;
       }
+    }
+    if (Date.now() >= pollDeadline) {
+      assistantDiv.textContent = 'La génération a pris trop de temps. Réessayez avec un brief plus simple.';
     }
     uploadedImage = null;
   } catch (e) { addChatMessage('assistant', 'Erreur: ' + e.message); }
@@ -1226,11 +1233,15 @@ async function compileProject() {
   
   try {
     const r = await api('/api/compile', 'POST', { project_id: currentProject.id });
-    if (r.buildId) pollBuildStatus(r.buildId);
-  } catch (e) { 
+    if (r.buildId) {
+      pollBuildStatus(r.buildId);
+    } else {
+      throw new Error('Le serveur n\'a pas retourné d\'identifiant de build.');
+    }
+  } catch (e) {
     status.className = 'preview-status';
-    status.innerHTML = '<span>Erreur</span>';
-    alert('Erreur: ' + e.message); 
+    status.innerHTML = '<span style="color:var(--error);">Erreur</span>';
+    loading.querySelector('span').textContent = e.message || 'Erreur de compilation';
   }
 }
 
