@@ -2189,87 +2189,7 @@ async function buildDockerProject(projectId, code, onProgress) {
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
-    // Step 2.1: INTELLIGENT PATTERN VALIDATION - Scan and fix incompatible patterns
-    console.log(`[Docker Build] Step 2.1: Intelligent pattern validation...`);
-    onProgress({ step: 2, progress: 31, message: 'Correction automatique des patterns incompatibles...' });
-    
-    const serverJsPathForScan = path.join(projectDir, 'server.js');
-    if (fs.existsSync(serverJsPathForScan)) {
-      let serverContent = fs.readFileSync(serverJsPathForScan, 'utf8');
-      let patternsCorrected = false;
-      
-      // Fix Express wildcard routes (Express 4.x requires '/*' not '*')
-      if (serverContent.match(/\.(get|use|post|put|delete)\(\s*['"]?\*['"]?\s*,/)) {
-        serverContent = serverContent.replace(/\.get\(\s*['"]?\*['"]?\s*,/g, ".get('/*',");
-        serverContent = serverContent.replace(/\.use\(\s*['"]?\*['"]?\s*,/g, ".use('/*',");
-        serverContent = serverContent.replace(/\.post\(\s*['"]?\*['"]?\s*,/g, ".post('/*',");
-        serverContent = serverContent.replace(/\.put\(\s*['"]?\*['"]?\s*,/g, ".put('/*',");
-        serverContent = serverContent.replace(/\.delete\(\s*['"]?\*['"]?\s*,/g, ".delete('/*',");
-        console.log(`[Docker Build] ✓ Fixed wildcard routes to use '/*' syntax`);
-        patternsCorrected = true;
-      }
-      
-      // Fix router wildcard routes
-      if (serverContent.match(/router\.(get|use|post|put|delete)\(\s*['"]?\*['"]?\s*,/)) {
-        serverContent = serverContent.replace(/router\.get\(\s*['"]?\*['"]?\s*,/g, "router.get('/*',");
-        serverContent = serverContent.replace(/router\.use\(\s*['"]?\*['"]?\s*,/g, "router.use('/*',");
-        serverContent = serverContent.replace(/router\.post\(\s*['"]?\*['"]?\s*,/g, "router.post('/*',");
-        serverContent = serverContent.replace(/router\.put\(\s*['"]?\*['"]?\s*,/g, "router.put('/*',");
-        serverContent = serverContent.replace(/router\.delete\(\s*['"]?\*['"]?\s*,/g, "router.delete('/*',");
-        console.log(`[Docker Build] ✓ Fixed router wildcard routes to use '/*' syntax`);
-        patternsCorrected = true;
-      }
-      
-      // Fix middleware ordering: static files BEFORE JWT auth
-      // Move express.static() right after the last require/import line,
-      // and scope global JWT middleware to /api/* only.
-      const staticRegex = /^(app\.use\(\s*express\.static\s*\([^)]+\)\s*\);?\s*)$/gm;
-      const staticMatches = serverContent.match(staticRegex);
-      if (staticMatches && staticMatches.length > 0) {
-        // Remove all express.static lines from their current position
-        let cleaned = serverContent;
-        for (const m of staticMatches) {
-          cleaned = cleaned.replace(m, '');
-        }
-        // Find insertion point: after the last require() or const/let/var import line at the top
-        const lines = cleaned.split('\n');
-        let insertIdx = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (line.startsWith('const ') || line.startsWith('let ') || line.startsWith('var ')) {
-            if (line.includes('require(') || line.includes('require (')) {
-              insertIdx = i + 1;
-            }
-          }
-        }
-        // Insert static middleware right after imports
-        const uniqueStatic = [...new Set(staticMatches.map(s => s.trim()))];
-        lines.splice(insertIdx, 0, '', '// Static files served BEFORE auth (public assets)', ...uniqueStatic);
-        serverContent = lines.join('\n');
-        console.log(`[Docker Build] ✓ Moved express.static() before auth middleware`);
-        patternsCorrected = true;
-      }
-
-      // Scope global JWT auth middleware to /api/* only
-      // Matches: app.use(authenticate), app.use(authMiddleware), app.use(verifyToken), app.use(jwtAuth), etc.
-      // But NOT already scoped: app.use('/api', ...)
-      const globalAuthRegex = /^(\s*app\.use\(\s*)(authenticate|authMiddleware|verifyToken|jwtAuth|requireAuth|checkAuth|auth)(\s*\)\s*;?\s*)$/gm;
-      const globalAuthReplacement = serverContent.replace(globalAuthRegex, (match, before, fn, after) => {
-        console.log(`[Docker Build] ✓ Scoped global ${fn} middleware to /api/* only`);
-        patternsCorrected = true;
-        return `${before}'/api', ${fn}${after}`;
-      });
-      serverContent = globalAuthReplacement;
-
-      if (patternsCorrected) {
-        fs.writeFileSync(serverJsPathForScan, serverContent);
-        console.log(`[Docker Build] ✓ server.js patterns corrected and saved`);
-      } else {
-        console.log(`[Docker Build] ✓ No incompatible patterns found in server.js`);
-      }
-    }
-
-    // Also fix package.json to use pinned versions
+    // Fix package.json to use pinned versions
     const packageJsonPathForScan = path.join(projectDir, 'package.json');
     if (fs.existsSync(packageJsonPathForScan)) {
       let packageContent = fs.readFileSync(packageJsonPathForScan, 'utf8');
@@ -2707,6 +2627,80 @@ Retourne UNIQUEMENT le code corrigé, sans explications.`;
       });
     });
     
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Final deep correction: send the full code + exact error to Claude for a complete rewrite
+async function callClaudeFinalCorrection(originalCode, errorLogs) {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('Clé API Claude non configurée');
+  }
+
+  // Extract only server.js from the generated code
+  const serverJsMatch = originalCode.match(/### server\.js\n([\s\S]*?)(?=\n### |$)/);
+  const serverJsCode = serverJsMatch ? serverJsMatch[1].trim() : originalCode;
+
+  const prompt = `Ce server.js génère cette erreur :
+
+${errorLogs.substring(0, 3000)}
+
+Code actuel de server.js :
+${serverJsCode}
+
+Réécris complètement server.js en corrigeant l'erreur. Assure-toi que app est défini avant tout app.use(). Retourne uniquement le code corrigé, sans marqueurs ### et sans backticks.`;
+
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 16000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const opts = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+
+    const req = https.request(opts, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.content && response.content[0] && response.content[0].text) {
+            const correctedServerJs = response.content[0].text
+              .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '').trim();
+
+            // Rebuild the full code with corrected server.js
+            const packageMatch = originalCode.match(/### package\.json\n([\s\S]*?)(?=\n### )/);
+            const indexMatch = originalCode.match(/### public\/index\.html\n([\s\S]*?)$/);
+            const packageJson = packageMatch ? packageMatch[1].trim() : '';
+            const indexHtml = indexMatch ? indexMatch[1].trim() : '';
+
+            const fullCode = `### package.json\n${packageJson}\n\n### server.js\n${correctedServerJs}\n\n### public/index.html\n${indexHtml}`;
+            console.log(`[Final Correction] server.js rewritten (${correctedServerJs.length} bytes)`);
+            resolve(fullCode);
+          } else if (response.error) {
+            reject(new Error(response.error.message || 'Erreur API Claude'));
+          } else {
+            reject(new Error('Réponse API invalide'));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
     req.on('error', reject);
     req.write(payload);
     req.end();
@@ -3473,18 +3467,49 @@ const server = http.createServer(async (req, res) => {
               return await attemptBuild(code, attempt + 1);
             }
           } else {
-            // Max attempts reached
+            // Max attempts reached — final deep correction via Claude
+            const logs = await getContainerLogsAsync(project_id, 200);
+            const currentProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(project_id);
+
+            console.log(`[Build] Max attempts reached for project ${project_id}, attempting final deep correction...`);
+            db.prepare('UPDATE builds SET message=? WHERE id=?').run('Correction approfondie par Prestige AI...', buildId);
+
+            try {
+              const finalCode = await callClaudeFinalCorrection(currentProject.generated_code, logs);
+              db.prepare("UPDATE projects SET generated_code=?, updated_at=datetime('now') WHERE id=?").run(finalCode, project_id);
+              markErrorCorrected(project_id, finalCode);
+
+              db.prepare('UPDATE builds SET message=? WHERE id=?').run('Reconstruction après correction approfondie...', buildId);
+              await stopContainerAsync(project_id);
+
+              // One last build attempt with the deeply corrected code
+              const finalResult = await buildDockerProject(project_id, finalCode, (p) => {
+                const msg = friendly[p.step] || p.message || 'Construction en cours...';
+                db.prepare('UPDATE builds SET progress=?,message=? WHERE id=?').run(p.progress || 0, msg, buildId);
+              });
+
+              if (finalResult.success) {
+                db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(finalResult.url, buildId);
+                db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(finalResult.url, project_id);
+                db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id, `Projet "${project.title}" corrigé et prêt !`, 'success');
+                return true;
+              }
+            } catch (finalErr) {
+              console.error(`[Build] Final deep correction failed for project ${project_id}:`, finalErr.message);
+            }
+
+            // Truly failed after all attempts
             const lastError = db.prepare('SELECT error_type FROM error_history WHERE project_id = ? ORDER BY id DESC LIMIT 1').get(project_id);
             const errorMsg = lastError ? translateErrorType(lastError.error_type) : 'Erreur de construction';
-            
+
             db.prepare("UPDATE builds SET status='error',message=? WHERE id=?").run(
-              `Après ${MAX_AUTO_CORRECTION_ATTEMPTS} tentatives, le projet nécessite votre attention. ${errorMsg}`, 
+              `Après ${MAX_AUTO_CORRECTION_ATTEMPTS + 1} tentatives, le projet nécessite votre attention. ${errorMsg}`,
               buildId
             );
             db.prepare("UPDATE projects SET build_status='error' WHERE id=?").run(project_id);
             db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(
-              project.user_id, 
-              `Le projet "${project.title}" nécessite une simplification. Essayez de simplifier vos requêtes.`, 
+              project.user_id,
+              `Le projet "${project.title}" nécessite une simplification. Essayez de simplifier vos requêtes.`,
               'warning'
             );
             return false;
