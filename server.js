@@ -786,20 +786,11 @@ async function checkDockerAvailable() {
   }
 }
 
-// Sync wrapper for isDockerAvailable (uses cached result)
+// Sync wrapper for isDockerAvailable (uses cached result set during init)
+// NOTE: This returns false until initializeDockerSystem() completes
 function isDockerAvailable() {
   return dockerAvailable;
 }
-
-// Initialize Docker availability check
-(async () => {
-  dockerAvailable = await checkDockerAvailable();
-  if (dockerAvailable) {
-    console.log('Docker socket connection verified via dockerode');
-  } else {
-    console.log('Docker not available - Docker preview system disabled');
-  }
-})();
 
 // Ensure Docker network exists (using dockerode)
 async function ensureDockerNetwork() {
@@ -844,16 +835,6 @@ async function getContainerIPAsync(projectId) {
   }
 }
 
-// Sync wrapper for getContainerIP (returns cached IP or fetches synchronously-ish)
-function getContainerIP(projectId) {
-  // Check cache first
-  if (containerMapping.has(projectId)) {
-    return containerMapping.get(projectId);
-  }
-  // For backward compatibility, return null and let async operations update the mapping
-  return null;
-}
-
 // Check if container is running (using dockerode)
 async function isContainerRunningAsync(projectId) {
   if (!docker) return false;
@@ -868,13 +849,6 @@ async function isContainerRunningAsync(projectId) {
   } catch (e) {
     return false;
   }
-}
-
-// Sync wrapper for isContainerRunning
-function isContainerRunning(projectId) {
-  // This is called in synchronous contexts - we return false and let async code handle it
-  // Most callers should migrate to isContainerRunningAsync
-  return false;
 }
 
 // Stop and remove container (using dockerode)
@@ -898,12 +872,6 @@ async function stopContainerAsync(projectId) {
   }
 }
 
-// Sync wrapper for stopContainer (backward compatibility)
-function stopContainer(projectId) {
-  // Start async operation but don't wait
-  stopContainerAsync(projectId).catch(e => console.error('stopContainer error:', e.message));
-}
-
 // Remove container image (using dockerode)
 async function removeContainerImageAsync(projectId) {
   if (!docker) return;
@@ -914,11 +882,6 @@ async function removeContainerImageAsync(projectId) {
   } catch (e) {
     // Image doesn't exist or can't be removed
   }
-}
-
-// Sync wrapper for removeContainerImage
-function removeContainerImage(projectId) {
-  removeContainerImageAsync(projectId).catch(e => console.error('removeContainerImage error:', e.message));
 }
 
 // Get container logs (using dockerode)
@@ -959,15 +922,6 @@ function demuxDockerLogs(buffer) {
   return result || buffer.toString('utf8');
 }
 
-// Sync wrapper for getContainerLogs
-function getContainerLogs(projectId, tailLines = 100) {
-  // For synchronous callers, return a message indicating async is needed
-  // Most callers should migrate to getContainerLogsAsync
-  let logs = 'Chargement des logs...';
-  getContainerLogsAsync(projectId, tailLines).then(l => { logs = l; }).catch(() => {});
-  return logs;
-}
-
 // Restart container (using dockerode)
 async function restartContainerAsync(projectId) {
   if (!docker) return false;
@@ -985,12 +939,6 @@ async function restartContainerAsync(projectId) {
     console.error('Failed to restart container:', e.message);
     return false;
   }
-}
-
-// Sync wrapper for restartContainer
-function restartContainer(projectId) {
-  restartContainerAsync(projectId).catch(e => console.error('restartContainer error:', e.message));
-  return true;
 }
 
 // Start a stopped container (using dockerode)
@@ -1167,8 +1115,10 @@ CMD ["node", "server.js"]
     await stopContainerAsync(projectId);
     
     // Build image using dockerode
+    // Get all files in project directory to include in build context
+    const projectFiles = fs.readdirSync(projectDir);
     const buildStream = await docker.buildImage(
-      { context: projectDir, src: ['Dockerfile', 'package.json', 'server.js', 'public'] },
+      { context: projectDir, src: projectFiles },
       { t: imageName }
     );
     
@@ -1522,7 +1472,7 @@ async function autoCorrectProject(projectId, onProgress) {
     });
     
     // Stop old container
-    stopContainer(projectId);
+    await stopContainerAsync(projectId);
     
     // Rebuild with corrected code
     const result = await buildDockerProject(projectId, correctedCode, (p) => {
@@ -1890,11 +1840,15 @@ async function rebuildContainerMapping() {
 
 // Initialize Docker system
 async function initializeDockerSystem() {
-  if (!isDockerAvailable()) {
+  // Check Docker availability first
+  dockerAvailable = await checkDockerAvailable();
+  
+  if (!dockerAvailable) {
     console.log('Docker not available - Docker preview system disabled');
     return;
   }
   
+  console.log('Docker socket connection verified via dockerode');
   console.log('Initializing Docker preview system...');
   await ensureDockerNetwork();
   await rebuildContainerMapping();
@@ -2212,7 +2166,7 @@ const server = http.createServer(async (req, res) => {
               db.prepare('UPDATE builds SET message=? WHERE id=?').run(friendly['rebuilding'], buildId);
               
               // Stop old container
-              stopContainer(project_id);
+              await stopContainerAsync(project_id);
               
               // Try building with corrected code
               return await attemptBuild(correctedCode, attempt + 1);
@@ -2479,8 +2433,8 @@ const server = http.createServer(async (req, res) => {
     // Clean up Docker container and image
     if (isDockerAvailable()) {
       try {
-        stopContainer(id);
-        removeContainerImage(id);
+        await stopContainerAsync(id);
+        await removeContainerImageAsync(id);
         containerMapping.delete(id);
       } catch(e) { console.warn('Docker cleanup error:', e.message); }
     }
@@ -2592,7 +2546,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     
-    const success = restartContainer(id);
+    const success = await restartContainerAsync(id);
     if (success) {
       json(res, 200, { ok: true, message: 'Projet redémarré avec succès.' });
     } else {
