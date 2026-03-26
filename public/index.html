@@ -1054,9 +1054,11 @@ document.getElementById('image-upload').addEventListener('change', async (e) => 
 function loadPreview(url) {
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
-  const previewUrl = url || '/preview/' + currentProject.id + '/';
+  const previewUrl = url || '/run/' + currentProject.id + '/';
   document.getElementById('preview-url').textContent = previewUrl;
-  frame.src = previewUrl;
+  // Add auth token for /run/ routes (iframe doesn't send Authorization headers)
+  const sep = previewUrl.includes('?') ? '&' : '?';
+  frame.src = previewUrl + sep + 'token=' + encodeURIComponent(token);
   frame.style.display = 'block';
   loading.style.display = 'none';
   document.getElementById('preview-status').className = 'preview-status live';
@@ -1309,6 +1311,10 @@ async function triggerAutoCorrect() {
 function loadDockerPreview(url) {
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
+  if (!url && (!currentProject || !currentProject.id)) {
+    console.error('[loadDockerPreview] No URL and no currentProject.id');
+    return;
+  }
   const previewUrl = url || `/run/${currentProject.id}/`;
 
   // Pass auth token as query param — iframe requests don't send Authorization headers
@@ -1430,7 +1436,8 @@ async function loadHistoryModalContent() {
 function openPresentationMode() {
   if (!currentProject) return;
   document.getElementById('presentation-title').textContent = currentProject.title || 'Présentation';
-  document.getElementById('presentation-frame').src = '/preview/' + currentProject.id + '/';
+  const presUrl = '/run/' + currentProject.id + '/';
+  document.getElementById('presentation-frame').src = presUrl + '?token=' + encodeURIComponent(token);
   document.getElementById('presentation-overlay').classList.add('active');
 }
 

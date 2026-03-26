@@ -3219,7 +3219,7 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const result = savePreviewFiles(projectId, code);
-      json(res, 200, { success: true, previewUrl: `/preview/${projectId}/`, framework: result.framework });
+      json(res, 200, { success: true, previewUrl: `/run/${projectId}/`, framework: result.framework });
     } catch(e) {
       json(res, 500, { error: e.message });
     }
@@ -3308,7 +3308,7 @@ const server = http.createServer(async (req, res) => {
       saveProjectVersion(job.project_id, fullCode, user.id, `Génération via chat: ${(job.message || '').substring(0,50)}...`);
       try {
         const previewResult = savePreviewFiles(job.project_id, fullCode);
-        job.preview_url = `/preview/${job.project_id}/`;
+        job.preview_url = `/run/${job.project_id}/`;
         job.framework = previewResult.framework;
       } catch(e) {
         console.error('Preview save error:', e.message);
@@ -3322,7 +3322,7 @@ const server = http.createServer(async (req, res) => {
       }
       notifyProjectClients(job.project_id, 'code_updated', {
         userName: user.name,
-        previewUrl: `/preview/${job.project_id}/`,
+        previewUrl: `/run/${job.project_id}/`,
         message: `${user.name} a généré une nouvelle version`
       }, user.id);
       job.finalized = true;
