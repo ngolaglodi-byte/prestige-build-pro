@@ -148,8 +148,9 @@ docker run -d \
 - `POST /api/projects/:id/publish` - Publier un projet
 
 ### Génération IA
-- `POST /api/generate/stream` - Générer du code (streaming SSE)
-- `POST /api/generate/image` - Générer depuis une image (streaming SSE)
+- `POST /api/generate/start` - Démarrer une génération de code (retourne job_id)
+- `POST /api/generate/image/start` - Démarrer une génération depuis une image (retourne job_id)
+- `GET /api/jobs/:job_id` - Récupérer le statut et le code d'un job de génération
 
 ### Preview & Build
 - `POST /api/preview/:id/refresh` - Rafraîchir le preview

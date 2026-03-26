@@ -36,8 +36,8 @@
 ### 4. Code Generation Tests ✅
 | Test | Endpoint | Method | Expected | Actual | Status |
 |------|----------|--------|----------|--------|--------|
-| Generate without API key | /api/generate/stream | POST | error (no key) | error (no key) | ✅ |
-| SSE response format | - | - | text/event-stream | text/event-stream | ✅ |
+| Generate without API key | /api/generate/start | POST | job_id + error on poll | job_id + error on poll | ✅ |
+| Job polling | /api/jobs/:id | GET | job status | job status | ✅ |
 
 ### 5. Compilation Tests ✅
 | Test | Endpoint | Method | Expected | Actual | Status |

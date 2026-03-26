@@ -861,41 +861,53 @@ async function sendChatMessage(message) {
   input.value = '';
   addChatMessage('user', msg);
   setGeneratingState(true);
+  
+  const assistantDiv = document.createElement('div');
+  assistantDiv.className = 'chat-message assistant';
+  document.getElementById('chat-messages').appendChild(assistantDiv);
+  
   try {
-    const r = await fetch('/api/generate/stream', {
+    // Start generation job
+    const startRes = await fetch('/api/generate/start', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ project_id: currentProject.id, message: msg })
     });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({ error: 'Erreur de connexion' }));
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({ error: 'Erreur de connexion' }));
       throw new Error(err.error || 'Erreur du serveur');
     }
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let fullCode = '';
-    const assistantDiv = document.createElement('div');
-    assistantDiv.className = 'chat-message assistant';
-    document.getElementById('chat-messages').appendChild(assistantDiv);
+    const { job_id } = await startRes.json();
+    
+    // Poll for job status every 1 second
+    let lastProgress = 0;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value);
-      for (const line of text.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d = JSON.parse(line.slice(6));
-          if (d.type === 'delta') { fullCode += d.content; assistantDiv.textContent = 'Génération en cours... (' + fullCode.length + ' caractères)'; }
-          if (d.type === 'done') {
-            generatedCode = fullCode;
-            document.getElementById('code-editor').textContent = generatedCode;
-            assistantDiv.textContent = 'Code généré avec succès (' + fullCode.length + ' caractères)';
-            await refreshPreviewWithCode();
-            await autoCompile();
-          }
-          if (d.type === 'preview_ready') loadPreview(d.previewUrl);
-          if (d.type === 'error') assistantDiv.textContent = 'Erreur: ' + d.content;
-        } catch (e) {}
+      await new Promise(r => setTimeout(r, 1000));
+      const pollRes = await fetch('/api/jobs/' + job_id, {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (!pollRes.ok) throw new Error('Erreur lors du polling');
+      const job = await pollRes.json();
+      
+      // Update progress display
+      if (job.progress > lastProgress) {
+        lastProgress = job.progress;
+        assistantDiv.textContent = 'Génération en cours... (' + job.progress + ' caractères)';
+      }
+      
+      if (job.status === 'done') {
+        generatedCode = job.code;
+        document.getElementById('code-editor').textContent = generatedCode;
+        assistantDiv.textContent = 'Code généré avec succès (' + job.code.length + ' caractères)';
+        if (job.preview_url) loadPreview(job.preview_url);
+        await refreshPreviewWithCode();
+        await autoCompile();
+        break;
+      }
+      
+      if (job.status === 'error') {
+        assistantDiv.textContent = 'Erreur: ' + job.error;
+        break;
       }
     }
   } catch (e) { addChatMessage('assistant', 'Erreur: ' + e.message); }
@@ -906,36 +918,53 @@ async function generateFromImage(prompt) {
   if (!currentProject || !uploadedImage) return;
   addChatMessage('user', '[Image uploadée pour génération]');
   setGeneratingState(true);
+  
+  const assistantDiv = document.createElement('div');
+  assistantDiv.className = 'chat-message assistant';
+  document.getElementById('chat-messages').appendChild(assistantDiv);
+  
   try {
-    const r = await fetch('/api/generate/image', {
+    // Start generation job
+    const startRes = await fetch('/api/generate/image/start', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ project_id: currentProject.id, image_base64: uploadedImage.base64, media_type: uploadedImage.type, prompt })
     });
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let fullCode = '';
-    const assistantDiv = document.createElement('div');
-    assistantDiv.className = 'chat-message assistant';
-    document.getElementById('chat-messages').appendChild(assistantDiv);
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({ error: 'Erreur de connexion' }));
+      throw new Error(err.error || 'Erreur du serveur');
+    }
+    const { job_id } = await startRes.json();
+    
+    // Poll for job status every 1 second
+    let lastProgress = 0;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const text = decoder.decode(value);
-      for (const line of text.split('\n')) {
-        if (!line.startsWith('data: ')) continue;
-        try {
-          const d = JSON.parse(line.slice(6));
-          if (d.type === 'delta') { fullCode += d.content; assistantDiv.textContent = 'Génération depuis image... (' + fullCode.length + ' caractères)'; }
-          if (d.type === 'done') {
-            generatedCode = fullCode;
-            document.getElementById('code-editor').textContent = generatedCode;
-            assistantDiv.textContent = 'Design reproduit avec succès!';
-            await refreshPreviewWithCode();
-            await autoCompile();
-          }
-          if (d.type === 'preview_ready') loadPreview(d.previewUrl);
-        } catch (e) {}
+      await new Promise(r => setTimeout(r, 1000));
+      const pollRes = await fetch('/api/jobs/' + job_id, {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      if (!pollRes.ok) throw new Error('Erreur lors du polling');
+      const job = await pollRes.json();
+      
+      // Update progress display
+      if (job.progress > lastProgress) {
+        lastProgress = job.progress;
+        assistantDiv.textContent = 'Génération depuis image... (' + job.progress + ' caractères)';
+      }
+      
+      if (job.status === 'done') {
+        generatedCode = job.code;
+        document.getElementById('code-editor').textContent = generatedCode;
+        assistantDiv.textContent = 'Design reproduit avec succès!';
+        if (job.preview_url) loadPreview(job.preview_url);
+        await refreshPreviewWithCode();
+        await autoCompile();
+        break;
+      }
+      
+      if (job.status === 'error') {
+        assistantDiv.textContent = 'Erreur: ' + job.error;
+        break;
       }
     }
     uploadedImage = null;
