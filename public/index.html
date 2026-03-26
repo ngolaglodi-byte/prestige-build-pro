@@ -807,7 +807,10 @@ async function openWorkspace(id) {
   if (currentProject.generated_code) {
     generatedCode = currentProject.generated_code;
     document.getElementById('code-editor').textContent = generatedCode;
-    loadPreview();
+    // If project has a running Docker container, load the Docker preview
+    if (currentProject.build_status === 'done') {
+      loadDockerPreview(`/run/${currentProject.id}/`);
+    }
   }
 }
 
