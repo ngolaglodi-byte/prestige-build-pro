@@ -3013,7 +3013,21 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode, proxyRes.headers);
+    // Clean up container response headers that break iframe embedding:
+    // - helmet sets CSP that blocks inline scripts
+    // - helmet sets X-Frame-Options that can block iframes
+    // - Container might set Content-Disposition causing download instead of display
+    const headers = { ...proxyRes.headers };
+    delete headers['content-security-policy'];
+    delete headers['content-security-policy-report-only'];
+    delete headers['x-frame-options'];
+    delete headers['content-disposition'];
+    delete headers['x-content-type-options'];
+    // Ensure HTML responses have correct Content-Type
+    if (headers['content-type'] && headers['content-type'].includes('text/html') && !headers['content-type'].includes('charset')) {
+      headers['content-type'] = 'text/html; charset=utf-8';
+    }
+    res.writeHead(proxyRes.statusCode, headers);
     proxyRes.pipe(res);
   });
 
