@@ -317,17 +317,21 @@ function verifyToken(t) {
     return p.exp<Math.floor(Date.now()/1000)?null:p;
   } catch{return null;}
 }
-function getAuth(req) { 
+function getAuth(req) {
   // Check Authorization header first
   const headerToken = (req.headers['authorization']||'').replace('Bearer ','');
   if (headerToken) return verifyToken(headerToken);
-  // Check query string for SSE support
+  // Check query string (for SSE and initial iframe load)
   const urlParts = req.url.split('?');
   if (urlParts.length > 1) {
     const params = new URLSearchParams(urlParts[1]);
     const queryToken = params.get('token');
     if (queryToken) return verifyToken(queryToken);
   }
+  // Check cookie (for iframe sub-requests: CSS, JS, fetch, images)
+  const cookies = req.headers.cookie || '';
+  const cookieMatch = cookies.match(/(?:^|;\s*)pbp_token=([^;]+)/);
+  if (cookieMatch) return verifyToken(cookieMatch[1]);
   return null;
 }
 function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}); res.end(JSON.stringify(data)); }
@@ -2999,9 +3003,10 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   const containerHost = getContainerHostname(projectId);
 
   // Proxy the request via Docker DNS
-  // Strip Prestige's own auth headers — they would confuse the container's JWT middleware
+  // Strip headers that would confuse the container or break response processing
   const forwardHeaders = { ...req.headers, host: `${containerHost}:3000` };
-  delete forwardHeaders['authorization'];
+  delete forwardHeaders['authorization'];   // Prestige JWT, not container's
+  delete forwardHeaders['accept-encoding']; // Prevent gzip — we may modify HTML responses
 
   const options = {
     hostname: containerHost,
@@ -3013,22 +3018,47 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
-    // Clean up container response headers that break iframe embedding:
-    // - helmet sets CSP that blocks inline scripts
-    // - helmet sets X-Frame-Options that can block iframes
-    // - Container might set Content-Disposition causing download instead of display
+    // Clean up container response headers that break iframe embedding
     const headers = { ...proxyRes.headers };
     delete headers['content-security-policy'];
     delete headers['content-security-policy-report-only'];
     delete headers['x-frame-options'];
     delete headers['content-disposition'];
     delete headers['x-content-type-options'];
-    // Ensure HTML responses have correct Content-Type
-    if (headers['content-type'] && headers['content-type'].includes('text/html') && !headers['content-type'].includes('charset')) {
-      headers['content-type'] = 'text/html; charset=utf-8';
+    // Remove content-encoding — we may modify the body below (inject <base>)
+    // and gzipped content can't be modified in-flight
+    const isHtml = (headers['content-type'] || '').includes('text/html');
+    if (isHtml) {
+      delete headers['content-encoding'];
+      delete headers['content-length']; // length will change after injection
+      if (!headers['content-type'].includes('charset')) {
+        headers['content-type'] = 'text/html; charset=utf-8';
+      }
     }
+
     res.writeHead(proxyRes.statusCode, headers);
-    proxyRes.pipe(res);
+
+    if (isHtml) {
+      // Collect HTML body, inject <base> tag so relative URLs (fetch, CSS, images)
+      // resolve to /run/{id}/ instead of / (which would hit Prestige, not the container)
+      let body = '';
+      proxyRes.on('data', chunk => body += chunk.toString());
+      proxyRes.on('end', () => {
+        const baseTag = `<base href="/run/${projectId}/">`;
+        if (body.includes('<head>')) {
+          body = body.replace('<head>', `<head>${baseTag}`);
+        } else if (body.includes('<head ')) {
+          body = body.replace(/<head\s[^>]*>/, `$&${baseTag}`);
+        } else if (body.includes('<html')) {
+          body = body.replace(/<html[^>]*>/, `$&<head>${baseTag}</head>`);
+        } else {
+          body = baseTag + body;
+        }
+        res.end(body);
+      });
+    } else {
+      proxyRes.pipe(res);
+    }
   });
 
   proxyReq.on('error', async (e) => {
@@ -3180,6 +3210,17 @@ const server = http.createServer(async (req, res) => {
     }
     const projectId = parseInt(runMatch[1]);
 
+    // If token is in query string, set a cookie so sub-requests (CSS, JS, fetch, images)
+    // from the iframe are automatically authenticated without needing ?token= on each one
+    const qsParts = req.url.split('?');
+    if (qsParts.length > 1) {
+      const qsParams = new URLSearchParams(qsParts[1]);
+      const qsToken = qsParams.get('token');
+      if (qsToken) {
+        res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/run/${projectId}/; HttpOnly; SameSite=Lax; Max-Age=86400`);
+      }
+    }
+
     // Authentication check for Docker proxy
     const user = getAuth(req);
     if (!user) {
@@ -3197,8 +3238,7 @@ const server = http.createServer(async (req, res) => {
     // Build the target path: strip /run/{id} prefix, preserve query string
     // but remove the auth token param (no need to leak it to the container)
     let targetPath = runMatch[2] || '/';
-    targetPath = targetPath.replace(/([?&])token=[^&]*/g, (m, sep, offset) => {
-      // If token was the only/first param, clean up the ? or &
+    targetPath = targetPath.replace(/([?&])token=[^&]*/g, (m) => {
       return m.startsWith('?') ? '?' : '';
     }).replace(/\?&/, '?').replace(/\?$/, '');
 
