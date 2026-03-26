@@ -585,6 +585,12 @@ button.card { padding: 0; }
   <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame"></iframe></div></div>
 </div>
 <script>
+// Ignore JS errors from preview iframe — they must not affect the main app
+window.addEventListener('error', function(e) {
+  if (e.filename && e.filename.includes('/run/')) { e.preventDefault(); return; }
+  if (e.target && e.target.tagName === 'IFRAME') { e.preventDefault(); return; }
+}, true);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE & CONFIG
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1307,14 +1313,26 @@ function loadDockerPreview(url) {
   const authenticatedUrl = previewUrl + separator + 'token=' + encodeURIComponent(token);
 
   document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
-  frame.src = authenticatedUrl;
-  frame.style.display = 'block';
-  loading.style.display = 'none';
-  document.getElementById('preview-status').className = 'preview-status live';
-  document.getElementById('preview-status').innerHTML = '<span>\u2713 Docker isolé</span>';
 
-  // Show credentials overlay if available
-  if (projectCredentials) showCredentialsOverlay(projectCredentials);
+  // Keep spinner visible until iframe actually loads
+  loading.querySelector('span').textContent = 'Chargement du site...';
+
+  // Hide spinner and show iframe once loaded (or after timeout)
+  const onLoaded = () => {
+    frame.removeEventListener('load', onLoaded);
+    clearTimeout(fallbackTimer);
+    frame.style.display = 'block';
+    loading.style.display = 'none';
+    document.getElementById('preview-status').className = 'preview-status live';
+    document.getElementById('preview-status').innerHTML = '<span>\u2713 Docker isolé</span>';
+    if (projectCredentials) showCredentialsOverlay(projectCredentials);
+  };
+  frame.addEventListener('load', onLoaded);
+
+  // Fallback: if load event never fires (e.g. network error), show iframe after 10s
+  const fallbackTimer = setTimeout(onLoaded, 10000);
+
+  frame.src = authenticatedUrl;
 
   // Start logs polling when preview is loaded
   startLogsPolling();
