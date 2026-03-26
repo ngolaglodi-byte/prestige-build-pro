@@ -1169,17 +1169,9 @@ async function getContainerIPAsync(projectId) {
     const inspectData = await container.inspect();
     if (inspectData && inspectData.NetworkSettings && inspectData.NetworkSettings.Networks) {
       const networks = inspectData.NetworkSettings.Networks;
-      // Prioritize pbp-projects network IP
+      // Only return IP from pbp-projects network (avoid returning IPs from other networks like coolify)
       if (networks[DOCKER_NETWORK] && networks[DOCKER_NETWORK].IPAddress) {
         return networks[DOCKER_NETWORK].IPAddress;
-      }
-      // Fallback to any network with an IP
-      const networkKeys = Object.keys(networks);
-      for (let i = 0; i < networkKeys.length; i++) {
-        const netName = networkKeys[i];
-        if (networks[netName].IPAddress) {
-          return networks[netName].IPAddress;
-        }
       }
     }
     return null;
