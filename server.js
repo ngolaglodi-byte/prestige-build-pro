@@ -1114,12 +1114,50 @@ async function ensureDockerNetwork() {
   }
 }
 
+// Join main container to pbp-projects network if not already connected
+// This allows the main server to make health check requests to project containers
+async function joinPbpProjectsNetwork() {
+  if (!docker) return;
+  try {
+    // Get container ID from hostname (Docker sets hostname to container ID)
+    const hostname = process.env.HOSTNAME || require('os').hostname();
+    if (!hostname) {
+      console.warn('Could not determine container hostname, skipping network join');
+      return;
+    }
+    
+    const container = docker.getContainer(hostname);
+    let inspectData;
+    try {
+      inspectData = await container.inspect();
+    } catch (e) {
+      // Not running in a container or container not found
+      console.log('Not running in Docker container, skipping network join');
+      return;
+    }
+    
+    // Check if already connected to pbp-projects network
+    const networks = inspectData.NetworkSettings && inspectData.NetworkSettings.Networks;
+    if (networks && networks[DOCKER_NETWORK]) {
+      console.log(`Already connected to ${DOCKER_NETWORK} network`);
+      return;
+    }
+    
+    // Connect to pbp-projects network
+    const network = docker.getNetwork(DOCKER_NETWORK);
+    await network.connect({ Container: hostname });
+    console.log(`Successfully connected to ${DOCKER_NETWORK} network`);
+  } catch (e) {
+    console.error(`Failed to join ${DOCKER_NETWORK} network:`, e.message);
+  }
+}
+
 // Get container name for a project
 function getContainerName(projectId) {
   return `pbp-project-${projectId}`;
 }
 
-// Get container IP address (using dockerode)
+// Get container IP address in pbp-projects network (using dockerode)
 async function getContainerIPAsync(projectId) {
   if (!docker) return null;
   try {
@@ -1128,6 +1166,11 @@ async function getContainerIPAsync(projectId) {
     const inspectData = await container.inspect();
     if (inspectData && inspectData.NetworkSettings && inspectData.NetworkSettings.Networks) {
       const networks = inspectData.NetworkSettings.Networks;
+      // Prioritize pbp-projects network IP
+      if (networks[DOCKER_NETWORK] && networks[DOCKER_NETWORK].IPAddress) {
+        return networks[DOCKER_NETWORK].IPAddress;
+      }
+      // Fallback to any network with an IP
       const networkKeys = Object.keys(networks);
       for (let i = 0; i < networkKeys.length; i++) {
         const netName = networkKeys[i];
@@ -2294,6 +2337,7 @@ async function initializeDockerSystem() {
   console.log('Docker socket connection verified via dockerode');
   console.log('Initializing Docker preview system...');
   await ensureDockerNetwork();
+  await joinPbpProjectsNetwork();
   await rebuildContainerMapping();
 }
 
