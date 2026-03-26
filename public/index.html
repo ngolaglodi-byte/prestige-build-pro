@@ -887,11 +887,60 @@ async function sendChatMessage(message) {
           const d = JSON.parse(line.slice(6));
           if (d.type === 'delta') { fullCode += d.content; assistantDiv.textContent = 'Génération en cours... (' + fullCode.length + ' caractères)'; }
           if (d.type === 'done') {
+            console.log('DONE received');
             generatedCode = fullCode;
             document.getElementById('code-editor').textContent = generatedCode;
             assistantDiv.textContent = 'Code généré avec succès (' + fullCode.length + ' caractères)';
             await refreshPreviewWithCode();
-            await autoCompile();
+            // Direct compile call - no intermediate function
+            if (currentProject && currentProject.id) {
+              console.log('COMPILE called');
+              try {
+                const compileResp = await fetch('/api/compile', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': 'Bearer ' + token,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ project_id: currentProject.id })
+                });
+                const compileData = await compileResp.json();
+                if (compileData.buildId) {
+                  // Direct polling - every 2 seconds
+                  const pollBuild = async () => {
+                    console.log('BUILD polling');
+                    try {
+                      const buildResp = await fetch('/api/builds/' + compileData.buildId, {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                      });
+                      const build = await buildResp.json();
+                      if (build.status === 'done') {
+                        console.log('PREVIEW loaded');
+                        const frame = document.getElementById('preview-frame');
+                        frame.src = build.url;
+                        frame.style.display = 'block';
+                        document.getElementById('preview-loading').style.display = 'none';
+                        document.getElementById('preview-status').className = 'preview-status live';
+                        document.getElementById('preview-status').innerHTML = '<span>✓ En direct</span>';
+                      } else if (build.status === 'error') {
+                        console.log('BUILD error:', build.message);
+                        document.getElementById('preview-status').innerHTML = '<span style="color:var(--error);">Erreur</span>';
+                      } else {
+                        setTimeout(pollBuild, 2000);
+                      }
+                    } catch (pollErr) {
+                      console.error('BUILD polling error:', pollErr);
+                      setTimeout(pollBuild, 2000);
+                    }
+                  };
+                  pollBuild();
+                }
+              } catch (compileErr) {
+                console.error('COMPILE error:', compileErr);
+              }
+            } else {
+              console.error('Cannot compile: currentProject or currentProject.id is missing');
+            }
           }
           if (d.type === 'preview_ready') loadPreview(d.previewUrl);
           if (d.type === 'error') assistantDiv.textContent = 'Erreur: ' + d.content;
@@ -928,11 +977,60 @@ async function generateFromImage(prompt) {
           const d = JSON.parse(line.slice(6));
           if (d.type === 'delta') { fullCode += d.content; assistantDiv.textContent = 'Génération depuis image... (' + fullCode.length + ' caractères)'; }
           if (d.type === 'done') {
+            console.log('DONE received');
             generatedCode = fullCode;
             document.getElementById('code-editor').textContent = generatedCode;
             assistantDiv.textContent = 'Design reproduit avec succès!';
             await refreshPreviewWithCode();
-            await autoCompile();
+            // Direct compile call - no intermediate function
+            if (currentProject && currentProject.id) {
+              console.log('COMPILE called');
+              try {
+                const compileResp = await fetch('/api/compile', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': 'Bearer ' + token,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ project_id: currentProject.id })
+                });
+                const compileData = await compileResp.json();
+                if (compileData.buildId) {
+                  // Direct polling - every 2 seconds
+                  const pollBuild = async () => {
+                    console.log('BUILD polling');
+                    try {
+                      const buildResp = await fetch('/api/builds/' + compileData.buildId, {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                      });
+                      const build = await buildResp.json();
+                      if (build.status === 'done') {
+                        console.log('PREVIEW loaded');
+                        const frame = document.getElementById('preview-frame');
+                        frame.src = build.url;
+                        frame.style.display = 'block';
+                        document.getElementById('preview-loading').style.display = 'none';
+                        document.getElementById('preview-status').className = 'preview-status live';
+                        document.getElementById('preview-status').innerHTML = '<span>✓ En direct</span>';
+                      } else if (build.status === 'error') {
+                        console.log('BUILD error:', build.message);
+                        document.getElementById('preview-status').innerHTML = '<span style="color:var(--error);">Erreur</span>';
+                      } else {
+                        setTimeout(pollBuild, 2000);
+                      }
+                    } catch (pollErr) {
+                      console.error('BUILD polling error:', pollErr);
+                      setTimeout(pollBuild, 2000);
+                    }
+                  };
+                  pollBuild();
+                }
+              } catch (compileErr) {
+                console.error('COMPILE error:', compileErr);
+              }
+            } else {
+              console.error('Cannot compile: currentProject or currentProject.id is missing');
+            }
           }
           if (d.type === 'preview_ready') loadPreview(d.previewUrl);
         } catch (e) {}
