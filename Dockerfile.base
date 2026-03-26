@@ -1,44 +1,12 @@
-# ═══════════════════════════════════════════════════════════════════════════
-# Prestige Build Pro - Base Docker Image for Project Previews
-# ═══════════════════════════════════════════════════════════════════════════
-# This base image contains all dependencies pre-installed for fast startup.
-# Projects using this base image start in ~4 seconds instead of ~30+ seconds.
-
 FROM node:20-alpine
-
-# Install build dependencies for native modules
-RUN apk add --no-cache python3 make g++
-
-# Create app directory
 WORKDIR /app
-
-# Pre-install all common dependencies used by generated projects
-RUN npm init -y && \
-    npm install --save \
-    express@^4.18.2 \
-    better-sqlite3@^11.0.0 \
-    bcryptjs@^2.4.3 \
-    jsonwebtoken@^9.0.2 \
-    cors@^2.8.5 \
-    helmet@^7.1.0 \
-    compression@^1.7.4 && \
-    npm cache clean --force
-
-# Clean up build dependencies to reduce image size
-RUN apk del python3 make g++ && \
-    rm -rf /root/.npm /tmp/*
-
-# Create data directory for SQLite persistence
-RUN mkdir -p /data /public
-
-# Set environment variables
-ENV NODE_ENV=production
-ENV PORT=3000
-# CORRECTION 5: Limit Node.js memory to 256MB to prevent crashes
-ENV NODE_OPTIONS="--max-old-space-size=256"
-
-# Expose the port
+RUN npm install \
+  express@4.18.2 \
+  better-sqlite3@9.4.3 \
+  bcryptjs@2.4.3 \
+  jsonwebtoken@9.0.2 \
+  cors@2.8.5 \
+  helmet@7.1.0 \
+  compression@1.7.4
+ENV NODE_PATH=/app/node_modules
 EXPOSE 3000
-
-# Default command (overridden by project Dockerfile)
-CMD ["node", "server.js"]
