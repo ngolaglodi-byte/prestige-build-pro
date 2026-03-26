@@ -2073,29 +2073,39 @@ function cleanGeneratedContent(content) {
   return cleaned;
 }
 
-// Sanitize public/index.html: strip Node.js patterns that crash in browsers
-// Claude sometimes generates require(), module.exports, etc. despite the prompt
+// Sanitize public/index.html: strip Node.js patterns that crash in browsers.
+// Claude sometimes generates require(), module.exports, etc. despite the prompt.
+// Strategy: remove entire <script> blocks containing Node.js code rather than
+// patching individual lines (which just changes the error type).
 function sanitizeClientHtml(filePath) {
   if (!fs.existsSync(filePath)) return false;
   let html = fs.readFileSync(filePath, 'utf8');
   const original = html;
 
-  // Remove standalone Node.js require lines (const x = require('...'))
-  html = html.replace(/^\s*(const|let|var)\s+\w+\s*=\s*require\s*\([^)]*\)\s*;?\s*$/gm, '');
+  // 1) If the file has NO HTML structure at all (pure Node.js code), it's unsalvageable
+  if (!html.includes('<') && html.includes('require(')) {
+    console.warn(`[Sanitize] ${filePath} is pure Node.js code, not HTML — skipping`);
+    return false;
+  }
 
-  // Remove require() calls inside script tags but keep the rest
-  html = html.replace(/\brequire\s*\(\s*['"][^'"]*['"]\s*\)/g, 'undefined /* require removed */');
+  // 2) Remove entire <script> blocks that contain require() — they are server-side code
+  html = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gi, (match, scriptContent) => {
+    if (/\brequire\s*\(/.test(scriptContent) ||
+        /\bmodule\.exports\b/.test(scriptContent) ||
+        /\bexports\.\w+\s*=/.test(scriptContent)) {
+      console.log(`[Sanitize] Removed <script> block containing Node.js code (${scriptContent.length} bytes)`);
+      return '<!-- server-side script removed -->';
+    }
+    return match; // keep browser-safe scripts
+  });
 
-  // Remove module.exports lines
+  // 3) Remove any stray Node.js lines outside script tags
+  html = html.replace(/^\s*(const|let|var)\s+.*\brequire\s*\(.*$/gm, '');
   html = html.replace(/^\s*module\.exports\s*=.*$/gm, '');
-
-  // Remove exports.xxx lines
   html = html.replace(/^\s*exports\.\w+\s*=.*$/gm, '');
 
-  // Remove process.env references (replace with empty string)
+  // 4) Replace process.env / __dirname / __filename if they survive
   html = html.replace(/\bprocess\.env\.\w+/g, "''");
-
-  // Remove __dirname / __filename references
   html = html.replace(/\b__dirname\b/g, "'.'");
   html = html.replace(/\b__filename\b/g, "''");
 
@@ -2317,9 +2327,13 @@ async function buildDockerProject(projectId, code, onProgress) {
     if (fs.existsSync(indexHtmlPath)) {
       try {
         const htmlContent = fs.readFileSync(indexHtmlPath, 'utf8');
-        if (htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html')) {
+        const hasHtmlStructure = htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html');
+        const hasNodeCode = /\brequire\s*\(/.test(htmlContent) && !htmlContent.includes('<!-- server-side script removed -->');
+        if (hasHtmlStructure && !hasNodeCode) {
           indexHtmlValid = true;
           console.log(`[Docker Build] ✓ public/index.html contains valid HTML structure`);
+        } else if (hasNodeCode) {
+          console.warn(`[Docker Build] ✗ public/index.html still contains require() after sanitization`);
         } else {
           console.warn(`[Docker Build] ✗ public/index.html missing <!DOCTYPE html>`);
         }
@@ -2985,12 +2999,16 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   const containerHost = getContainerHostname(projectId);
 
   // Proxy the request via Docker DNS
+  // Strip Prestige's own auth headers — they would confuse the container's JWT middleware
+  const forwardHeaders = { ...req.headers, host: `${containerHost}:3000` };
+  delete forwardHeaders['authorization'];
+
   const options = {
     hostname: containerHost,
     port: 3000,
     path: targetPath || '/',
     method: req.method,
-    headers: { ...req.headers, host: `${containerHost}:3000` },
+    headers: forwardHeaders,
     timeout: 30000
   };
 
