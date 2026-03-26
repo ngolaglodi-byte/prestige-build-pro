@@ -101,6 +101,9 @@ try {
 // ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
 const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName}>>
 
+// ─── JOBS MAP FOR POLLING-BASED GENERATION ───
+const generationJobs = new Map(); // Map<job_id, {status, code, error, progress, project_id, user_id}>
+
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
@@ -365,6 +368,172 @@ Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans 
       res.write(`data: ${JSON.stringify({type:'error',content:e.message})}\n\n`); 
       res.end(); 
     }
+  });
+  r.write(payload); r.end();
+}
+
+// ─── GENERATE CLAUDE (NON-STREAMING, FOR POLLING) ───
+function generateClaude(messages, jobId, brief, options = {}) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
+  
+  if (!ANTHROPIC_API_KEY) { 
+    job.status = 'error';
+    job.error = 'Clé API non configurée sur le serveur.';
+    return; 
+  }
+  
+  const baseSystemPrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
+  const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
+  
+  const contentGenPrompt = `
+
+## GÉNÉRATION DE CONTENU AUTOMATIQUE
+AVANT de générer le code, crée automatiquement du contenu contextuel adapté au secteur :
+- Un slogan accrocheur et mémorable
+- Des textes professionnels pour chaque section (hero, about, services, témoignages)
+- Des noms fictifs réalistes pour l'équipe (avec titres et courtes bios)
+- Des prix et tarifs cohérents avec le marché français
+- 3-5 témoignages clients convaincants et réalistes
+- Utilise https://picsum.photos/WIDTH/HEIGHT pour les images placeholder (ex: https://picsum.photos/800/600)
+
+RÈGLE ABSOLUE : Zéro "Lorem ipsum" — tout le contenu doit être réaliste et contextuel.`;
+
+  const savedApis = db ? db.prepare('SELECT name,service,key_value,description FROM api_keys').all() : [];
+  let apiIntegrationPrompt = '';
+  if (savedApis.length > 0) {
+    apiIntegrationPrompt = `
+
+## APIS DISPONIBLES POUR INTÉGRATION AUTOMATIQUE
+Les APIs suivantes sont configurées dans le système. Intègre-les automatiquement si pertinentes :
+${savedApis.map(a => `- ${a.name} (${a.service}): ${a.description || 'Disponible'}`).join('\n')}
+
+Règles d'intégration automatique :
+- Stripe disponible + projet e-commerce/paiement → intègre le checkout Stripe
+- Google Maps disponible + projet restaurant/immobilier/local → intègre une carte
+- Twilio disponible → ajoute formulaire contact avec notification SMS
+- OpenAI disponible → intègre un chatbot client
+- Mailchimp disponible → ajoute formulaire newsletter`;
+  }
+
+  const systemPrompt = sectorProfile 
+    ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
+    : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
+    
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+  
+  const r = https.request(opts, apiRes => {
+    apiRes.on('data', chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (d.type === 'content_block_delta' && d.delta?.text) { 
+            job.code += d.delta.text; 
+            job.progress = job.code.length;
+          }
+          if (d.type === 'message_stop') { 
+            job.status = 'done';
+          }
+        } catch(e) {
+          console.error('Generate parse error:', e.message);
+        }
+      }
+    });
+    apiRes.on('error', e => { 
+      job.status = 'error';
+      job.error = e.message;
+    });
+  });
+  r.on('error', e => { 
+    job.status = 'error';
+    job.error = e.message;
+  });
+  r.write(payload); r.end();
+}
+
+// ─── GENERATE CLAUDE WITH IMAGE (NON-STREAMING, FOR POLLING) ───
+function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
+  
+  if (!ANTHROPIC_API_KEY) { 
+    job.status = 'error';
+    job.error = 'Clé API non configurée sur le serveur.';
+    return; 
+  }
+  
+  const systemPrompt = ABSOLUTE_BROWSER_RULE + `Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
+
+## TA MISSION
+Analyse l'image fournie et reproduis FIDÈLEMENT ce design en HTML/CSS/JS moderne, responsive et professionnel.
+
+## INSTRUCTIONS DE REPRODUCTION
+1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
+2. Identifie la palette de couleurs exacte utilisée
+3. Note la typographie et les tailles de police
+4. Reproduis les espacements et marges
+5. Adapte pour le responsive (mobile-first)
+
+## CODE À GÉNÉRER
+- HTML5 sémantique avec structure complète
+- CSS moderne (Flexbox/Grid, variables CSS)
+- Tailwind CSS pour le styling rapide
+- JavaScript pour les interactions si nécessaire
+- Images via https://picsum.photos avec dimensions appropriées
+- Contenu réaliste et professionnel (jamais de Lorem ipsum)
+
+## FORMAT DE SORTIE
+Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans une balise <style>.`;
+
+  const messages = [{
+    role: 'user',
+    content: [
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: mediaType,
+          data: imageBase64
+        }
+      },
+      {
+        type: 'text',
+        text: prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image."
+      }
+    ]
+  }];
+
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+  
+  const r = https.request(opts, apiRes => {
+    apiRes.on('data', chunk => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const d = JSON.parse(line.slice(6));
+          if (d.type === 'content_block_delta' && d.delta?.text) { 
+            job.code += d.delta.text; 
+            job.progress = job.code.length;
+          }
+          if (d.type === 'message_stop') { 
+            job.status = 'done';
+          }
+        } catch(e) {
+          console.error('Generate image parse error:', e.message);
+        }
+      }
+    });
+    apiRes.on('error', e => { 
+      job.status = 'error';
+      job.error = e.message;
+    });
+  });
+  r.on('error', e => { 
+    job.status = 'error';
+    job.error = e.message;
   });
   r.write(payload); r.end();
 }
@@ -2055,84 +2224,121 @@ const server = http.createServer(async (req, res) => {
   const user=getAuth(req);
   if (!user) { json(res,401,{error:'Non autorisé.'}); return; }
 
-  // ─── GENERATE (STREAMING) ───
-  if (url==='/api/generate/stream' && req.method==='POST') {
-    const {project_id,message}=await getBody(req);
-    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive','Access-Control-Allow-Origin':'*'});
-    let project=null, history=[];
-    if (project_id) {
-      project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
-      history=db.prepare('SELECT role,content FROM project_messages WHERE project_id=? ORDER BY id ASC LIMIT 30').all(project_id);
-      // Notify other clients that someone is generating
-      notifyProjectClients(project_id, 'user_action', { action: 'generating', userName: user.name }, user.id);
-    }
-    const savedApis=db.prepare('SELECT name,service,description FROM api_keys').all();
-    const userMsg=ai?ai.buildProfessionalPrompt(message,project,savedApis):message;
-    const messages=ai?ai.buildConversationContext(project,history,userMsg):[{role:'user',content:userMsg}];
-    if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'user',message);
-    const brief = project?.brief || message;
-    streamClaude(messages, res, full=>{
-      if (project_id) {
-        db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
-        db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
-        // Save version history
-        saveProjectVersion(project_id, full, user.id, `Génération via chat: ${message.substring(0,50)}...`);
-        // Auto-save preview files after generation
-        try {
-          const previewResult = savePreviewFiles(project_id, full);
-          res.write(`data: ${JSON.stringify({type:'preview_ready',previewUrl:`/preview/${project_id}/`,framework:previewResult.framework})}\n\n`);
-        } catch(e) {
-          console.error('Preview save error:', e.message);
-        }
-        // Notify other clients about the new code
-        notifyProjectClients(project_id, 'code_updated', { 
-          userName: user.name, 
-          previewUrl: `/preview/${project_id}/`,
-          message: `${user.name} a généré une nouvelle version`
-        }, user.id);
+  // ─── GET JOB STATUS (POLLING) ───
+  const jobMatch = url.match(/^\/api\/jobs\/([a-zA-Z0-9-]+)$/);
+  if (jobMatch && req.method === 'GET') {
+    const jobId = jobMatch[1];
+    const job = generationJobs.get(jobId);
+    if (!job) { json(res, 404, { error: 'Job non trouvé' }); return; }
+    
+    // Only the job owner can access it
+    if (job.user_id !== user.id) { json(res, 403, { error: 'Accès refusé' }); return; }
+    
+    // If done, finalize project and cleanup
+    if (job.status === 'done' && job.project_id && !job.finalized) {
+      const fullCode = job.code;
+      db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(job.project_id, 'assistant', fullCode);
+      db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(fullCode, job.project_id);
+      saveProjectVersion(job.project_id, fullCode, user.id, `Génération via chat: ${(job.message || '').substring(0,50)}...`);
+      try {
+        const previewResult = savePreviewFiles(job.project_id, fullCode);
+        job.preview_url = `/preview/${job.project_id}/`;
+        job.framework = previewResult.framework;
+      } catch(e) {
+        console.error('Preview save error:', e.message);
       }
-    }, brief); return;
+      notifyProjectClients(job.project_id, 'code_updated', { 
+        userName: user.name, 
+        previewUrl: `/preview/${job.project_id}/`,
+        message: `${user.name} a généré une nouvelle version`
+      }, user.id);
+      job.finalized = true;
+    }
+    
+    json(res, 200, { 
+      job_id: jobId, 
+      status: job.status, 
+      code: job.code, 
+      error: job.error, 
+      progress: job.progress,
+      preview_url: job.preview_url,
+      framework: job.framework
+    });
+    return;
   }
 
-  // ─── GENERATE FROM IMAGE (STREAMING) ───
-  if (url==='/api/generate/image' && req.method==='POST') {
+  // ─── GENERATE START (POLLING) ───
+  if (url==='/api/generate/start' && req.method==='POST') {
+    const {project_id, message}=await getBody(req);
+    const jobId = crypto.randomUUID();
+    
+    // Initialize job in Map
+    generationJobs.set(jobId, {
+      status: 'pending',
+      code: '',
+      error: null,
+      progress: 0,
+      project_id: project_id,
+      user_id: user.id,
+      message: message,
+      finalized: false
+    });
+    
+    // Return immediately with job_id
+    json(res, 200, { job_id: jobId, status: 'pending' });
+    
+    // Start generation in background
+    let project = null, history = [];
+    if (project_id) {
+      project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
+      history = db.prepare('SELECT role,content FROM project_messages WHERE project_id=? ORDER BY id ASC LIMIT 30').all(project_id);
+      notifyProjectClients(project_id, 'user_action', { action: 'generating', userName: user.name }, user.id);
+    }
+    const savedApis = db.prepare('SELECT name,service,description FROM api_keys').all();
+    const userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
+    const messages = ai ? ai.buildConversationContext(project, history, userMsg) : [{role:'user', content: userMsg}];
+    if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', message);
+    const brief = project?.brief || message;
+    
+    generateClaude(messages, jobId, brief);
+    return;
+  }
+
+  // ─── GENERATE FROM IMAGE START (POLLING) ───
+  if (url==='/api/generate/image/start' && req.method==='POST') {
     const body = await getBody(req);
     const { project_id, image_base64, media_type, prompt } = body;
     if (!image_base64) { json(res, 400, { error: 'Image requise' }); return; }
     
-    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive','Access-Control-Allow-Origin':'*'});
+    const jobId = crypto.randomUUID();
     
+    // Initialize job in Map
+    generationJobs.set(jobId, {
+      status: 'pending',
+      code: '',
+      error: null,
+      progress: 0,
+      project_id: project_id,
+      user_id: user.id,
+      message: '[Image uploadée pour reproduction de design]',
+      finalized: false,
+      is_image_gen: true
+    });
+    
+    // Return immediately with job_id
+    json(res, 200, { job_id: jobId, status: 'pending' });
+    
+    // Start generation in background
     let project = null;
     if (project_id) {
       project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
-      db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'user','[Image uploadée pour reproduction de design]');
-      // Notify other clients
+      db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', '[Image uploadée pour reproduction de design]');
       notifyProjectClients(project_id, 'user_action', { action: 'generating_from_image', userName: user.name }, user.id);
     }
     
     const imagePrompt = prompt || "Analyse cette image et reproduis fidèlement ce design en HTML/CSS/JS moderne, responsive, professionnel. Adapte les couleurs, la typographie, la structure et les sections exactement comme dans l'image.";
     
-    streamClaudeWithImage(image_base64, media_type || 'image/png', imagePrompt, res, full => {
-      if (project_id) {
-        db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id,'assistant',full);
-        db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(full,project_id);
-        // Save version history
-        saveProjectVersion(project_id, full, user.id, 'Génération depuis image');
-        // Auto-save preview files
-        try {
-          const previewResult = savePreviewFiles(project_id, full);
-          res.write(`data: ${JSON.stringify({type:'preview_ready',previewUrl:`/preview/${project_id}/`,framework:previewResult.framework})}\n\n`);
-        } catch(e) {
-          console.error('Preview save error:', e.message);
-        }
-        // Notify other clients
-        notifyProjectClients(project_id, 'code_updated', { 
-          userName: user.name, 
-          previewUrl: `/preview/${project_id}/`,
-          message: `${user.name} a généré un design depuis une image`
-        }, user.id);
-      }
-    });
+    generateClaudeWithImage(image_base64, media_type || 'image/png', imagePrompt, jobId);
     return;
   }
 
