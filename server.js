@@ -384,6 +384,13 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
 - Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
 - À la TOUTE FIN du fichier, ajouter ce commentaire exact :
   // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
+- ORDRE OBLIGATOIRE des middlewares :
+  1. app.use(express.static('public')) — AVANT tout middleware d'auth
+  2. Routes publiques : /health, /api/auth/login, /api/auth/register
+  3. Middleware JWT UNIQUEMENT sur /api/* (sauf auth)
+  4. Routes /api/* protégées
+  5. Catch-all qui sert index.html
+  La page index.html est PUBLIQUE. Seules les routes /api/* nécessitent JWT.
 
 **public/index.html** — Frontend vanilla uniquement :
 - JAMAIS require(), exports, import

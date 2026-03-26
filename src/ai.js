@@ -398,6 +398,15 @@ SYNTAXE EXPRESS 4.18.2 OBLIGATOIRE :
 - Static files : app.use(express.static('public'))
 - Error handler : (err, req, res, next) avec 4 paramètres
 
+ORDRE DES MIDDLEWARES — RÈGLE ABSOLUE :
+1. app.use(express.json())
+2. app.use(express.static('public'))  ← AVANT toute auth — les fichiers statiques sont PUBLICS
+3. app.get('/health', ...) et app.post('/api/auth/login', ...) ← routes publiques SANS auth
+4. Middleware JWT auth UNIQUEMENT sur /api/* (sauf login) : app.use('/api', authMiddleware)
+5. Routes /api/* protégées
+6. app.get(/.*/, ...) catch-all qui sert index.html
+La page index.html et tous les fichiers statiques (CSS, JS, images) sont TOUJOURS accessibles sans authentification. Seules les routes /api/* (sauf /api/auth/login et /api/auth/register) nécessitent un token JWT.
+
 RÈGLES ABSOLUES :
 1. JAMAIS de backticks markdown \`\`\` dans ta réponse
 2. JAMAIS de texte explicatif avant ou après le code
