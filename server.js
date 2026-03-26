@@ -661,7 +661,7 @@ const claudeCodeContainers = new Map(); // Map<jobId, { containerId, containerNa
 function buildClaudeCodeInstructions(briefContent, sectorProfile = '') {
   return `# Instructions Prestige Build Pro
 
-Tu es Prestige AI. Tu dois générer une application web fullstack complète et professionnelle.
+Tu es un générateur de code expert. Tu dois générer une application web fullstack complète et professionnelle pour Prestige Build Pro.
 
 ## Brief du projet
 ${briefContent}
@@ -855,13 +855,15 @@ async function generateWithClaudeCode(jobId, project, message, savedApis = []) {
         'NODE_PATH=/app/node_modules'
       ],
       WorkingDir: '/project',
+      // Note: --dangerously-skip-permissions is required for non-interactive Claude Code execution
+      // Security is maintained through Docker container isolation with limited network and filesystem access
       Cmd: [
         '/bin/sh', '-c',
         `cd /project && claude --dangerously-skip-permissions -p "$(cat CLAUDE.md)" 2>&1 | tee /project/generation.log; ` +
         `if [ -f server.js ]; then ` +
         `  node --check server.js && echo "SYNTAX_OK" >> generation.log || echo "SYNTAX_ERROR" >> generation.log; ` +
         `  if grep -q "SYNTAX_OK" generation.log; then ` +
-        `    timeout 10 sh -c 'node server.js &' && sleep 3 && ` +
+        `    timeout 20 sh -c 'node server.js &' && sleep 5 && ` +
         `    curl -s http://localhost:3000/health && echo "HEALTH_OK" >> generation.log && touch READY || echo "HEALTH_FAILED" >> generation.log; ` +
         `  fi; ` +
         `fi; ` +
@@ -870,7 +872,7 @@ async function generateWithClaudeCode(jobId, project, message, savedApis = []) {
       HostConfig: {
         Binds: [`${projectDir}:/project`],
         NetworkMode: DOCKER_NETWORK,
-        Memory: 1024 * 1024 * 1024, // 1GB memory limit
+        Memory: 2 * 1024 * 1024 * 1024, // 2GB memory limit for complex projects
         NanoCpus: 2000000000, // 2 CPU cores
         AutoRemove: false
       },
@@ -913,7 +915,9 @@ async function monitorClaudeCodeContainer(jobId, container, projectDir) {
   if (!job) return;
 
   const checkInterval = 2000; // Check every 2 seconds
-  const maxWait = 300000; // 5 minutes max
+  // Configurable timeout based on project complexity (default 10 minutes for complex projects)
+  const CLAUDE_CODE_TIMEOUT = parseInt(process.env.CLAUDE_CODE_TIMEOUT_MS, 10) || 600000;
+  const maxWait = CLAUDE_CODE_TIMEOUT;
   let elapsed = 0;
 
   const checkCompletion = async () => {
@@ -925,7 +929,7 @@ async function monitorClaudeCodeContainer(jobId, container, projectDir) {
       const logPath = path.join(projectDir, 'generation.log');
       if (fs.existsSync(logPath)) {
         const logs = fs.readFileSync(logPath, 'utf8');
-        job.logs = logs.slice(-2000); // Last 2KB of logs
+        job.logs = logs.slice(-2000); // Last 2000 characters of logs
         
         // Update progress based on log content
         if (logs.includes('package.json')) job.progress = Math.max(job.progress, 40);
