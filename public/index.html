@@ -1302,8 +1302,12 @@ function loadDockerPreview(url) {
   const loading = document.getElementById('preview-loading');
   const previewUrl = url || `/run/${currentProject.id}/`;
 
+  // Pass auth token as query param — iframe requests don't send Authorization headers
+  const separator = previewUrl.includes('?') ? '&' : '?';
+  const authenticatedUrl = previewUrl + separator + 'token=' + encodeURIComponent(token);
+
   document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
-  frame.src = previewUrl;
+  frame.src = authenticatedUrl;
   frame.style.display = 'block';
   loading.style.display = 'none';
   document.getElementById('preview-status').className = 'preview-status live';

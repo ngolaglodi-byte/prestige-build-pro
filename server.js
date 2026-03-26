@@ -3131,8 +3131,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Build the target path: strip /run/{id} prefix, preserve rest + query string
-    const targetPath = runMatch[2] || '/';
+    // Build the target path: strip /run/{id} prefix, preserve query string
+    // but remove the auth token param (no need to leak it to the container)
+    let targetPath = runMatch[2] || '/';
+    targetPath = targetPath.replace(/([?&])token=[^&]*/g, (m, sep, offset) => {
+      // If token was the only/first param, clean up the ? or &
+      return m.startsWith('?') ? '?' : '';
+    }).replace(/\?&/, '?').replace(/\?$/, '');
 
     // Proxy to the container
     proxyToContainer(req, res, projectId, targetPath);
