@@ -9,9 +9,11 @@ const Dockerode = require('dockerode');
 // ─── GLOBAL ERROR HANDLERS (prevent server crash on unhandled errors) ───
 process.on('uncaughtException', (err) => {
   console.error('Erreur non gérée:', err.message);
+  console.error('Stack trace:', err.stack);
 });
 process.on('unhandledRejection', (err) => {
   console.error('Promise rejetée:', err.message);
+  if (err && err.stack) console.error('Stack trace:', err.stack);
 });
 
 const PORT = process.env.PORT || 3000;
