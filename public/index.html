@@ -891,6 +891,7 @@ async function sendChatMessage(message) {
             document.getElementById('code-editor').textContent = generatedCode;
             assistantDiv.textContent = 'Code généré avec succès (' + fullCode.length + ' caractères)';
             await refreshPreviewWithCode();
+            await autoCompile();
           }
           if (d.type === 'preview_ready') loadPreview(d.previewUrl);
           if (d.type === 'error') assistantDiv.textContent = 'Erreur: ' + d.content;
@@ -931,6 +932,7 @@ async function generateFromImage(prompt) {
             document.getElementById('code-editor').textContent = generatedCode;
             assistantDiv.textContent = 'Design reproduit avec succès!';
             await refreshPreviewWithCode();
+            await autoCompile();
           }
           if (d.type === 'preview_ready') loadPreview(d.previewUrl);
         } catch (e) {}
@@ -1103,6 +1105,17 @@ async function restartProject() {
 // CODE PANEL
 // ═══════════════════════════════════════════════════════════════════════════
 function toggleCodePanel() { document.getElementById('code-panel').classList.toggle('open'); }
+
+// Auto-compile after code generation is complete
+async function autoCompile() {
+  if (!currentProject || !currentProject.id) {
+    console.error('[AUTOCOMPILE] Cannot compile: currentProject.id is missing');
+    return;
+  }
+  console.log('COMPILE TRIGGERED');
+  console.log('[AUTOCOMPILE] Starting for project:', currentProject.id);
+  await compileProject();
+}
 
 async function compileProject() {
   if (!currentProject) return;
