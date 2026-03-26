@@ -59,9 +59,6 @@ try {
   console.warn('Failed to initialize Dockerode client:', e.message);
 }
 
-// In-memory mapping of projectId → containerIP for proxy routing
-const containerMapping = new Map();
-
 // Preview system constants
 const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -1827,26 +1824,10 @@ function getContainerName(projectId) {
   return `pbp-project-${projectId}`;
 }
 
-// Get container IP address in pbp-projects network (using dockerode)
-async function getContainerIPAsync(projectId) {
-  if (!docker) return null;
-  try {
-    const containerName = getContainerName(projectId);
-    const container = docker.getContainer(containerName);
-    const inspectData = await container.inspect();
-    if (inspectData && inspectData.NetworkSettings && inspectData.NetworkSettings.Networks) {
-      const networks = inspectData.NetworkSettings.Networks;
-      // Only return IP from pbp-projects network (avoid returning IPs from other networks like coolify)
-      if (networks[DOCKER_NETWORK] && networks[DOCKER_NETWORK].IPAddress) {
-        return networks[DOCKER_NETWORK].IPAddress;
-      }
-      // Log warning if container exists but lacks pbp-projects network
-      console.warn(`[getContainerIPAsync] Container ${containerName} has no IP in ${DOCKER_NETWORK} network`);
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
+// Get the Docker DNS hostname for a project container.
+// On the pbp-projects network, Docker resolves container names automatically.
+function getContainerHostname(projectId) {
+  return getContainerName(projectId); // pbp-project-{id}
 }
 
 // Check if container is running (using dockerode)
@@ -1943,11 +1924,6 @@ async function restartContainerAsync(projectId) {
   try {
     const container = docker.getContainer(containerName);
     await container.restart({ t: 10 });
-    // Update IP in mapping after restart
-    setTimeout(async () => {
-      const ip = await getContainerIPAsync(projectId);
-      if (ip) containerMapping.set(projectId, ip);
-    }, 2000);
     return true;
   } catch (e) {
     console.error('Failed to restart container:', e.message);
@@ -1969,16 +1945,15 @@ async function startContainerAsync(projectId) {
   }
 }
 
-// Wait for container to be healthy
+// Wait for container to be healthy (uses Docker DNS name, not IP)
 async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT) {
   const startTime = Date.now();
-  const ip = await getContainerIPAsync(projectId);
-  if (!ip) return false;
+  const hostname = getContainerHostname(projectId);
 
   while (Date.now() - startTime < maxWait) {
     try {
       const response = await new Promise((resolve, reject) => {
-        const req = http.get(`http://${ip}:3000/health`, { timeout: 2000 }, (res) => {
+        const req = http.get(`http://${hostname}:3000/health`, { timeout: 2000 }, (res) => {
           let data = '';
           res.on('data', chunk => data += chunk);
           res.on('end', () => {
@@ -2398,23 +2373,16 @@ CMD ["node", "server.js"]
     }
     console.log(`[Docker Build] Health check passed`);
 
-    // Step 6: Get container IP and update mapping (100%)
-    console.log(`[Docker Build] Step 6: Getting container IP...`);
+    // Step 6: Done — container is reachable via Docker DNS (100%)
+    const containerHost = getContainerHostname(projectId);
+    console.log(`[Docker Build] Step 6: Container ready at ${containerHost}:3000`);
     onProgress({ step: 6, progress: 100, message: 'Prêt !' });
-    
-    const ip = await getContainerIPAsync(projectId);
-    if (ip) {
-      containerMapping.set(projectId, ip);
-      console.log(`[Docker Build] Container IP: ${ip}`);
-    } else {
-      console.warn(`[Docker Build] WARNING: Could not get container IP`);
-    }
 
     console.log(`[Docker Build] Build completed successfully for project ${projectId}`);
     return {
       success: true,
       url: `/run/${projectId}/`,
-      containerIP: ip
+      containerHost: containerHost
     };
 
   } catch (e) {
@@ -2802,8 +2770,6 @@ async function monitorContainers() {
           // Check if healthy now
           const healthy = await waitForContainerHealth(project.id, 10000);
           if (healthy) {
-            const ip = await getContainerIPAsync(project.id);
-            if (ip) containerMapping.set(project.id, ip);
             console.log(`Container ${containerName} restarted successfully`);
             
             // Add notification for user
@@ -2880,84 +2846,17 @@ function getErrorHistory(projectId) {
 // Restart lock to prevent multiple simultaneous restart attempts
 const restartLocks = new Map();
 
-// Proxy request to container
+// Proxy request to container (uses Docker DNS name, not IP)
 async function proxyToContainer(req, res, projectId, targetPath) {
-  let containerIP = containerMapping.get(projectId);
-  
-  if (!containerIP) {
-    // Try to get IP from Docker
-    const ip = await getContainerIPAsync(projectId);
-    if (ip) {
-      containerMapping.set(projectId, ip);
-      containerIP = ip;
-    }
-  }
-  
-  if (!containerIP) {
-    res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(`<!DOCTYPE html>
-<html lang="fr">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Projet en cours de démarrage</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { 
-      font-family: system-ui, -apple-system, sans-serif; 
-      background: linear-gradient(135deg, #0d1120 0%, #1a2744 100%);
-      min-height: 100vh; 
-      display: flex; 
-      align-items: center; 
-      justify-content: center;
-      color: #e2e8f0;
-    }
-    .container { text-align: center; padding: 40px; }
-    .loader {
-      width: 50px; height: 50px;
-      border: 4px solid rgba(212, 168, 32, 0.2);
-      border-top-color: #D4A820;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 24px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    h1 { font-size: 1.5rem; margin-bottom: 12px; color: #D4A820; }
-    p { color: #8896c4; margin-bottom: 20px; }
-    .retry { 
-      display: inline-block;
-      padding: 10px 24px;
-      background: #D4A820;
-      color: #1a2744;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .retry:hover { background: #e5b921; }
-  </style>
-  <script>setTimeout(() => location.reload(), 5000);</script>
-</head>
-<body>
-  <div class="container">
-    <div class="loader"></div>
-    <h1>Votre projet démarre...</h1>
-    <p>L'environnement se prépare, veuillez patienter quelques instants.</p>
-    <a href="javascript:location.reload()" class="retry">Réessayer</a>
-  </div>
-</body>
-</html>`);
-    return;
-  }
+  const containerHost = getContainerHostname(projectId);
 
-  // Proxy the request
+  // Proxy the request via Docker DNS
   const options = {
-    hostname: containerIP,
+    hostname: containerHost,
     port: 3000,
     path: targetPath || '/',
     method: req.method,
-    headers: { ...req.headers, host: `${containerIP}:3000` },
+    headers: { ...req.headers, host: `${containerHost}:3000` },
     timeout: 30000
   };
 
@@ -2967,7 +2866,7 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   });
 
   proxyReq.on('error', async (e) => {
-    console.error('Proxy error:', e.message);
+    console.error(`Proxy error for project ${projectId} (${containerHost}):`, e.message);
     // Container might have crashed, try to restart (with lock to prevent multiple attempts)
     const running = await isContainerRunningAsync(projectId);
     if (!running && !restartLocks.get(projectId)) {
@@ -2976,9 +2875,7 @@ async function proxyToContainer(req, res, projectId, targetPath) {
       // Clear lock after 30 seconds
       setTimeout(() => restartLocks.delete(projectId), 30000);
     }
-    // Remove from mapping to force re-lookup
-    containerMapping.delete(projectId);
-    
+
     res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html>
 <html lang="fr">
@@ -2988,12 +2885,12 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   <title>Redémarrage en cours</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { 
-      font-family: system-ui, -apple-system, sans-serif; 
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
       background: linear-gradient(135deg, #0d1120 0%, #1a2744 100%);
-      min-height: 100vh; 
-      display: flex; 
-      align-items: center; 
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
       justify-content: center;
       color: #e2e8f0;
     }
@@ -3035,44 +2932,43 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   }
 }
 
-// Rebuild container mapping from database on startup
+// Ensure containers are running on startup (DNS handles routing, no IP mapping needed)
 async function rebuildContainerMapping() {
   if (!db || !isDockerAvailable()) return;
-  
+
   try {
     const projects = db.prepare("SELECT id FROM projects WHERE build_status = 'done'").all();
-    console.log(`Rebuilding container mapping for ${projects.length} projects...`);
-    
+    console.log(`Checking ${projects.length} project containers on startup...`);
+    let running = 0;
+
     for (const project of projects) {
       const containerName = getContainerName(project.id);
-      
-      // Check if container exists and is running
-      const running = await isContainerRunningAsync(project.id);
-      if (running) {
-        const ip = await getContainerIPAsync(project.id);
-        if (ip) {
-          containerMapping.set(project.id, ip);
-          console.log(`  - Project ${project.id}: ${ip}`);
-        }
+
+      const isRunning = await isContainerRunningAsync(project.id);
+      if (isRunning) {
+        running++;
+        console.log(`  - Project ${project.id}: ${containerName} running`);
       } else {
         // Try to start stopped container
         try {
           await startContainerAsync(project.id);
           await new Promise(r => setTimeout(r, 2000));
-          const ip = await getContainerIPAsync(project.id);
-          if (ip) {
-            containerMapping.set(project.id, ip);
-            console.log(`  - Project ${project.id}: ${ip} (restarted)`);
+          const nowRunning = await isContainerRunningAsync(project.id);
+          if (nowRunning) {
+            running++;
+            console.log(`  - Project ${project.id}: ${containerName} restarted`);
+          } else {
+            console.log(`  - Project ${project.id}: ${containerName} failed to start`);
           }
         } catch (e) {
           console.log(`  - Project ${project.id}: container not available`);
         }
       }
     }
-    
-    console.log(`Container mapping rebuilt: ${containerMapping.size} active containers`);
+
+    console.log(`Container startup check done: ${running}/${projects.length} containers running`);
   } catch (e) {
-    console.error('Failed to rebuild container mapping:', e.message);
+    console.error('Failed to check containers on startup:', e.message);
   }
 }
 
@@ -3721,7 +3617,6 @@ const server = http.createServer(async (req, res) => {
       try {
         await stopContainerAsync(id);
         await removeContainerImageAsync(id);
-        containerMapping.delete(id);
       } catch(e) { console.warn('Docker cleanup error:', e.message); }
     }
     
