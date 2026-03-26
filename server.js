@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
+const Dockerode = require('dockerode');
 
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
@@ -16,6 +17,15 @@ const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
 const DOCKER_NETWORK = 'pbp-projects';
 const DOCKER_BASE_IMAGE = 'pbp-base';
 const DOCKER_HEALTH_TIMEOUT = 15000; // 15 seconds max wait for container health
+const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
+
+// Dockerode client - communicates directly with Docker socket (no CLI dependency)
+let docker = null;
+try {
+  docker = new Dockerode({ socketPath: DOCKER_SOCKET_PATH });
+} catch (e) {
+  console.warn('Failed to initialize Dockerode client:', e.message);
+}
 
 // In-memory mapping of projectId → containerIP for proxy routing
 const containerMapping = new Map();
@@ -764,39 +774,41 @@ if (!fs.existsSync(DOCKER_PROJECTS_DIR)) {
   try { fs.mkdirSync(DOCKER_PROJECTS_DIR, { recursive: true }); } catch(e) { console.warn('Could not create DOCKER_PROJECTS_DIR:', e.message); }
 }
 
-// Execute Docker command safely
-function execDocker(cmd, options = {}) {
+// Check if Docker is available (using dockerode ping)
+let dockerAvailable = false;
+async function checkDockerAvailable() {
+  if (!docker) return false;
   try {
-    return execSync(cmd, { encoding: 'utf8', timeout: 60000, ...options });
-  } catch (e) {
-    console.error('Docker command failed:', cmd, e.message);
-    throw e;
-  }
-}
-
-// Check if Docker is available
-function isDockerAvailable() {
-  try {
-    execSync('docker --version', { encoding: 'utf8', timeout: 5000 });
+    await docker.ping();
     return true;
   } catch (e) {
     return false;
   }
 }
 
-// Ensure Docker network exists
-function ensureDockerNetwork() {
+// Sync wrapper for isDockerAvailable (uses cached result)
+function isDockerAvailable() {
+  return dockerAvailable;
+}
+
+// Initialize Docker availability check
+(async () => {
+  dockerAvailable = await checkDockerAvailable();
+  if (dockerAvailable) {
+    console.log('Docker socket connection verified via dockerode');
+  } else {
+    console.log('Docker not available - Docker preview system disabled');
+  }
+})();
+
+// Ensure Docker network exists (using dockerode)
+async function ensureDockerNetwork() {
+  if (!docker) return;
   try {
-    // Use plain docker network ls and parse output in JS (avoids Alpine shell quote issues with --format)
-    const output = execDocker('docker network ls');
-    const lines = output.split('\n').slice(1); // Skip header
-    const networkNames = lines.map(line => {
-      const parts = line.trim().split(/\s+/);
-      // NAME is the second column (index 1); check length to avoid undefined
-      return parts.length > 1 ? parts[1] : '';
-    }).filter(name => name);
+    const networks = await docker.listNetworks();
+    const networkNames = networks.map(n => n.Name);
     if (!networkNames.includes(DOCKER_NETWORK)) {
-      execDocker(`docker network create ${DOCKER_NETWORK}`);
+      await docker.createNetwork({ Name: DOCKER_NETWORK, Driver: 'bridge' });
       console.log(`Created Docker network: ${DOCKER_NETWORK}`);
     }
   } catch (e) {
@@ -809,15 +821,15 @@ function getContainerName(projectId) {
   return `pbp-project-${projectId}`;
 }
 
-// Get container IP address
-function getContainerIP(projectId) {
+// Get container IP address (using dockerode)
+async function getContainerIPAsync(projectId) {
+  if (!docker) return null;
   try {
     const containerName = getContainerName(projectId);
-    // Use JSON output and parse in JS (avoids Alpine shell quote issues with Go templates)
-    const output = execDocker(`docker inspect ${containerName}`);
-    const inspectData = JSON.parse(output);
-    if (inspectData && inspectData[0] && inspectData[0].NetworkSettings && inspectData[0].NetworkSettings.Networks) {
-      const networks = inspectData[0].NetworkSettings.Networks;
+    const container = docker.getContainer(containerName);
+    const inspectData = await container.inspect();
+    if (inspectData && inspectData.NetworkSettings && inspectData.NetworkSettings.Networks) {
+      const networks = inspectData.NetworkSettings.Networks;
       const networkKeys = Object.keys(networks);
       for (let i = 0; i < networkKeys.length; i++) {
         const netName = networkKeys[i];
@@ -832,15 +844,25 @@ function getContainerIP(projectId) {
   }
 }
 
-// Check if container is running
-function isContainerRunning(projectId) {
+// Sync wrapper for getContainerIP (returns cached IP or fetches synchronously-ish)
+function getContainerIP(projectId) {
+  // Check cache first
+  if (containerMapping.has(projectId)) {
+    return containerMapping.get(projectId);
+  }
+  // For backward compatibility, return null and let async operations update the mapping
+  return null;
+}
+
+// Check if container is running (using dockerode)
+async function isContainerRunningAsync(projectId) {
+  if (!docker) return false;
   try {
     const containerName = getContainerName(projectId);
-    // Use JSON output and parse in JS (avoids Alpine shell quote issues with Go templates)
-    const output = execDocker(`docker inspect ${containerName}`);
-    const inspectData = JSON.parse(output);
-    if (inspectData && inspectData[0] && inspectData[0].State) {
-      return inspectData[0].State.Running === true;
+    const container = docker.getContainer(containerName);
+    const inspectData = await container.inspect();
+    if (inspectData && inspectData.State) {
+      return inspectData.State.Running === true;
     }
     return false;
   } catch (e) {
@@ -848,43 +870,114 @@ function isContainerRunning(projectId) {
   }
 }
 
-// Stop and remove container
-function stopContainer(projectId) {
-  const containerName = getContainerName(projectId);
-  try {
-    execDocker(`docker stop ${containerName}`, { timeout: 10000 });
-  } catch (e) {}
-  try {
-    execDocker(`docker rm ${containerName}`, { timeout: 5000 });
-  } catch (e) {}
+// Sync wrapper for isContainerRunning
+function isContainerRunning(projectId) {
+  // This is called in synchronous contexts - we return false and let async code handle it
+  // Most callers should migrate to isContainerRunningAsync
+  return false;
 }
 
-// Remove container image
-function removeContainerImage(projectId) {
+// Stop and remove container (using dockerode)
+async function stopContainerAsync(projectId) {
+  if (!docker) return;
+  const containerName = getContainerName(projectId);
+  try {
+    const container = docker.getContainer(containerName);
+    try {
+      await container.stop({ t: 10 });
+    } catch (e) {
+      // Container might not be running
+    }
+    try {
+      await container.remove({ force: true });
+    } catch (e) {
+      // Container might not exist
+    }
+  } catch (e) {
+    // Container doesn't exist
+  }
+}
+
+// Sync wrapper for stopContainer (backward compatibility)
+function stopContainer(projectId) {
+  // Start async operation but don't wait
+  stopContainerAsync(projectId).catch(e => console.error('stopContainer error:', e.message));
+}
+
+// Remove container image (using dockerode)
+async function removeContainerImageAsync(projectId) {
+  if (!docker) return;
   const imageName = `pbp-project-${projectId}:latest`;
   try {
-    execDocker(`docker rmi ${imageName}`, { timeout: 10000 });
-  } catch (e) {}
+    const image = docker.getImage(imageName);
+    await image.remove({ force: true });
+  } catch (e) {
+    // Image doesn't exist or can't be removed
+  }
 }
 
-// Get container logs
-function getContainerLogs(projectId, tailLines = 100) {
+// Sync wrapper for removeContainerImage
+function removeContainerImage(projectId) {
+  removeContainerImageAsync(projectId).catch(e => console.error('removeContainerImage error:', e.message));
+}
+
+// Get container logs (using dockerode)
+async function getContainerLogsAsync(projectId, tailLines = 100) {
+  if (!docker) return 'Erreur: Docker non disponible.';
   const containerName = getContainerName(projectId);
   try {
-    return execDocker(`docker logs --tail ${tailLines} ${containerName}`, { timeout: 10000 });
+    const container = docker.getContainer(containerName);
+    const logStream = await container.logs({
+      stdout: true,
+      stderr: true,
+      tail: tailLines,
+      follow: false
+    });
+    // Docker logs stream includes 8-byte header per frame, need to demux
+    if (Buffer.isBuffer(logStream)) {
+      return demuxDockerLogs(logStream);
+    }
+    return logStream.toString('utf8');
   } catch (e) {
     return `Erreur: impossible de récupérer les logs. ${e.message}`;
   }
 }
 
-// Restart container
-function restartContainer(projectId) {
+// Helper function to demux Docker logs (remove 8-byte frame headers)
+function demuxDockerLogs(buffer) {
+  let result = '';
+  let offset = 0;
+  while (offset < buffer.length) {
+    if (offset + 8 > buffer.length) break;
+    // First byte is stream type (1=stdout, 2=stderr), bytes 4-7 are size (big-endian)
+    const size = buffer.readUInt32BE(offset + 4);
+    offset += 8;
+    if (offset + size > buffer.length) break;
+    result += buffer.slice(offset, offset + size).toString('utf8');
+    offset += size;
+  }
+  return result || buffer.toString('utf8');
+}
+
+// Sync wrapper for getContainerLogs
+function getContainerLogs(projectId, tailLines = 100) {
+  // For synchronous callers, return a message indicating async is needed
+  // Most callers should migrate to getContainerLogsAsync
+  let logs = 'Chargement des logs...';
+  getContainerLogsAsync(projectId, tailLines).then(l => { logs = l; }).catch(() => {});
+  return logs;
+}
+
+// Restart container (using dockerode)
+async function restartContainerAsync(projectId) {
+  if (!docker) return false;
   const containerName = getContainerName(projectId);
   try {
-    execDocker(`docker restart ${containerName}`, { timeout: 30000 });
+    const container = docker.getContainer(containerName);
+    await container.restart({ t: 10 });
     // Update IP in mapping after restart
-    setTimeout(() => {
-      const ip = getContainerIP(projectId);
+    setTimeout(async () => {
+      const ip = await getContainerIPAsync(projectId);
       if (ip) containerMapping.set(projectId, ip);
     }, 2000);
     return true;
@@ -894,10 +987,30 @@ function restartContainer(projectId) {
   }
 }
 
+// Sync wrapper for restartContainer
+function restartContainer(projectId) {
+  restartContainerAsync(projectId).catch(e => console.error('restartContainer error:', e.message));
+  return true;
+}
+
+// Start a stopped container (using dockerode)
+async function startContainerAsync(projectId) {
+  if (!docker) return false;
+  const containerName = getContainerName(projectId);
+  try {
+    const container = docker.getContainer(containerName);
+    await container.start();
+    return true;
+  } catch (e) {
+    console.error('Failed to start container:', e.message);
+    return false;
+  }
+}
+
 // Wait for container to be healthy
 async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT) {
   const startTime = Date.now();
-  const ip = getContainerIP(projectId);
+  const ip = await getContainerIPAsync(projectId);
   if (!ip) return false;
 
   while (Date.now() - startTime < maxWait) {
@@ -1051,22 +1164,44 @@ CMD ["node", "server.js"]
 
     // Step 3: Stop old container and build new image (50%)
     onProgress({ step: 3, progress: 50, message: 'Construction de l\'environnement...' });
-    stopContainer(projectId);
+    await stopContainerAsync(projectId);
     
-    execDocker(`docker build -t ${imageName} ${projectDir}`, { timeout: 120000 });
+    // Build image using dockerode
+    const buildStream = await docker.buildImage(
+      { context: projectDir, src: ['Dockerfile', 'package.json', 'server.js', 'public'] },
+      { t: imageName }
+    );
+    
+    // Wait for build to complete
+    await new Promise((resolve, reject) => {
+      docker.modem.followProgress(buildStream, (err, output) => {
+        if (err) reject(err);
+        else resolve(output);
+      });
+    });
 
     // Step 4: Run the container (70%)
     onProgress({ step: 4, progress: 70, message: 'Lancement du projet...' });
     
-    // Use the same jwtSecret that was embedded in the Dockerfile ENV
-    execDocker(`docker run -d --name ${containerName} --network ${DOCKER_NETWORK} --restart unless-stopped -v ${dataDir}:/app/data -e PORT=3000 ${imageName}`, { timeout: 30000 });
+    // Create and start container using dockerode
+    const container = await docker.createContainer({
+      Image: imageName,
+      name: containerName,
+      Env: ['PORT=3000'],
+      HostConfig: {
+        NetworkMode: DOCKER_NETWORK,
+        RestartPolicy: { Name: 'unless-stopped' },
+        Binds: [`${dataDir}:/app/data`]
+      }
+    });
+    await container.start();
 
     // Step 5: Wait for health check (90%)
     onProgress({ step: 5, progress: 90, message: 'Vérification du démarrage...' });
     
     const healthy = await waitForContainerHealth(projectId);
     if (!healthy) {
-      const logs = getContainerLogs(projectId, 50);
+      const logs = await getContainerLogsAsync(projectId, 50);
       console.error('Container health check failed. Logs:', logs);
       throw new Error('Le projet ne répond pas. Vérifiez les logs pour plus de détails.');
     }
@@ -1074,7 +1209,7 @@ CMD ["node", "server.js"]
     // Step 6: Get container IP and update mapping (100%)
     onProgress({ step: 6, progress: 100, message: 'Prêt !' });
     
-    const ip = getContainerIP(projectId);
+    const ip = await getContainerIPAsync(projectId);
     if (ip) {
       containerMapping.set(projectId, ip);
     }
@@ -1350,7 +1485,7 @@ async function autoCorrectProject(projectId, onProgress) {
     }
     
     // Get Docker logs
-    const logs = getContainerLogs(projectId, 200);
+    const logs = await getContainerLogsAsync(projectId, 200);
     const errorType = detectErrorType(logs);
     
     onProgress?.({ 
@@ -1466,19 +1601,20 @@ async function monitorContainers() {
     
     for (const project of projects) {
       // Check if container should be running but isn't
-      if (!isContainerRunning(project.id)) {
+      const running = await isContainerRunningAsync(project.id);
+      if (!running) {
         const containerName = getContainerName(project.id);
         console.log(`Container ${containerName} stopped unexpectedly. Attempting restart...`);
         
         // Try simple restart first
         try {
-          execDocker(`docker start ${containerName}`, { timeout: 10000 });
+          await startContainerAsync(project.id);
           await new Promise(r => setTimeout(r, 3000));
           
           // Check if healthy now
           const healthy = await waitForContainerHealth(project.id, 10000);
           if (healthy) {
-            const ip = getContainerIP(project.id);
+            const ip = await getContainerIPAsync(project.id);
             if (ip) containerMapping.set(project.id, ip);
             console.log(`Container ${containerName} restarted successfully`);
             
@@ -1557,18 +1693,19 @@ function getErrorHistory(projectId) {
 const restartLocks = new Map();
 
 // Proxy request to container
-function proxyToContainer(req, res, projectId, targetPath) {
-  const containerIP = containerMapping.get(projectId);
+async function proxyToContainer(req, res, projectId, targetPath) {
+  let containerIP = containerMapping.get(projectId);
   
   if (!containerIP) {
     // Try to get IP from Docker
-    const ip = getContainerIP(projectId);
+    const ip = await getContainerIPAsync(projectId);
     if (ip) {
       containerMapping.set(projectId, ip);
-      return proxyToContainer(req, res, projectId, targetPath);
+      containerIP = ip;
     }
-    
-    // Return elegant error page
+  }
+  
+  if (!containerIP) {
     res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!DOCTYPE html>
 <html lang="fr">
@@ -1641,12 +1778,13 @@ function proxyToContainer(req, res, projectId, targetPath) {
     proxyRes.pipe(res);
   });
 
-  proxyReq.on('error', (e) => {
+  proxyReq.on('error', async (e) => {
     console.error('Proxy error:', e.message);
     // Container might have crashed, try to restart (with lock to prevent multiple attempts)
-    if (!isContainerRunning(projectId) && !restartLocks.get(projectId)) {
+    const running = await isContainerRunningAsync(projectId);
+    if (!running && !restartLocks.get(projectId)) {
       restartLocks.set(projectId, true);
-      restartContainer(projectId);
+      restartContainerAsync(projectId).catch(err => console.error('Restart error:', err.message));
       // Clear lock after 30 seconds
       setTimeout(() => restartLocks.delete(projectId), 30000);
     }
@@ -1721,8 +1859,9 @@ async function rebuildContainerMapping() {
       const containerName = getContainerName(project.id);
       
       // Check if container exists and is running
-      if (isContainerRunning(project.id)) {
-        const ip = getContainerIP(project.id);
+      const running = await isContainerRunningAsync(project.id);
+      if (running) {
+        const ip = await getContainerIPAsync(project.id);
         if (ip) {
           containerMapping.set(project.id, ip);
           console.log(`  - Project ${project.id}: ${ip}`);
@@ -1730,9 +1869,9 @@ async function rebuildContainerMapping() {
       } else {
         // Try to start stopped container
         try {
-          execDocker(`docker start ${containerName}`, { timeout: 10000 });
+          await startContainerAsync(project.id);
           await new Promise(r => setTimeout(r, 2000));
-          const ip = getContainerIP(project.id);
+          const ip = await getContainerIPAsync(project.id);
           if (ip) {
             containerMapping.set(project.id, ip);
             console.log(`  - Project ${project.id}: ${ip} (restarted)`);
@@ -1750,15 +1889,15 @@ async function rebuildContainerMapping() {
 }
 
 // Initialize Docker system
-function initializeDockerSystem() {
+async function initializeDockerSystem() {
   if (!isDockerAvailable()) {
     console.log('Docker not available - Docker preview system disabled');
     return;
   }
   
   console.log('Initializing Docker preview system...');
-  ensureDockerNetwork();
-  rebuildContainerMapping();
+  await ensureDockerNetwork();
+  await rebuildContainerMapping();
 }
 
 // ─── SERVER ───
@@ -2045,7 +2184,7 @@ const server = http.createServer(async (req, res) => {
             db.prepare('UPDATE builds SET message=? WHERE id=?').run(friendly['detecting'], buildId);
             
             // Get logs for error analysis
-            const logs = getContainerLogs(project_id, 200);
+            const logs = await getContainerLogsAsync(project_id, 200);
             const errorType = detectErrorType(logs, err.message);
             
             // Log error to database
@@ -2375,15 +2514,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     
-    const rawLogs = getContainerLogs(id, 100);
+    const rawLogs = await getContainerLogsAsync(id, 100);
     const translatedLogs = translateLogsToFrench(rawLogs);
     const errorHistory = getErrorHistory(id);
+    const running = await isContainerRunningAsync(id);
     
     json(res, 200, { 
       logs: translatedLogs, 
       rawLogs,
       container: getContainerName(id), 
-      running: isContainerRunning(id),
+      running,
       errorHistory: errorHistory.map(e => ({
         type: translateErrorType(e.error_type),
         attempt: e.correction_attempt,
