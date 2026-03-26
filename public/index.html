@@ -586,9 +586,12 @@ button.card { padding: 0; }
 </div>
 <script>
 // Ignore JS errors from preview iframe — they must not affect the main app
+window.onerror = function(msg, src) {
+  if (src && src.includes('/run/')) return true; // suppress, don't log
+  return false; // let other errors through
+};
 window.addEventListener('error', function(e) {
-  if (e.filename && e.filename.includes('/run/')) { e.preventDefault(); return; }
-  if (e.target && e.target.tagName === 'IFRAME') { e.preventDefault(); return; }
+  if (e.target && e.target.tagName === 'IFRAME') { e.stopPropagation(); e.preventDefault(); }
 }, true);
 
 // ═══════════════════════════════════════════════════════════════════════════

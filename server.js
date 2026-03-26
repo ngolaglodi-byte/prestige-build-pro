@@ -2073,6 +2073,40 @@ function cleanGeneratedContent(content) {
   return cleaned;
 }
 
+// Sanitize public/index.html: strip Node.js patterns that crash in browsers
+// Claude sometimes generates require(), module.exports, etc. despite the prompt
+function sanitizeClientHtml(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  let html = fs.readFileSync(filePath, 'utf8');
+  const original = html;
+
+  // Remove standalone Node.js require lines (const x = require('...'))
+  html = html.replace(/^\s*(const|let|var)\s+\w+\s*=\s*require\s*\([^)]*\)\s*;?\s*$/gm, '');
+
+  // Remove require() calls inside script tags but keep the rest
+  html = html.replace(/\brequire\s*\(\s*['"][^'"]*['"]\s*\)/g, 'undefined /* require removed */');
+
+  // Remove module.exports lines
+  html = html.replace(/^\s*module\.exports\s*=.*$/gm, '');
+
+  // Remove exports.xxx lines
+  html = html.replace(/^\s*exports\.\w+\s*=.*$/gm, '');
+
+  // Remove process.env references (replace with empty string)
+  html = html.replace(/\bprocess\.env\.\w+/g, "''");
+
+  // Remove __dirname / __filename references
+  html = html.replace(/\b__dirname\b/g, "'.'");
+  html = html.replace(/\b__filename\b/g, "''");
+
+  if (html !== original) {
+    fs.writeFileSync(filePath, html);
+    console.log(`[Docker Build] ✓ Sanitized public/index.html: removed Node.js patterns`);
+    return true;
+  }
+  return false;
+}
+
 // Parse generated code into files (looking for ### markers)
 function parseDockerProjectCode(code) {
   const files = {};
@@ -2188,6 +2222,9 @@ async function buildDockerProject(projectId, code, onProgress) {
       fs.writeFileSync(filePath, content);
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
+
+    // Sanitize public/index.html — strip any Node.js code that would crash in browsers
+    sanitizeClientHtml(path.join(projectDir, 'public', 'index.html'));
 
     // Fix package.json to use pinned versions
     const packageJsonPathForScan = path.join(projectDir, 'package.json');
