@@ -59,7 +59,7 @@ const ERROR_TYPES = {
 };
 
 // ─── ABSOLUTE RULE FOR BROWSER-ONLY CODE ───
-const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE : Le fichier public/index.html doit être du HTML/CSS/JavaScript vanilla pur pour le navigateur. INTERDIT dans index.html : require(), module.exports, exports, import/export ES6, process, __dirname, Buffer, fs, path. Ces mots-clés Node.js ne fonctionnent pas dans un navigateur. Le fichier server.js peut utiliser require() mais jamais index.html.
+const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE PRIORITAIRE : Le fichier public/index.html doit contenir UNIQUEMENT du HTML/CSS/JavaScript vanilla compatible navigateur. STRICTEMENT INTERDIT dans public/index.html : require(), module.exports, exports, import from, process, __dirname, Buffer, fs, path, npm. Ces éléments Node.js ne fonctionnent PAS dans un navigateur et causent des erreurs. Tout le code Node.js va UNIQUEMENT dans server.js. Le frontend appelle le backend via fetch('/api/...').
 
 `;
 
