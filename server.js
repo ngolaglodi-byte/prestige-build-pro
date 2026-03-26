@@ -848,12 +848,14 @@ function generateViaAPI(projectId, brief, jobId) {
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
   const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 8000;
+  const model = ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001';
+  console.log(`[API Fallback] Using model: ${model}, max_tokens: ${maxTokens}`);
 
   const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
 
   const payload = JSON.stringify({
-    model: 'claude-sonnet-4-20250514',
+    model: model,
     max_tokens: maxTokens,
     system: systemPrompt,
     stream: true,
@@ -1043,11 +1045,12 @@ Règles d'intégration automatique :
     ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
     : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
   
-  // INTELLIGENT MAX_TOKENS: Use getMaxTokensForProject based on brief complexity
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  console.log(`[Claude API Generate] Using max_tokens: ${maxTokens} for job ${jobId}`);
-    
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:maxTokens, system:systemPrompt, stream:true, messages });
+  // Select model and tokens based on brief complexity
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 8000;
+  const model = ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001';
+  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
+
+  const payload = JSON.stringify({ model, max_tokens:maxTokens, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   
   const r = https.request(opts, apiRes => {
@@ -2645,10 +2648,10 @@ Retourne UNIQUEMENT le code corrigé, sans explications.`;
 
   return new Promise((resolve, reject) => {
     const messages = [{ role: 'user', content: correctionPrompt }];
-    const payload = JSON.stringify({ 
-      model: 'claude-sonnet-4-20250514', 
-      max_tokens: 16000, 
-      messages 
+    const payload = JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 16000,
+      messages
     });
     
     const opts = { 
@@ -2709,7 +2712,7 @@ Réécris complètement server.js en corrigeant l'erreur. Assure-toi que app est
 
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 16000,
       messages: [{ role: 'user', content: prompt }]
     });

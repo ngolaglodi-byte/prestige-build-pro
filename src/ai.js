@@ -367,7 +367,12 @@ function detectProjectComplexity(brief) {
 
 function getMaxTokensForProject(brief) {
   const complexity = detectProjectComplexity(brief);
-  return complexity === 'complex' ? 50000 : 16000;
+  return complexity === 'complex' ? 16000 : 8000;
+}
+
+function getModelForProject(brief) {
+  const complexity = detectProjectComplexity(brief);
+  return complexity === 'complex' ? 'claude-sonnet-4-6' : 'claude-haiku-4-5-20251001';
 }
 
 const SYSTEM_PROMPT = `Tu es Prestige AI, un générateur de code expert niveau senior. Tu génères des applications web fullstack COMPLÈTES et PROFESSIONNELLES.
@@ -562,5 +567,6 @@ module.exports = {
   analyzeBrief,
   buildProfessionalPrompt,
   detectProjectComplexity,
-  getMaxTokensForProject
+  getMaxTokensForProject,
+  getModelForProject
 };
