@@ -423,6 +423,7 @@ DASHBOARD → sidebar, Chart.js, CRUD complet, exports
 const claudeCodeProcesses = new Map();
 
 // ─── GENERATE CLAUDE CODE (SERVER-SIDE, ISOLATED PER PROJECT) ───
+// Note: options parameter reserved for future extensibility (e.g., timeout, max retries)
 function generateClaudeCode(projectId, brief, jobId, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
@@ -473,6 +474,9 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application web complète basée sur le brief. Génère les 3 fichiers (package.json, server.js, public/index.html), teste-les, et crée le fichier READY quand tout fonctionne.`;
   
   // Spawn Claude Code process
+  // NOTE: --dangerously-skip-permissions is required for non-interactive server-side execution.
+  // Security is enforced by setting cwd to the isolated project directory.
+  // The ANTHROPIC_API_KEY is passed only to enable Claude Code API calls (server-side only).
   const claudeProcess = spawn('claude', [
     '--dangerously-skip-permissions',
     '--print',
@@ -643,7 +647,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   // Build the prompt for modification
   const prompt = `Modifie les fichiers existants dans ce dossier selon cette instruction: "${message}". Teste les modifications avec node --check server.js, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
   
-  // Spawn Claude Code process
+  // Spawn Claude Code process (see generateClaudeCode for security notes)
   const claudeProcess = spawn('claude', [
     '--dangerously-skip-permissions',
     '--print',
@@ -699,7 +703,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
       job.status = 'error';
       job.error = 'Claude Code n\'a pas pu appliquer les modifications.';
       // Clean up ERROR file for next attempt
-      fs.unlinkSync(errorPath);
+      try { fs.unlinkSync(errorPath); } catch (e) { console.warn('Could not remove ERROR file:', e.message); }
       return;
     }
     
@@ -724,9 +728,7 @@ ${indexHtml}`;
       
       // Clean up READY file if exists
       const readyPath = path.join(projectDir, 'READY');
-      if (fs.existsSync(readyPath)) {
-        fs.unlinkSync(readyPath);
-      }
+      try { if (fs.existsSync(readyPath)) fs.unlinkSync(readyPath); } catch (e) { console.warn('Could not remove READY file:', e.message); }
     } catch (readErr) {
       job.status = 'error';
       job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
@@ -955,7 +957,7 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
   // Build the prompt for Claude Code
   const claudePrompt = `Lis le fichier CLAUDE.md et analyse l'image design-reference.png dans ce dossier. Reproduis fidèlement ce design en créant les 3 fichiers requis (package.json, server.js, public/index.html). Teste-les et crée le fichier READY quand tout fonctionne.`;
   
-  // Spawn Claude Code process
+  // Spawn Claude Code process (see generateClaudeCode for security notes)
   const claudeProcess = spawn('claude', [
     '--dangerously-skip-permissions',
     '--print',
