@@ -1237,56 +1237,63 @@ async function compileProject() {
 async function pollBuildStatus(buildId) {
   const loading = document.getElementById('preview-loading');
   const status = document.getElementById('preview-status');
-  
+  let errorCount = 0;
+  const maxErrors = 30; // Give up after ~60s of consecutive errors
+
   const check = async () => {
+    let b;
     try {
-      const b = await api('/api/builds/' + buildId);
-      
-      // Update loading message with progress
-      if (b.message) {
-        // Check if this is auto-correction mode and show elegant message
-        if (b.message.includes('Prestige AI optimise') || b.message.includes('Correction')) {
-          loading.querySelector('span').innerHTML = `
-            <span style="display:flex;align-items:center;gap:8px;flex-direction:column;">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" style="animation:spin 2s linear infinite;">
-                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-              </svg>
-              <span style="color:var(--gold);font-weight:600;">${escapeHtml(b.message)}</span>
-              ${b.progress ? `<span style="font-size:0.75rem;color:var(--text-muted);">Progression: ${b.progress}%</span>` : ''}
-            </span>`;
-          status.className = 'preview-status generating';
-          status.innerHTML = '<span style="color:var(--gold);">🤖 Optimisation IA</span>';
-        } else {
-          loading.querySelector('span').textContent = b.message + (b.progress ? ` (${b.progress}%)` : '');
-        }
-      }
-      
-      if (b.status === 'done') {
-        // Use Docker proxy URL for preview
-        const previewUrl = (b.url && b.url.startsWith('/run/')) ? b.url : `/run/${currentProject.id}/`;
-        loadDockerPreview(previewUrl);
-      } else if (b.status === 'error') {
+      b = await api('/api/builds/' + buildId);
+      errorCount = 0; // Reset on success
+    } catch (e) {
+      errorCount++;
+      console.error('Poll error:', e, '(' + errorCount + '/' + maxErrors + ')');
+      if (errorCount >= maxErrors) {
         status.className = 'preview-status';
         status.innerHTML = '<span style="color:var(--error);">Erreur</span>';
-        
-        // Check if max attempts were reached - show friendly message
-        if (b.message && b.message.includes('tentatives')) {
-          loading.querySelector('span').innerHTML = `
-            <div style="text-align:center;padding:var(--space-lg);">
-              <div style="font-size:1.2rem;margin-bottom:var(--space-md);">💡</div>
-              <div style="color:var(--text-primary);font-weight:500;margin-bottom:var(--space-sm);">Votre projet nécessite une simplification</div>
-              <div style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:var(--space-md);">${escapeHtml(b.message)}</div>
-              <button class="btn btn-primary" onclick="showSimplifyOptions()">Obtenir de l'aide</button>
-            </div>`;
-        } else {
-          loading.querySelector('span').textContent = b.message || 'Erreur de compilation';
-        }
-      } else {
-        setTimeout(check, 1500);
+        loading.querySelector('span').textContent = 'Connexion au serveur perdue. Rechargez la page.';
+        return;
       }
-    } catch (e) {
-      console.error('Poll error:', e);
       setTimeout(check, 2000);
+      return;
+    }
+
+    // Update loading message with progress
+    if (b.message) {
+      if (b.message.includes('Prestige AI optimise') || b.message.includes('Correction') || b.message.includes('correction')) {
+        loading.querySelector('span').innerHTML = `
+          <span style="display:flex;align-items:center;gap:8px;flex-direction:column;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" style="animation:spin 2s linear infinite;">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+            <span style="color:var(--gold);font-weight:600;">${escapeHtml(b.message)}</span>
+            ${b.progress ? `<span style="font-size:0.75rem;color:var(--text-muted);">Progression: ${b.progress}%</span>` : ''}
+          </span>`;
+        status.className = 'preview-status generating';
+        status.innerHTML = '<span style="color:var(--gold);">Optimisation IA</span>';
+      } else {
+        loading.querySelector('span').textContent = b.message + (b.progress ? ` (${b.progress}%)` : '');
+      }
+    }
+
+    if (b.status === 'done') {
+      const previewUrl = (b.url && b.url.startsWith('/run/')) ? b.url : `/run/${currentProject.id}/`;
+      loadDockerPreview(previewUrl);
+    } else if (b.status === 'error') {
+      status.className = 'preview-status';
+      status.innerHTML = '<span style="color:var(--error);">Erreur</span>';
+      if (b.message && b.message.includes('tentatives')) {
+        loading.querySelector('span').innerHTML = `
+          <div style="text-align:center;padding:var(--space-lg);">
+            <div style="font-size:1.2rem;margin-bottom:var(--space-md);">Votre projet nécessite une simplification</div>
+            <div style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:var(--space-md);">${escapeHtml(b.message)}</div>
+            <button class="btn btn-primary" onclick="showSimplifyOptions()">Obtenir de l'aide</button>
+          </div>`;
+      } else {
+        loading.querySelector('span').textContent = b.message || 'Erreur de compilation';
+      }
+    } else {
+      setTimeout(check, 1500);
     }
   };
   check();

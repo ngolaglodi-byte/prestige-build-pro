@@ -3221,8 +3221,16 @@ const server = http.createServer(async (req, res) => {
     }
     const projectId = parseInt(runMatch[1]);
 
-    // If token is in query string, set a cookie so sub-requests (CSS, JS, fetch, images)
-    // from the iframe are automatically authenticated without needing ?token= on each one
+    // Authentication check for Docker proxy
+    const user = getAuth(req);
+    if (!user) {
+      json(res, 401, { error: 'Non autorisé. Connectez-vous pour accéder au projet.' });
+      return;
+    }
+
+    // Auth passed — set cookie so sub-requests (CSS, JS, fetch, images) from the
+    // iframe are automatically authenticated without needing ?token= on each one.
+    // Only set cookie when token comes via query string (initial iframe load).
     const qsParts = req.url.split('?');
     if (qsParts.length > 1) {
       const qsParams = new URLSearchParams(qsParts[1]);
@@ -3230,13 +3238,6 @@ const server = http.createServer(async (req, res) => {
       if (qsToken) {
         res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/run/${projectId}/; HttpOnly; SameSite=Lax; Max-Age=86400`);
       }
-    }
-
-    // Authentication check for Docker proxy
-    const user = getAuth(req);
-    if (!user) {
-      json(res, 401, { error: 'Non autorisé. Connectez-vous pour accéder au projet.' });
-      return;
     }
 
     // Authorization check: user must own the project or be admin
