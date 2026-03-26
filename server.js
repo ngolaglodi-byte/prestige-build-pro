@@ -2133,6 +2133,7 @@ const server = http.createServer(async (req, res) => {
   // ─── COMPILE (DOCKER ISOLATED PREVIEW) ───
   if (url==='/api/compile' && req.method==='POST') {
     const {project_id, mode}=await getBody(req);
+    console.log('[COMPILE] Starting for project:', project_id);
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
     if (!project?.generated_code) { json(res,400,{error:'Générez le code d\'abord.'}); return; }
     
