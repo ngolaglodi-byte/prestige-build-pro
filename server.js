@@ -6,6 +6,14 @@ const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
 const Dockerode = require('dockerode');
 
+// ─── GLOBAL ERROR HANDLERS (prevent server crash on unhandled errors) ───
+process.on('uncaughtException', (err) => {
+  console.error('Erreur non gérée:', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Promise rejetée:', err.message);
+});
+
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -1022,12 +1030,20 @@ async function buildDockerProject(projectId, code, onProgress) {
   const containerName = getContainerName(projectId);
   const imageName = `pbp-project-${projectId}:latest`;
 
+  console.log(`[Docker Build] Starting build for project ${projectId}`);
+  console.log(`[Docker Build] Project directory: ${projectDir}`);
+  console.log(`[Docker Build] Container name: ${containerName}`);
+  console.log(`[Docker Build] Image name: ${imageName}`);
+
   try {
     // Step 1: Parse code into files (10%)
+    console.log(`[Docker Build] Step 1: Parsing code into files...`);
     onProgress({ step: 1, progress: 10, message: 'Analyse du code généré...' });
     const files = parseDockerProjectCode(code);
+    console.log(`[Docker Build] Parsed ${Object.keys(files).length} files: ${Object.keys(files).join(', ')}`);
     
     if (Object.keys(files).length === 0) {
+      console.error(`[Docker Build] ERROR: No files found in generated code`);
       throw new Error('Aucun fichier trouvé dans le code généré. Utilisez les marqueurs ### pour séparer les fichiers.');
     }
 
@@ -1048,13 +1064,16 @@ async function buildDockerProject(projectId, code, onProgress) {
     }
 
     // Create directories, preserving data directory for persistence
+    console.log(`[Docker Build] Setting up project directories...`);
     if (fs.existsSync(projectDir)) {
+      console.log(`[Docker Build] Project directory exists, backing up data...`);
       const tmpData = path.join('/tmp', `pbp-data-${projectId}`);
       // Backup data directory using fs operations (cross-platform)
       if (fs.existsSync(dataDir)) {
         try {
           copyDirSync(dataDir, tmpData);
-        } catch(e) { console.warn('Data backup failed:', e.message); }
+          console.log(`[Docker Build] Data backed up to ${tmpData}`);
+        } catch(e) { console.warn('[Docker Build] Data backup failed:', e.message); }
       }
       fs.rmSync(projectDir, { recursive: true, force: true });
       fs.mkdirSync(projectDir, { recursive: true });
@@ -1065,15 +1084,18 @@ async function buildDockerProject(projectId, code, onProgress) {
         try {
           copyDirSync(tmpData, dataDir);
           fs.rmSync(tmpData, { recursive: true, force: true });
-        } catch(e) { console.warn('Data restore failed:', e.message); }
+          console.log(`[Docker Build] Data restored from backup`);
+        } catch(e) { console.warn('[Docker Build] Data restore failed:', e.message); }
       }
     } else {
+      console.log(`[Docker Build] Creating new project directory structure`);
       fs.mkdirSync(projectDir, { recursive: true });
       fs.mkdirSync(publicDir, { recursive: true });
       fs.mkdirSync(dataDir, { recursive: true });
     }
 
     // Step 2: Write all files (30%)
+    console.log(`[Docker Build] Step 2: Writing project files...`);
     onProgress({ step: 2, progress: 30, message: 'Écriture des fichiers du projet...' });
     
     for (const [filename, content] of Object.entries(files)) {
@@ -1083,18 +1105,22 @@ async function buildDockerProject(projectId, code, onProgress) {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.writeFileSync(filePath, content);
+      console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
     // Step 2.5: Syntax check before building (35%)
+    console.log(`[Docker Build] Step 2.5: Checking syntax...`);
     onProgress({ step: 2, progress: 35, message: 'Vérification de la syntaxe...' });
     const syntaxResult = checkSyntax(projectDir);
     if (!syntaxResult.valid) {
-      console.log('Syntax error detected, throwing for auto-correction');
+      console.error(`[Docker Build] ERROR: Syntax error detected: ${syntaxResult.error}`);
       throw new Error(`Erreur de syntaxe: ${syntaxResult.error}`);
     }
+    console.log(`[Docker Build] Syntax check passed`);
 
     // Create Dockerfile for the project
     // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
+    console.log(`[Docker Build] Creating Dockerfile...`);
     const jwtSecret = crypto.randomBytes(32).toString('hex');
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
@@ -1109,31 +1135,43 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \\
 CMD ["node", "server.js"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
+    console.log(`[Docker Build] Dockerfile created`);
 
     // Step 3: Stop old container and build new image (50%)
+    console.log(`[Docker Build] Step 3: Stopping old container and building new image...`);
     onProgress({ step: 3, progress: 50, message: 'Construction de l\'environnement...' });
     await stopContainerAsync(projectId);
+    console.log(`[Docker Build] Old container stopped (if existed)`);
     
     // Build image using dockerode
     // Get all files in project directory to include in build context
     const projectFiles = fs.readdirSync(projectDir);
+    console.log(`[Docker Build] Building image with files: ${projectFiles.join(', ')}`);
     const buildStream = await docker.buildImage(
       { context: projectDir, src: projectFiles },
       { t: imageName }
     );
     
     // Wait for build to complete
+    console.log(`[Docker Build] Waiting for image build to complete...`);
     await new Promise((resolve, reject) => {
       docker.modem.followProgress(buildStream, (err, output) => {
-        if (err) reject(err);
-        else resolve(output);
+        if (err) {
+          console.error(`[Docker Build] ERROR: Image build failed: ${err.message}`);
+          reject(err);
+        } else {
+          console.log(`[Docker Build] Image build completed successfully`);
+          resolve(output);
+        }
       });
     });
 
     // Step 4: Run the container (70%)
+    console.log(`[Docker Build] Step 4: Creating and starting container...`);
     onProgress({ step: 4, progress: 70, message: 'Lancement du projet...' });
     
     // Create and start container using dockerode
+    console.log(`[Docker Build] Creating container with network: ${DOCKER_NETWORK}`);
     const container = await docker.createContainer({
       Image: imageName,
       name: containerName,
@@ -1144,26 +1182,36 @@ CMD ["node", "server.js"]
         Binds: [`${dataDir}:/app/data`]
       }
     });
+    console.log(`[Docker Build] Container created, starting...`);
     await container.start();
+    console.log(`[Docker Build] Container started`);
 
     // Step 5: Wait for health check (90%)
+    console.log(`[Docker Build] Step 5: Waiting for health check...`);
     onProgress({ step: 5, progress: 90, message: 'Vérification du démarrage...' });
     
     const healthy = await waitForContainerHealth(projectId);
     if (!healthy) {
       const logs = await getContainerLogsAsync(projectId, 50);
-      console.error('Container health check failed. Logs:', logs);
+      console.error(`[Docker Build] ERROR: Container health check failed`);
+      console.error(`[Docker Build] Container logs:\n${logs}`);
       throw new Error('Le projet ne répond pas. Vérifiez les logs pour plus de détails.');
     }
+    console.log(`[Docker Build] Health check passed`);
 
     // Step 6: Get container IP and update mapping (100%)
+    console.log(`[Docker Build] Step 6: Getting container IP...`);
     onProgress({ step: 6, progress: 100, message: 'Prêt !' });
     
     const ip = await getContainerIPAsync(projectId);
     if (ip) {
       containerMapping.set(projectId, ip);
+      console.log(`[Docker Build] Container IP: ${ip}`);
+    } else {
+      console.warn(`[Docker Build] WARNING: Could not get container IP`);
     }
 
+    console.log(`[Docker Build] Build completed successfully for project ${projectId}`);
     return {
       success: true,
       url: `/run/${projectId}/`,
@@ -1171,7 +1219,8 @@ CMD ["node", "server.js"]
     };
 
   } catch (e) {
-    console.error('Docker build failed:', e.message);
+    console.error(`[Docker Build] FAILED for project ${projectId}: ${e.message}`);
+    console.error(`[Docker Build] Stack trace:`, e.stack);
     throw e;
   }
 }
@@ -2412,10 +2461,12 @@ const server = http.createServer(async (req, res) => {
     // Get project info before deletion (for cleanup)
     const project = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     
-    // Delete all related records
-    db.prepare('DELETE FROM project_messages WHERE project_id=?').run(id);
-    db.prepare('DELETE FROM project_versions WHERE project_id=?').run(id);
+    // Delete all related records in correct order to avoid FOREIGN KEY constraint failures
+    // Order: analytics, project_versions, notifications (user-based, not project-linked), messages, then project
     db.prepare('DELETE FROM analytics WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM project_versions WHERE project_id=?').run(id);
+    // Note: notifications table uses user_id, not project_id - no direct project link
+    db.prepare('DELETE FROM project_messages WHERE project_id=?').run(id);
     db.prepare('DELETE FROM builds WHERE project_id=?').run(id);
     db.prepare('DELETE FROM error_history WHERE project_id=?').run(id);
     db.prepare('DELETE FROM projects WHERE id=?').run(id);
