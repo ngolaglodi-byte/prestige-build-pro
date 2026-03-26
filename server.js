@@ -1350,11 +1350,12 @@ function cleanGeneratedContent(content) {
   cleaned = cleaned.replace(/^```(?:javascript|js|json|html|css|jsx|tsx|typescript|ts|bash|sh|sql|yaml|yml|xml|text|txt|plain)?\s*$/gm, '');
   
   // CORRECTION 3: Fix Express wildcard patterns - use regex for path-to-regexp compatibility
-  // Replace all wildcards ('*', '/*') with regex /.*/ to avoid path-to-regexp errors
-  cleaned = cleaned.replace(/app\.get\(\s*['"][/*]*['"]\s*,/g, "app.get(/.*/,");
-  cleaned = cleaned.replace(/app\.use\(\s*['"][/*]*['"]\s*,/g, "app.use(/.*/,");
-  cleaned = cleaned.replace(/router\.get\(\s*['"][/*]*['"]\s*,/g, "router.get(/.*/,");
-  cleaned = cleaned.replace(/router\.use\(\s*['"][/*]*['"]\s*,/g, "router.use(/.*/,");
+  // Replace wildcard routes ('*' or '/*') with regex /.*/ to avoid path-to-regexp errors
+  // Match exactly '*' or '/*' patterns, not empty strings or other patterns like '/**'
+  cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
+  cleaned = cleaned.replace(/app\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "app.use(/.*/,");
+  cleaned = cleaned.replace(/router\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "router.get(/.*/,");
+  cleaned = cleaned.replace(/router\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "router.use(/.*/,");
   
   // Fix Express 5.x version references to use 4.18.2
   cleaned = cleaned.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
