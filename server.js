@@ -204,7 +204,13 @@ function getBody(req) { return new Promise(r=>{let b='';req.on('data',c=>b+=c);r
 // ─── STREAM CLAUDE ───
 function streamClaude(messages, res, onDone, brief, options = {}) {
   if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
-  const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
+  
+  // Règle absolue en premier pour éviter le code Node.js dans le frontend
+  const absoluteRule = `RÈGLE ABSOLUE : Le fichier public/index.html doit être du HTML/CSS/JavaScript vanilla pur pour le navigateur. INTERDIT dans index.html : require(), module.exports, exports, import/export ES6, process, __dirname, Buffer, fs, path. Ces mots-clés Node.js ne fonctionnent pas dans un navigateur. Le fichier server.js peut utiliser require() mais jamais index.html.
+
+`;
+  
+  const baseSystemPrompt = ai ? (absoluteRule + ai.SYSTEM_PROMPT) : (absoluteRule + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   
   // Enhanced system prompt with content generation and API integration instructions
@@ -284,7 +290,9 @@ Règles d'intégration automatique :
 function streamClaudeWithImage(imageBase64, mediaType, prompt, res, onDone) {
   if (!ANTHROPIC_API_KEY) { res.write(`data: ${JSON.stringify({type:'error',content:'Clé API non configurée sur le serveur.'})}\n\n`); res.end(); return; }
   
-  const systemPrompt = `Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
+  const systemPrompt = `RÈGLE ABSOLUE : Le fichier public/index.html doit être du HTML/CSS/JavaScript vanilla pur pour le navigateur. INTERDIT dans index.html : require(), module.exports, exports, import/export ES6, process, __dirname, Buffer, fs, path. Ces mots-clés Node.js ne fonctionnent pas dans un navigateur. Le fichier server.js peut utiliser require() mais jamais index.html.
+
+Tu es un expert en développement web professionnel spécialisé dans la reproduction fidèle de designs.
 
 ## TA MISSION
 Analyse l'image fournie et reproduis FIDÈLEMENT ce design en HTML/CSS/JS moderne, responsive et professionnel.
