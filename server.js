@@ -1173,6 +1173,8 @@ async function getContainerIPAsync(projectId) {
       if (networks[DOCKER_NETWORK] && networks[DOCKER_NETWORK].IPAddress) {
         return networks[DOCKER_NETWORK].IPAddress;
       }
+      // Log warning if container exists but lacks pbp-projects network
+      console.warn(`[getContainerIPAsync] Container ${containerName} has no IP in ${DOCKER_NETWORK} network`);
     }
     return null;
   } catch (e) {
