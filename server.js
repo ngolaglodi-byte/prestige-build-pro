@@ -2220,6 +2220,47 @@ async function buildDockerProject(projectId, code, onProgress) {
         patternsCorrected = true;
       }
       
+      // Fix middleware ordering: static files BEFORE JWT auth
+      // Move express.static() right after the last require/import line,
+      // and scope global JWT middleware to /api/* only.
+      const staticRegex = /^(app\.use\(\s*express\.static\s*\([^)]+\)\s*\);?\s*)$/gm;
+      const staticMatches = serverContent.match(staticRegex);
+      if (staticMatches && staticMatches.length > 0) {
+        // Remove all express.static lines from their current position
+        let cleaned = serverContent;
+        for (const m of staticMatches) {
+          cleaned = cleaned.replace(m, '');
+        }
+        // Find insertion point: after the last require() or const/let/var import line at the top
+        const lines = cleaned.split('\n');
+        let insertIdx = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (line.startsWith('const ') || line.startsWith('let ') || line.startsWith('var ')) {
+            if (line.includes('require(') || line.includes('require (')) {
+              insertIdx = i + 1;
+            }
+          }
+        }
+        // Insert static middleware right after imports
+        const uniqueStatic = [...new Set(staticMatches.map(s => s.trim()))];
+        lines.splice(insertIdx, 0, '', '// Static files served BEFORE auth (public assets)', ...uniqueStatic);
+        serverContent = lines.join('\n');
+        console.log(`[Docker Build] ✓ Moved express.static() before auth middleware`);
+        patternsCorrected = true;
+      }
+
+      // Scope global JWT auth middleware to /api/* only
+      // Matches: app.use(authenticate), app.use(authMiddleware), app.use(verifyToken), app.use(jwtAuth), etc.
+      // But NOT already scoped: app.use('/api', ...)
+      const globalAuthRegex = /^(\s*app\.use\(\s*)(authenticate|authMiddleware|verifyToken|jwtAuth|requireAuth|checkAuth|auth)(\s*\)\s*;?\s*)$/gm;
+      const globalAuthReplacement = serverContent.replace(globalAuthRegex, (match, before, fn, after) => {
+        console.log(`[Docker Build] ✓ Scoped global ${fn} middleware to /api/* only`);
+        patternsCorrected = true;
+        return `${before}'/api', ${fn}${after}`;
+      });
+      serverContent = globalAuthReplacement;
+
       if (patternsCorrected) {
         fs.writeFileSync(serverJsPathForScan, serverContent);
         console.log(`[Docker Build] ✓ server.js patterns corrected and saved`);
@@ -2227,7 +2268,7 @@ async function buildDockerProject(projectId, code, onProgress) {
         console.log(`[Docker Build] ✓ No incompatible patterns found in server.js`);
       }
     }
-    
+
     // Also fix package.json to use pinned versions
     const packageJsonPathForScan = path.join(projectDir, 'package.json');
     if (fs.existsSync(packageJsonPathForScan)) {
