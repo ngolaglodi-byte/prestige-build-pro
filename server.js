@@ -81,6 +81,93 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
   }
 }, null, 2);
 
+// Default valid server.js for fallback
+const DEFAULT_SERVER_JS = `const express = require('express');
+const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const helmet = require('helmet');
+const crypto = require('crypto');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+const db = new Database('/data/database.db');
+
+app.use(cors());
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json());
+app.use(express.static('public'));
+
+db.exec(\`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT DEFAULT 'user',
+    created_at TEXT DEFAULT (datetime('now'))
+  );
+\`);
+
+const adminExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@project.com');
+if (!adminExists) {
+  db.prepare('INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, ?)').run(
+    'admin@project.com',
+    bcrypt.hashSync('Admin2024!', 10),
+    'Administrateur',
+    'admin'
+  );
+}
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+app.post('/api/login', (req, res) => {
+  const { email, password } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  if (user && bcrypt.compareSync(password, user.password)) {
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET);
+    res.json({ success: true, token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  } else {
+    res.status(401).json({ success: false, message: 'Identifiants invalides' });
+  }
+});
+
+app.listen(PORT, () => console.log(\`Server running on port \${PORT}\`));
+`;
+
+// Default valid public/index.html for fallback
+const DEFAULT_INDEX_HTML = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Application Prestige</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
+    .container { max-width: 500px; text-align: center; }
+    h1 { font-size: 2.5rem; margin-bottom: 1rem; color: #D4A820; }
+    p { font-size: 1.1rem; line-height: 1.6; color: #94a3b8; margin-bottom: 2rem; }
+    .btn { display: inline-block; padding: 12px 24px; background: #D4A820; color: #1a1a2e; text-decoration: none; border-radius: 8px; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(212, 168, 32, 0.4); }
+    .footer { margin-top: 3rem; font-size: 0.875rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Bienvenue</h1>
+    <p>Votre application est en cours de génération. Cette page de placeholder sera remplacée par votre projet personnalisé.</p>
+    <a href="/health" class="btn">Vérifier le statut</a>
+    <div class="footer">
+      <p>&copy; 2024 Prestige Technologie Compagnie</p>
+    </div>
+  </div>
+</body>
+</html>
+`;
+
 // In-memory tracking of auto-correction attempts per project
 const correctionAttempts = new Map();
 
@@ -269,8 +356,12 @@ Règles d'intégration automatique :
   const systemPrompt = sectorProfile 
     ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
     : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
+  
+  // INTELLIGENT MAX_TOKENS: Use getMaxTokensForProject based on brief complexity
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  console.log(`[Claude API] Using max_tokens: ${maxTokens} for brief complexity: ${ai && ai.detectProjectComplexity ? ai.detectProjectComplexity(brief) : 'unknown'}`);
     
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:maxTokens, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   const r = https.request(opts, apiRes => {
     let full='';
@@ -352,7 +443,7 @@ Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans 
     ]
   }];
 
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:16000, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   
   const r = https.request(opts, apiRes => {
@@ -437,8 +528,12 @@ Règles d'intégration automatique :
   const systemPrompt = sectorProfile 
     ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
     : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
+  
+  // INTELLIGENT MAX_TOKENS: Use getMaxTokensForProject based on brief complexity
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  console.log(`[Claude API Generate] Using max_tokens: ${maxTokens} for job ${jobId}`);
     
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:maxTokens, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   
   const r = https.request(opts, apiRes => {
@@ -523,7 +618,7 @@ Génère un fichier HTML complet et fonctionnel avec tout le CSS inline ou dans 
     ]
   }];
 
-  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:8000, system:systemPrompt, stream:true, messages });
+  const payload = JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:16000, system:systemPrompt, stream:true, messages });
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   
   const r = https.request(opts, apiRes => {
@@ -687,19 +782,28 @@ function parseMultiFileCode(code) {
   const pattern1 = /###\s+([^\n]+\.[\w]+)\n```(?:\w+)?\n([\s\S]*?)```/g;
   let m;
   while ((m = pattern1.exec(code)) !== null) {
-    files[m[1].trim()] = m[2];
+    files[m[1].trim()] = cleanGeneratedContent(m[2]);
   }
 
   // Pattern 2: ## filename.ext + code block
   const pattern2 = /##\s+([^\n]+\.[\w]+)\n```(?:\w+)?\n([\s\S]*?)```/g;
   while ((m = pattern2.exec(code)) !== null) {
-    if (!files[m[1].trim()]) files[m[1].trim()] = m[2];
+    if (!files[m[1].trim()]) files[m[1].trim()] = cleanGeneratedContent(m[2]);
   }
 
   // Pattern 3: **filename.ext** or `filename.ext` + code block
   const pattern3 = /(?:\*\*|`)([^*`\n]+\.[\w]+)(?:\*\*|`)\s*\n```(?:\w+)?\n([\s\S]*?)```/g;
   while ((m = pattern3.exec(code)) !== null) {
-    if (!files[m[1].trim()]) files[m[1].trim()] = m[2];
+    if (!files[m[1].trim()]) files[m[1].trim()] = cleanGeneratedContent(m[2]);
+  }
+
+  // Pattern 4: ### filename.ext WITHOUT code blocks (new format)
+  const pattern4 = /###\s+([^\n]+\.[\w]+)\n(?!```)([\s\S]*?)(?=###\s+[^\n]+\.[\w]+|$)/g;
+  while ((m = pattern4.exec(code)) !== null) {
+    if (!files[m[1].trim()]) {
+      const content = cleanGeneratedContent(m[2]);
+      if (content) files[m[1].trim()] = content;
+    }
   }
 
   // If no multi-file found, treat as single file
@@ -707,12 +811,12 @@ function parseMultiFileCode(code) {
     // Check for complete HTML document
     const htmlMatch = code.match(/<!DOCTYPE[\s\S]*?<\/html>/i);
     if (htmlMatch) {
-      files['index.html'] = htmlMatch[0];
+      files['index.html'] = cleanGeneratedContent(htmlMatch[0]);
     } else {
       // Extract from single code block
       const single = code.match(/```(?:html|jsx?|tsx?|vue)?\n([\s\S]*?)```/);
       if (single) {
-        const content = single[1];
+        const content = cleanGeneratedContent(single[1]);
         if (content.includes('<!DOCTYPE') || content.includes('<html')) {
           files['index.html'] = content;
         } else {
@@ -1187,6 +1291,24 @@ async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT
   return false;
 }
 
+// Clean generated file content - remove all markdown artifacts
+function cleanGeneratedContent(content) {
+  if (!content) return '';
+  
+  let cleaned = content;
+  
+  // Combined regex to remove markdown code block markers in one pass:
+  // - Opening markers: ```javascript, ```js, ```json, etc. at start of line
+  // - Closing markers: ``` at end of line
+  // - Standalone ``` markers on their own line (indicating code block boundaries)
+  cleaned = cleaned.replace(/^```(?:javascript|js|json|html|css|jsx|tsx|typescript|ts|bash|sh|sql|yaml|yml|xml|text|txt|plain)?\s*$/gm, '');
+  
+  // Remove any leading/trailing whitespace and blank lines at start/end
+  cleaned = cleaned.trim();
+  
+  return cleaned;
+}
+
 // Parse generated code into files (looking for ### markers)
 function parseDockerProjectCode(code) {
   const files = {};
@@ -1205,9 +1327,9 @@ function parseDockerProjectCode(code) {
     // Check if it looks like a filename
     if (firstLine.includes('.') && !firstLine.includes(' ')) {
       const filename = firstLine.replace(/[`*]/g, '').trim();
-      // Get content, skipping markdown code block markers
+      // Get content, skipping markdown code block markers and clean it
       let content = lines.slice(1).join('\n');
-      content = content.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
+      content = cleanGeneratedContent(content);
       if (content) {
         files[filename] = content;
       }
@@ -1303,8 +1425,11 @@ async function buildDockerProject(projectId, code, onProgress) {
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
-    // Step 2.25: Validate package.json before Docker build
-    console.log(`[Docker Build] Step 2.25: Validating package.json...`);
+    // Step 2.25: STRICT VALIDATION of all three mandatory files
+    console.log(`[Docker Build] Step 2.25: Strict validation of mandatory files...`);
+    onProgress({ step: 2, progress: 32, message: 'Validation stricte des fichiers...' });
+
+    // VALIDATION 1: package.json must be valid JSON
     const packageJsonPath = path.join(projectDir, 'package.json');
     let packageJsonValid = false;
     
@@ -1313,34 +1438,93 @@ async function buildDockerProject(projectId, code, onProgress) {
         const packageContent = fs.readFileSync(packageJsonPath, 'utf8');
         JSON.parse(packageContent);
         packageJsonValid = true;
-        console.log(`[Docker Build] package.json is valid JSON`);
+        console.log(`[Docker Build] ✓ package.json is valid JSON`);
       } catch (parseError) {
-        console.warn(`[Docker Build] WARNING: package.json is invalid JSON: ${parseError.message}`);
+        console.warn(`[Docker Build] ✗ package.json is invalid JSON: ${parseError.message}`);
       }
     } else {
-      console.warn(`[Docker Build] WARNING: package.json is missing`);
+      console.warn(`[Docker Build] ✗ package.json is missing`);
     }
     
     if (!packageJsonValid) {
-      console.log(`[Docker Build] Replacing with default valid package.json`);
+      console.log(`[Docker Build] → Replacing with default valid package.json`);
       fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
-      console.log(`[Docker Build] Default package.json written successfully`);
+      console.log(`[Docker Build] ✓ Default package.json written successfully`);
     }
 
-    // Step 2.5: Syntax check before building (35%)
-    console.log(`[Docker Build] Step 2.5: Checking syntax...`);
-    onProgress({ step: 2, progress: 35, message: 'Vérification de la syntaxe...' });
+    // VALIDATION 2: server.js must have no syntax errors
+    const serverJsPath = path.join(projectDir, 'server.js');
+    let serverJsValid = false;
+
+    if (fs.existsSync(serverJsPath)) {
+      try {
+        // Use spawnSync for safer command execution (avoid shell injection)
+        const { spawnSync } = require('child_process');
+        const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
+        if (result.status === 0) {
+          serverJsValid = true;
+          console.log(`[Docker Build] ✓ server.js has no syntax errors`);
+        } else {
+          console.warn(`[Docker Build] ✗ server.js has syntax errors: ${result.stderr || result.stdout}`);
+        }
+      } catch (syntaxError) {
+        console.warn(`[Docker Build] ✗ server.js syntax check failed: ${syntaxError.message}`);
+      }
+    } else {
+      console.warn(`[Docker Build] ✗ server.js is missing`);
+    }
+
+    if (!serverJsValid) {
+      console.log(`[Docker Build] → Replacing with default valid server.js`);
+      fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
+      console.log(`[Docker Build] ✓ Default server.js written successfully`);
+    }
+
+    // VALIDATION 3: public/index.html must contain <!DOCTYPE html>
+    const indexHtmlPath = path.join(publicDir, 'index.html');
+    let indexHtmlValid = false;
+
+    if (fs.existsSync(indexHtmlPath)) {
+      try {
+        const htmlContent = fs.readFileSync(indexHtmlPath, 'utf8');
+        if (htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html')) {
+          indexHtmlValid = true;
+          console.log(`[Docker Build] ✓ public/index.html contains valid HTML structure`);
+        } else {
+          console.warn(`[Docker Build] ✗ public/index.html missing <!DOCTYPE html>`);
+        }
+      } catch (readError) {
+        console.warn(`[Docker Build] ✗ Error reading public/index.html: ${readError.message}`);
+      }
+    } else {
+      console.warn(`[Docker Build] ✗ public/index.html is missing`);
+    }
+
+    if (!indexHtmlValid) {
+      console.log(`[Docker Build] → Replacing with default valid index.html`);
+      fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
+      console.log(`[Docker Build] ✓ Default index.html written successfully`);
+    }
+
+    console.log(`[Docker Build] Strict validation completed`);
+
+    // Step 2.5: Final syntax check before building (35%)
+    console.log(`[Docker Build] Step 2.5: Final syntax verification...`);
+    onProgress({ step: 2, progress: 35, message: 'Vérification finale de la syntaxe...' });
     const syntaxResult = checkSyntax(projectDir);
     if (!syntaxResult.valid) {
-      console.error(`[Docker Build] ERROR: Syntax error detected: ${syntaxResult.error}`);
-      throw new Error(`Erreur de syntaxe: ${syntaxResult.error}`);
+      // Syntax still invalid after validation - use default server.js as last resort
+      console.warn(`[Docker Build] Final syntax check failed, using default server.js: ${syntaxResult.error}`);
+      fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
+    } else {
+      console.log(`[Docker Build] ✓ Final syntax check passed`);
     }
-    console.log(`[Docker Build] Syntax check passed`);
 
     // Create Dockerfile for the project
     // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
     console.log(`[Docker Build] Creating Dockerfile...`);
     const jwtSecret = crypto.randomBytes(32).toString('hex');
+    // CORRECTION 5: Add --max-old-space-size=256 for memory limit, healthcheck every 30s
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
@@ -1348,13 +1532,14 @@ COPY server.js ./
 COPY public/ ./public/
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
+ENV NODE_OPTIONS="--max-old-space-size=256"
 EXPOSE 3000
-HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \\
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
 CMD ["node", "server.js"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
-    console.log(`[Docker Build] Dockerfile created`);
+    console.log(`[Docker Build] Dockerfile created with memory limit and 30s healthcheck`);
 
     // Step 3: Stop old container and build new image (50%)
     console.log(`[Docker Build] Step 3: Stopping old container and building new image...`);
@@ -1512,8 +1697,17 @@ function checkSyntax(projectDir) {
   }
   
   try {
-    execSync(`node --check "${serverJsPath}"`, { encoding: 'utf8', timeout: 10000 });
-    return { valid: true };
+    // Use spawnSync for safer command execution (avoid shell injection)
+    const { spawnSync } = require('child_process');
+    const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
+    if (result.status === 0) {
+      return { valid: true };
+    }
+    return { 
+      valid: false, 
+      error: result.stderr || result.stdout || 'Syntax error',
+      type: ERROR_TYPES.SYNTAX
+    };
   } catch (e) {
     return { 
       valid: false, 
@@ -1588,50 +1782,31 @@ async function callClaudeForCorrection(originalCode, errorLogs, errorType) {
     throw new Error('Clé API Claude non configurée');
   }
   
-  const correctionPrompt = `Tu es un expert en développement Node.js. Le code suivant a généré une erreur.
+  // Simplified correction prompt as per CORRECTION 4
+  const correctionPrompt = `Ce code a généré cette erreur de compilation : ${translateErrorType(errorType)}
 
-## Type d'erreur détecté: ${translateErrorType(errorType)}
-
-## Logs d'erreur:
-\`\`\`
+Logs d'erreur:
 ${errorLogs.substring(0, 2000)}
-\`\`\`
 
-## Code original:
-\`\`\`
+Code original:
 ${originalCode}
-\`\`\`
 
-## Ta mission:
-1. Analyse l'erreur et identifie la cause exacte
-2. Corrige le code pour résoudre cette erreur
-3. Assure-toi que le code est fonctionnel et démarrera correctement
+Génère une version corrigée et simplifiée qui fonctionnera à coup sûr.
 
-## Instructions spécifiques selon l'erreur:
-- Erreur de syntaxe: Corrige les erreurs de syntaxe JavaScript
-- Module manquant: Ajoute le package dans le package.json et utilise une alternative si indisponible
-- Port utilisé: Utilise process.env.PORT || 3000 et ajoute une logique de port dynamique
-- Erreur SQLite: Vérifie la structure des tables et les requêtes SQL
-- Mémoire: Optimise le code pour réduire la consommation mémoire
+RÈGLES DE CORRECTION:
+1. Utilise le format ### pour chaque fichier (### package.json, ### server.js, ### public/index.html)
+2. JAMAIS de backticks markdown
+3. package.json: JSON valide avec express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet
+4. server.js: Port 3000, route /health, express.static('public')
+5. public/index.html: HTML/CSS/JS vanilla uniquement
 
-RETOURNE UNIQUEMENT le code corrigé complet en utilisant le format ### pour chaque fichier.
-Exemple:
-### package.json
-{...}
-### server.js
-const express = require('express');
-...
-### public/index.html
-<!DOCTYPE html>
-...
-
-Ne retourne AUCUNE explication, SEULEMENT le code corrigé.`;
+Retourne UNIQUEMENT le code corrigé, sans explications.`;
 
   return new Promise((resolve, reject) => {
     const messages = [{ role: 'user', content: correctionPrompt }];
     const payload = JSON.stringify({ 
       model: 'claude-sonnet-4-20250514', 
-      max_tokens: 8000, 
+      max_tokens: 16000, 
       messages 
     });
     

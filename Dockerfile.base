@@ -34,6 +34,8 @@ RUN mkdir -p /data /public
 # Set environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
+# CORRECTION 5: Limit Node.js memory to 256MB to prevent crashes
+ENV NODE_OPTIONS="--max-old-space-size=256"
 
 # Expose the port
 EXPOSE 3000
