@@ -3,6 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { execSync, spawn } = require('child_process');
 const Dockerode = require('dockerode');
 
@@ -1120,7 +1121,7 @@ async function joinPbpProjectsNetwork() {
   if (!docker) return;
   try {
     // Get container ID from hostname (Docker sets hostname to container ID)
-    const hostname = process.env.HOSTNAME || require('os').hostname();
+    const hostname = process.env.HOSTNAME || os.hostname();
     if (!hostname) {
       console.warn('Could not determine container hostname, skipping network join');
       return;
@@ -1148,7 +1149,8 @@ async function joinPbpProjectsNetwork() {
     await network.connect({ Container: hostname });
     console.log(`Successfully connected to ${DOCKER_NETWORK} network`);
   } catch (e) {
-    console.error(`Failed to join ${DOCKER_NETWORK} network:`, e.message);
+    const hostname = process.env.HOSTNAME || os.hostname() || 'unknown';
+    console.error(`Failed to join ${DOCKER_NETWORK} network (container: ${hostname}):`, e.message);
   }
 }
 
