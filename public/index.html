@@ -1349,6 +1349,11 @@ function loadDockerPreview(url) {
     console.error('[loadDockerPreview] No URL and no currentProject.id');
     return;
   }
+  if (!token) {
+    console.error('[loadDockerPreview] No auth token — user not logged in');
+    loading.querySelector('span').textContent = 'Session expirée. Rechargez la page.';
+    return;
+  }
   const previewUrl = url || `/run/${currentProject.id}/`;
 
   // Pass auth token as query param — iframe requests don't send Authorization headers

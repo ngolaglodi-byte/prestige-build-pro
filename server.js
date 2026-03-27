@@ -3268,6 +3268,10 @@ const server = http.createServer(async (req, res) => {
     // Authentication check for Docker proxy
     const user = getAuth(req);
     if (!user) {
+      const hasHeader = !!(req.headers['authorization'] || '').replace('Bearer ', '');
+      const hasQuery = req.url.includes('token=');
+      const hasCookie = (req.headers.cookie || '').includes('pbp_token');
+      console.warn(`[Proxy Auth] 401 for /run/${projectId} — header:${hasHeader} query:${hasQuery} cookie:${hasCookie}`);
       json(res, 401, { error: 'Non autorisé. Connectez-vous pour accéder au projet.' });
       return;
     }
@@ -3280,7 +3284,9 @@ const server = http.createServer(async (req, res) => {
       const qsParams = new URLSearchParams(qsParts[1]);
       const qsToken = qsParams.get('token');
       if (qsToken) {
-        res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/run/${projectId}/; HttpOnly; SameSite=Lax; Max-Age=86400`);
+        const isHttps = req.headers['x-forwarded-proto'] === 'https' || req.headers['x-forwarded-ssl'] === 'on';
+        const cookieFlags = isHttps ? 'HttpOnly; SameSite=None; Secure; Max-Age=86400' : 'HttpOnly; SameSite=Lax; Max-Age=86400';
+        res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/run/${projectId}/; ${cookieFlags}`);
       }
     }
 
