@@ -3089,16 +3089,20 @@ async function proxyToContainer(req, res, projectId, targetPath) {
         try {
           const pid = Number(projectId);
           const baseTag = `<base href="/run/${pid}/">`;
-          const fetchPatch = `<script>(function(){` +
-            // Patch fetch and XHR to use relative URLs (routed through proxy)
+          const proxyScript = `<script>(function(){` +
             `var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};` +
             `var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};` +
-            // Force all elements visible — generated CSS often uses opacity:0 with
-            // IntersectionObserver animations, but if JS is missing the page stays blank
-            `window.addEventListener('load',function(){document.querySelectorAll('*').forEach(function(el){var s=getComputedStyle(el);if(s.opacity==='0')el.style.opacity='1';if(s.visibility==='hidden')el.style.visibility='visible';});});` +
+            // Visibility rescue: fix opacity:0, visibility:hidden, and SPA .page display:none
+            `window.addEventListener('load',function(){` +
+            `document.querySelectorAll('*').forEach(function(el){var s=getComputedStyle(el);if(s.opacity==='0')el.style.opacity='1';if(s.visibility==='hidden')el.style.visibility='visible';});` +
+            `var pages=document.querySelectorAll('.page');if(pages.length>0){var hasActive=document.querySelector('.page.active');if(!hasActive){pages[0].classList.add('active');pages[0].style.display='block';}}` +
+            `});` +
             `})();</script>`;
-          const injection = baseTag + fetchPatch;
-          if (body.includes('<head>')) {
+          // Inject after <meta charset> so browser knows encoding before parsing our script
+          const injection = baseTag + proxyScript;
+          if (body.match(/<meta\s+charset[^>]*>/i)) {
+            body = body.replace(/<meta\s+charset[^>]*>/i, `$&${injection}`);
+          } else if (body.includes('<head>')) {
             body = body.replace('<head>', `<head>${injection}`);
           } else if (body.includes('<head ')) {
             body = body.replace(/<head\s[^>]*>/, `$&${injection}`);
