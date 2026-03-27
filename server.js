@@ -211,6 +211,7 @@ try {
     CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, client_name TEXT, project_type TEXT, brief TEXT, generated_code TEXT, status TEXT DEFAULT 'draft', is_published INTEGER DEFAULT 0, subdomain TEXT, domain TEXT, apis TEXT, notes TEXT, build_id TEXT, build_status TEXT DEFAULT 'none', build_url TEXT, version INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(user_id) REFERENCES users(id));
     CREATE TABLE IF NOT EXISTS project_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, service TEXT NOT NULL, key_value TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS project_api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, env_name TEXT NOT NULL, env_value TEXT NOT NULL, service TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message TEXT, type TEXT DEFAULT 'info', read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS builds (id TEXT PRIMARY KEY, project_id INTEGER, status TEXT DEFAULT 'building', progress INTEGER DEFAULT 0, message TEXT, url TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
@@ -2478,12 +2479,20 @@ CMD ["node", "server.js"]
     console.log(`[Docker Build] Step 4: Creating and starting container...`);
     onProgress({ step: 4, progress: 70, message: 'Lancement du projet...' });
     
+    // Load project-specific API keys as container env vars
+    const projectEnv = ['PORT=3000'];
+    if (db) {
+      const keys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(projectId);
+      keys.forEach(k => projectEnv.push(`${k.env_name}=${k.env_value}`));
+      if (keys.length > 0) console.log(`[Docker Build] Injecting ${keys.length} API keys as env vars`);
+    }
+
     // Create and start container using dockerode
     console.log(`[Docker Build] Creating container with network: ${DOCKER_NETWORK}`);
     const container = await docker.createContainer({
       Image: imageName,
       name: containerName,
-      Env: ['PORT=3000'],
+      Env: projectEnv,
       HostConfig: {
         NetworkMode: DOCKER_NETWORK,
         RestartPolicy: { Name: 'unless-stopped' },
@@ -3541,8 +3550,9 @@ const server = http.createServer(async (req, res) => {
       notifyProjectClients(project_id, 'user_action', { action: 'generating', userName: user.name }, user.id);
     }
     const savedApis = db.prepare('SELECT name,service,description FROM api_keys').all();
+    const projectKeys = project_id ? db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project_id) : [];
     const userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
-    const messages = ai ? ai.buildConversationContext(project, history, userMsg) : [{role:'user', content: userMsg}];
+    const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys) : [{role:'user', content: userMsg}];
     if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', message);
     const brief = project?.brief || message;
     
@@ -4113,6 +4123,36 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/apikeys/names' && req.method==='GET') { json(res,200,db.prepare('SELECT name,service,description FROM api_keys').all()); return; }
   if (url==='/api/apikeys' && req.method==='POST') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} const {name,service,key_value,description}=await getBody(req); const i=db.prepare('INSERT INTO api_keys (name,service,key_value,description) VALUES (?,?,?,?)').run(name,service,key_value,description); json(res,200,{id:i.lastInsertRowid}); return; }
   if (url.match(/^\/api\/apikeys\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM api_keys WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+
+  // ─── PROJECT API KEYS ───
+  if (url.match(/^\/api\/projects\/\d+\/keys$/) && req.method === 'GET') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const keys = db.prepare('SELECT id, env_name, service, created_at FROM project_api_keys WHERE project_id=?').all(pid);
+    json(res, 200, keys); return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/keys$/) && req.method === 'POST') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const { env_name, env_value, service } = await getBody(req);
+    if (!env_name || !env_value) { json(res, 400, { error: 'env_name et env_value requis.' }); return; }
+    // Upsert: replace if same env_name exists for this project
+    db.prepare('DELETE FROM project_api_keys WHERE project_id=? AND env_name=?').run(pid, env_name);
+    db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(pid, env_name, env_value, service || '');
+    console.log(`[API Keys] Set ${env_name} for project ${pid}`);
+    json(res, 200, { ok: true }); return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/keys\/\d+$/) && req.method === 'DELETE') {
+    const parts = url.split('/');
+    const pid = parseInt(parts[3]);
+    const kid = parseInt(parts[5]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    db.prepare('DELETE FROM project_api_keys WHERE id=? AND project_id=?').run(kid, pid);
+    json(res, 200, { ok: true }); return;
+  }
 
   // ─── NOTIFICATIONS ───
   if (url==='/api/notifications' && req.method==='GET') { json(res,200,db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 20').all(user.id)); return; }

@@ -442,6 +442,7 @@ button.card { padding: 0; }
             <button class="sidebar-tab" data-tab="files" onclick="showSidebarTab('files')">Fichiers</button>
             <button class="sidebar-tab" data-tab="history" onclick="showSidebarTab('history')">Historique</button>
             <button class="sidebar-tab" data-tab="logs" onclick="showSidebarTab('logs')">Logs</button>
+            <button class="sidebar-tab" data-tab="integrations" onclick="showSidebarTab('integrations');loadProjectKeys()">APIs</button>
           </div>
           <div class="sidebar-content">
             <div id="chat-panel" class="sidebar-panel active">
@@ -462,6 +463,23 @@ button.card { padding: 0; }
               <div style="padding:var(--space-sm);border-top:var(--border-default);display:flex;gap:var(--space-xs);">
                 <button class="btn btn-secondary btn-sm" onclick="refreshLogs()" style="flex:1;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Actualiser</button>
                 <button class="btn btn-ghost btn-sm" onclick="triggerAutoCorrect()" style="font-size:0.75rem;" title="Lancer une correction automatique"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></button>
+              </div>
+            </div>
+            <div id="integrations-panel" class="sidebar-panel" style="padding:var(--space-md);overflow-y:auto;">
+              <div style="font-size:0.85rem;font-weight:600;margin-bottom:var(--space-md);color:var(--text-primary);">APIs & Intégrations</div>
+              <div id="project-keys-list" style="margin-bottom:var(--space-md);"></div>
+              <div style="border-top:var(--border-default);padding-top:var(--space-md);">
+                <div style="font-size:0.8rem;font-weight:500;margin-bottom:var(--space-sm);">Ajouter une clé API</div>
+                <select id="key-service" style="width:100%;padding:6px 8px;border:var(--border-default);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem;margin-bottom:6px;">
+                  <option value="">-- Service --</option>
+                  <option value="stripe">Stripe</option><option value="pawapay">PawaPay</option><option value="twilio">Twilio</option>
+                  <option value="sendgrid">SendGrid</option><option value="google_maps">Google Maps</option><option value="openai">OpenAI</option>
+                  <option value="mailchimp">Mailchimp</option><option value="paypal">PayPal</option><option value="flutterwave">Flutterwave</option>
+                  <option value="cinetpay">CinetPay</option><option value="algolia">Algolia</option><option value="custom">Personnalisé</option>
+                </select>
+                <input id="key-env-name" placeholder="Nom (ex: STRIPE_SECRET_KEY)" style="width:100%;padding:6px 8px;border:var(--border-default);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem;margin-bottom:6px;">
+                <input id="key-env-value" type="password" placeholder="Valeur de la clé" style="width:100%;padding:6px 8px;border:var(--border-default);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:0.8rem;margin-bottom:6px;">
+                <button class="btn btn-primary btn-sm" onclick="addProjectKey()" style="width:100%;font-size:0.8rem;">Ajouter</button>
               </div>
             </div>
           </div>
@@ -1392,6 +1410,48 @@ async function triggerAutoCorrect() {
   } catch (e) {
     addChatMessage('assistant', 'Erreur: ' + e.message);
   }
+}
+
+// ─── PROJECT API KEYS ───
+async function loadProjectKeys() {
+  if (!currentProject) return;
+  try {
+    const keys = await api('/api/projects/' + currentProject.id + '/keys');
+    const list = document.getElementById('project-keys-list');
+    if (!keys.length) {
+      list.innerHTML = '<p style="font-size:0.8rem;color:var(--text-muted);">Aucune clé API configurée. Ajoutez-en ci-dessous ou demandez à l\'IA d\'intégrer un service.</p>';
+      return;
+    }
+    list.innerHTML = keys.map(k =>
+      `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:var(--border-default);">
+        <div><span style="font-size:0.8rem;font-weight:500;">${escapeHtml(k.env_name)}</span><br><span style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(k.service || '')}</span></div>
+        <button class="btn btn-ghost btn-sm" onclick="deleteProjectKey(${k.id})" style="font-size:0.7rem;color:var(--error);">Supprimer</button>
+      </div>`
+    ).join('');
+  } catch (e) { console.error('Load keys error:', e); }
+}
+
+async function addProjectKey() {
+  if (!currentProject) return;
+  const service = document.getElementById('key-service').value;
+  const envName = document.getElementById('key-env-name').value.trim();
+  const envValue = document.getElementById('key-env-value').value.trim();
+  if (!envName || !envValue) { alert('Nom et valeur requis.'); return; }
+  try {
+    await api('/api/projects/' + currentProject.id + '/keys', 'POST', { env_name: envName, env_value: envValue, service });
+    document.getElementById('key-env-name').value = '';
+    document.getElementById('key-env-value').value = '';
+    addChatMessage('assistant', '\u2705 Clé ' + envName + ' configurée. Recompilez le projet pour l\'activer.');
+    loadProjectKeys();
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+async function deleteProjectKey(kid) {
+  if (!currentProject || !confirm('Supprimer cette clé ?')) return;
+  try {
+    await api('/api/projects/' + currentProject.id + '/keys/' + kid, 'DELETE');
+    loadProjectKeys();
+  } catch (e) { alert('Erreur: ' + e.message); }
 }
 
 // Load Docker preview via proxy

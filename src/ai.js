@@ -587,6 +587,40 @@ COMMANDES RAPIDES — quand l'agent utilise une commande /, exécute-la :
 /rapide — version ultra-légère (CSS minimal, pas d'animations)
 /premium — version premium avec effets avancés (glassmorphism, gradients)
 
+INTÉGRATION DE SERVICES EXTERNES — COMPORTEMENT OBLIGATOIRE :
+Quand l'agent demande d'intégrer un service (Stripe, Twilio, etc.) ou quand tu détectes qu'un service est nécessaire :
+1. EXPLIQUE ce dont tu as besoin (clés API, configuration)
+2. LISTE les clés exactes nécessaires avec le format attendu
+3. INDIQUE où les trouver (URL du dashboard)
+4. ATTENDS que l'agent envoie les clés avant de coder l'intégration
+5. Une fois les clés reçues, intègre le service complètement
+
+Exemple de réponse quand un service est demandé :
+"✅ Pour intégrer Stripe, j'ai besoin de :
+• **Clé publique** (pk_test_... ou pk_live_...)
+• **Clé secrète** (sk_test_... ou sk_live_...)
+Trouvez-les sur dashboard.stripe.com → Developers → API Keys.
+Envoyez-les moi et j'intègre le paiement complet !"
+
+Si les clés sont dans un message précédent ou dans le contexte, utilise-les directement.
+
+Quand tu codes l'intégration, utilise process.env.NOM_DE_LA_CLE pour les clés dans server.js.
+Ne mets JAMAIS les clés en dur dans le code. Exemple : const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+SERVICES CONNUS :
+- Stripe : STRIPE_PUBLIC_KEY, STRIPE_SECRET_KEY — dashboard.stripe.com
+- PawaPay : PAWAPAY_API_KEY, PAWAPAY_MERCHANT_ID — dashboard.pawapay.io
+- Twilio : TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE — console.twilio.com
+- SendGrid : SENDGRID_API_KEY, SENDGRID_FROM_EMAIL — app.sendgrid.com
+- Google Maps : GOOGLE_MAPS_API_KEY — console.cloud.google.com
+- OpenAI : OPENAI_API_KEY — platform.openai.com
+- Mailchimp : MAILCHIMP_API_KEY, MAILCHIMP_AUDIENCE_ID — mailchimp.com
+- Firebase : FIREBASE_CONFIG (objet JSON) — console.firebase.google.com
+- PayPal : PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET — developer.paypal.com
+- Flutterwave : FLUTTERWAVE_PUBLIC_KEY, FLUTTERWAVE_SECRET_KEY — dashboard.flutterwave.com
+- CinetPay : CINETPAY_API_KEY, CINETPAY_SITE_ID — cinetpay.com
+- Algolia : ALGOLIA_APP_ID, ALGOLIA_API_KEY — algolia.com
+
 INSPIRATION WEB — quand l'agent mentionne un site ou demande de rechercher :
 - Si l'agent dit "inspire-toi de [site]" ou "/style [site]", utilise tes connaissances du design de ce site
 - Décris ce que tu observes du design avant de coder : couleurs, layout, typographie, effets
@@ -690,19 +724,24 @@ function getSuggestionsForSector(brief) {
 }
 
 // ─── CONVERSATION CONTEXT BUILDER ───
-function buildConversationContext(project, messages, userMessage) {
+function buildConversationContext(project, messages, userMessage, configuredKeys) {
   const context = [];
 
   if (project) {
     const sector = detectSectorProfile(project.brief) ? 'détecté' : 'générique';
     const hasCode = !!project.generated_code;
-    const projectContext = `CONTEXTE DU PROJET:
+    let projectContext = `CONTEXTE DU PROJET:
 Titre: ${project.title || 'Non défini'}
 Client: ${project.client_name || 'Non défini'}
 Brief: ${project.brief || 'Non défini'}
 Secteur: ${sector}
 Code existant: ${hasCode ? 'Oui (' + project.generated_code.length + ' caractères)' : 'Non'}
 Build: ${project.build_status || 'aucun'}`;
+
+    if (configuredKeys && configuredKeys.length > 0) {
+      projectContext += `\nClés API configurées: ${configuredKeys.map(k => k.env_name + ' (' + (k.service || 'custom') + ')').join(', ')}`;
+      projectContext += `\nCes clés sont disponibles via process.env dans le container. Utilise-les directement.`;
+    }
 
     context.push({ role: 'user', content: projectContext });
     context.push({ role: 'assistant', content: `Bien compris. Je connais votre projet "${project.title || 'sans titre'}". Je suis prêt à le modifier.` });
