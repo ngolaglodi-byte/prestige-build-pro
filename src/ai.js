@@ -462,14 +462,25 @@ DASHBOARD/ERP : tables selon domaine métier, sidebar navigation, tableaux Chart
 GÉNÈRE TOUJOURS DANS TOUS LES PROJETS :
 - Navigation sticky avec menu hamburger mobile
 - Footer complet avec liens et copyright
-- Page 404 élégante
-- Loader animé au démarrage
-- Scroll to top button
 - Meta tags SEO
-- Smooth scroll
-- Animations fade-in avec IntersectionObserver
+- Smooth scroll via CSS (scroll-behavior: smooth)
 - Messages de succès/erreur sur tous les formulaires
-- Protection JWT sur toutes les routes API sensibles`;
+- Protection JWT sur toutes les routes API sensibles
+
+RÈGLES CSS CRITIQUES pour public/index.html :
+- INTERDIT : opacity: 0 dans les styles initiaux. Tous les éléments doivent être visibles par défaut.
+- INTERDIT : visibility: hidden dans les styles initiaux.
+- INTERDIT : display: none sur des sections de contenu (seulement sur des modals/menus fermés).
+- Les animations CSS (fade-in, slide-in) doivent utiliser UNIQUEMENT des classes CSS avec @keyframes qui démarrent directement, PAS des scripts IntersectionObserver.
+- Exemple correct : .section { animation: fadeIn 0.5s ease forwards; }
+- Exemple INTERDIT : .section { opacity: 0; } puis JS pour ajouter une classe
+- Le contenu HTML doit être ENTIÈREMENT VISIBLE sans JavaScript — le site doit s'afficher même si tous les scripts échouent.
+
+RÈGLE JAVASCRIPT pour public/index.html :
+- Le fichier DOIT contenir au moins un <script> tag à la fin du <body>
+- Ce script gère : menu hamburger mobile, formulaires, appels fetch('api/...'), scroll to top
+- Le script doit être AUTONOME — il fonctionne avec addEventListener('DOMContentLoaded', ...)
+- JAMAIS de loader/spinner qui masque le contenu en attendant le JS`;
 
 
 // ─── CONVERSATION CONTEXT BUILDER ───

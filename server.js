@@ -401,6 +401,10 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
 - fetch RELATIF sans slash initial : fetch('api/menu') PAS fetch('/api/menu')
 - Design professionnel, responsive, animations CSS
 - Contenu réel adapté au secteur, zéro lorem ipsum
+- TOUT le contenu VISIBLE par défaut — INTERDIT opacity:0 ou visibility:hidden sur le contenu
+- Les animations CSS doivent démarrer directement avec @keyframes, PAS via IntersectionObserver
+- OBLIGATOIRE : un <script> tag en fin de body pour le menu hamburger, formulaires et fetch
+- Le site doit s'afficher complètement MÊME si JavaScript est désactivé
 
 ## Processus
 
@@ -2116,9 +2120,33 @@ function sanitizeClientHtml(filePath) {
   html = html.replace(/\b__dirname\b/g, "'.'");
   html = html.replace(/\b__filename\b/g, "''");
 
+  // 5) Fix CSS that hides content: opacity:0 in inline styles or @keyframes from{}
+  //    These are meant for IntersectionObserver animations but without JS, content stays hidden
+  html = html.replace(/(\{[^}]*?)opacity\s*:\s*0\s*;/g, (match, prefix) => {
+    // Only fix in element styles, not in @keyframes "to" blocks
+    if (prefix.includes('@keyframes') || prefix.includes('to {') || prefix.includes('to{')) return match;
+    return prefix + 'opacity: 1;';
+  });
+
+  // 6) If no <script> tag exists, inject a minimal one for hamburger menu and scroll
+  if (!/<script\b/i.test(html) && html.includes('</body>')) {
+    const minScript = `<script>
+document.addEventListener('DOMContentLoaded',function(){
+  var tog=document.querySelector('.hamburger,.menu-toggle,.nav-toggle,[data-toggle]');
+  var nav=document.querySelector('.nav-links,.nav-menu,.mobile-menu');
+  if(tog&&nav)tog.addEventListener('click',function(){nav.classList.toggle('active');tog.classList.toggle('active');});
+  var top=document.querySelector('.scroll-top,.back-to-top,#scrollTop');
+  if(top)top.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
+  document.querySelectorAll('a[href^="#"]').forEach(function(a){a.addEventListener('click',function(e){var t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth'});}});});
+});
+</script>`;
+    html = html.replace('</body>', minScript + '\n</body>');
+    console.log(`[Docker Build] ✓ Injected minimal JS (no script tags found in generated HTML)`);
+  }
+
   if (html !== original) {
     fs.writeFileSync(filePath, html);
-    console.log(`[Docker Build] ✓ Sanitized public/index.html: removed Node.js patterns`);
+    console.log(`[Docker Build] ✓ Sanitized public/index.html`);
     return true;
   }
   return false;
