@@ -1109,6 +1109,9 @@ Règles d'intégration automatique :
   const model = 'claude-sonnet-4-6';
   console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
 
+  job.status = 'running';
+  job.progressMessage = 'Prestige AI travaille sur votre demande...';
+
   // Web search always available — Claude decides when to use it
   const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages,
     tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
