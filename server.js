@@ -1037,31 +1037,25 @@ function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
 
-  // Use Claude Code for project generation instead of direct API
+  // Route: modifications go through API (with full code context), new generation through API fallback
   if (job.project_id) {
     const projectDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
     const serverJsPath = path.join(projectDir, 'server.js');
-
-    // Check if this is a modification (existing project with files) vs new generation
     const isModification = fs.existsSync(serverJsPath);
 
-    if (isClaudeCodeAvailable()) {
-      // Primary path: Claude Code CLI
-      if (isModification) {
-        const userMessage = messages[messages.length - 1]?.content || '';
-        generateClaudeCodeChat(job.project_id, userMessage, jobId);
-      } else {
-        generateClaudeCode(job.project_id, brief || (messages[messages.length - 1]?.content || ''), jobId, options);
-      }
+    if (isModification) {
+      // Modifications: ALWAYS use API path — sends full code context + CHAT_SYSTEM_PROMPT
+      // Claude Code CLI cannot run as root (--dangerously-skip-permissions fails)
+      console.log(`[generateClaude] Modification for project ${job.project_id} — using API with full code context`);
+      // Don't return here — fall through to the API streaming path below
     } else {
-      // Fallback: direct API generation (Claude Code not installed)
-      console.warn(`[generateClaude] Claude Code unavailable, using API fallback for project ${job.project_id}`);
+      // New generation: use API fallback (reliable, no root issue)
       const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
       generateViaAPI(job.project_id, effectiveBrief, jobId);
+      return;
     }
-    return;
   }
-  
+
   // For non-project operations, fall back to API (kept for compatibility)
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
@@ -1133,6 +1127,14 @@ Règles d'intégration automatique :
             job.progress = job.code.length;
           }
           if (d.type === 'message_stop') {
+            // Write modified files to project directory
+            if (job.project_id && job.code.includes('### ')) {
+              try {
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                writeGeneratedFiles(projDir, job.code);
+                console.log(`[Claude API] Files written to ${projDir}`);
+              } catch (wErr) { console.error('[Claude API] Write error:', wErr.message); }
+            }
             job.status = 'done';
           }
         } catch(e) {}
