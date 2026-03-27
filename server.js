@@ -3228,9 +3228,11 @@ async function ensureBaseImage() {
   } catch {
     console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' not found — building...`);
     const dockerfileContent = `FROM node:20-alpine
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
 WORKDIR /app
-RUN npm install express@4.18.2 better-sqlite3@9.4.3 bcryptjs@2.4.3 jsonwebtoken@9.0.2 cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0
+RUN npm install express@4.18.2 better-sqlite3@9.4.3 bcryptjs@2.4.3 jsonwebtoken@9.0.2 cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0 pdfkit@0.15.0 nodemailer@6.9.8 stripe@14.14.0 socket.io@4.7.4 multer@1.4.5-lts.1 sharp@0.33.2 qrcode@1.5.3 exceljs@4.4.0 csv-parse@5.5.3 marked@11.1.1 axios@1.6.7
 ENV NODE_PATH=/app/node_modules
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 EXPOSE 3000
 `;
     const tmpDir = '/tmp/pbp-base-build';
