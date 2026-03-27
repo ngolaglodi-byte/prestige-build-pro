@@ -2466,14 +2466,13 @@ WORKDIR /app
 COPY package.json ./
 COPY server.js ./
 COPY public/ ./public/
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup && chown -R appuser:appgroup /app
+RUN mkdir -p /app/data
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
 ENV NODE_OPTIONS="--max-old-space-size=256"
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
-USER appuser
 CMD ["node", "server.js"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
