@@ -3021,13 +3021,25 @@ async function proxyToContainer(req, res, projectId, targetPath) {
   };
 
   const proxyReq = http.request(options, (proxyRes) => {
-    // Clean up container response headers that break iframe embedding
+    // Strip ALL helmet security headers — they break iframe embedding.
+    // The preview runs behind Prestige's own proxy; container-level
+    // security headers are redundant and actively harmful in iframes.
     const headers = { ...proxyRes.headers };
     delete headers['content-security-policy'];
     delete headers['content-security-policy-report-only'];
     delete headers['x-frame-options'];
-    delete headers['content-disposition'];
     delete headers['x-content-type-options'];
+    delete headers['content-disposition'];
+    delete headers['cross-origin-opener-policy'];
+    delete headers['cross-origin-resource-policy'];
+    delete headers['cross-origin-embedder-policy'];
+    delete headers['origin-agent-cluster'];
+    delete headers['referrer-policy'];
+    delete headers['strict-transport-security'];
+    delete headers['x-dns-prefetch-control'];
+    delete headers['x-download-options'];
+    delete headers['x-permitted-cross-domain-policies'];
+    delete headers['x-xss-protection'];
     // Remove content-encoding — we may modify the body below (inject <base>)
     // and gzipped content can't be modified in-flight
     const isHtml = (headers['content-type'] || '').includes('text/html');
@@ -3049,7 +3061,14 @@ async function proxyToContainer(req, res, projectId, targetPath) {
         try {
           const pid = Number(projectId);
           const baseTag = `<base href="/run/${pid}/">`;
-          const fetchPatch = `<script>(function(){var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};\nvar _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};})();</script>`;
+          const fetchPatch = `<script>(function(){` +
+            // Patch fetch and XHR to use relative URLs (routed through proxy)
+            `var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};` +
+            `var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};` +
+            // Force all elements visible — generated CSS often uses opacity:0 with
+            // IntersectionObserver animations, but if JS is missing the page stays blank
+            `window.addEventListener('load',function(){document.querySelectorAll('*').forEach(function(el){var s=getComputedStyle(el);if(s.opacity==='0')el.style.opacity='1';if(s.visibility==='hidden')el.style.visibility='visible';});});` +
+            `})();</script>`;
           const injection = baseTag + fetchPatch;
           if (body.includes('<head>')) {
             body = body.replace('<head>', `<head>${injection}`);
