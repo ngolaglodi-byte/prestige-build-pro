@@ -490,7 +490,31 @@ RÈGLE JAVASCRIPT pour public/index.html :
 - Le fichier DOIT contenir au moins un <script> tag à la fin du <body>
 - Ce script gère : menu hamburger mobile, formulaires, appels fetch('api/...'), scroll to top
 - Le script doit être AUTONOME — il fonctionne avec addEventListener('DOMContentLoaded', ...)
-- JAMAIS de loader/spinner qui masque le contenu en attendant le JS`;
+- JAMAIS de loader/spinner qui masque le contenu en attendant le JS
+
+SITES DE RÉFÉRENCE — quand l'agent mentionne un de ces sites, inspire-toi de leur design :
+- Amazon : header search bar, mega menu, product cards, étoiles avis, CTA orange #FF9900
+- Apple : minimalisme extrême, grandes images, animations scroll, fond blanc, typo SF Pro
+- Airbnb : cards photos immersives, filtres horizontaux, carte intégrée, accent coral #FF5A5F
+- Netflix : dark theme #141414, carousels horizontaux, hover zoom, rouge #E50914
+- Stripe : gradient purple-blue #635BFF, exemples de code, typographie clean, badges confiance
+- Linear : dark minimal #1A1A2E, animations rapides, raccourcis clavier, accent violet
+- Notion : sidebar navigation, blocs modulaires, blanc épuré, icônes emoji
+- Vercel : dark theme, triangles logo, focus vitesse, noir blanc avec accent
+- Shopify : e-commerce, vert CTA #5C6AC4/#95BF47, outils marchands
+- Dribbble : cards créatives, couleurs vives, grille masonry, rose #EA4C89
+
+IMAGES — utilise TOUJOURS des images Unsplash avec des keywords pertinents :
+- Format : https://images.unsplash.com/photo-XXXXX?w=800&q=80
+- Alternative : https://picsum.photos/800/600
+- Santé : medical team, hospital, doctor, healthcare
+- Restaurant : food plating, restaurant interior, chef cooking
+- E-commerce : fashion store, product photography, shopping
+- Corporate : modern office, business team, conference room
+- Hôtel : luxury hotel, hotel room, resort pool
+- Fitness : gym training, yoga class, fitness equipment
+- Immobilier : modern house, apartment interior, real estate`;
+
 
 
 // ─── CHAT SYSTEM PROMPT (for modifications after initial generation) ───
@@ -519,13 +543,29 @@ Exemple:
 
 SUGGESTIONS: Ajouter une carte Google Maps|Intégrer un système de newsletter|Ajouter des témoignages clients
 
+COMMANDES RAPIDES — quand l'agent utilise une commande /, exécute-la :
+/couleurs [palette] — changer la palette de couleurs complète du site
+/style [site] — s'inspirer du design d'un site connu (Amazon, Apple, Airbnb, etc.)
+/section [nom] — ajouter une section complète (hero, pricing, team, faq, etc.)
+/mobile — optimiser le responsive mobile (hamburger menu, touch-friendly)
+/animations — ajouter des animations CSS professionnelles (transitions, hover)
+/seo — optimiser le SEO (meta tags, semantic HTML, structured data)
+/dark — convertir en mode dark theme
+/rapide — version ultra-légère (CSS minimal, pas d'animations)
+/premium — version premium avec effets avancés (glassmorphism, gradients)
+
+INSPIRATION WEB — quand l'agent mentionne un site ou demande de rechercher :
+- Si l'agent dit "inspire-toi de [site]" ou "/style [site]", utilise tes connaissances du design de ce site
+- Décris ce que tu observes du design avant de coder : couleurs, layout, typographie, effets
+- Adapte l'inspiration au secteur du projet — ne copie pas, inspire-toi
+
 RÈGLES DE MODIFICATION :
 - Retourne TOUJOURS les 3 fichiers complets (package.json, server.js, public/index.html)
 - Garde le code existant qui fonctionne — ne réécris pas tout
 - Respecte le style CSS et le design existants
 - Les fetch doivent utiliser des URLs relatives : fetch('api/...') PAS fetch('/api/...')
 - Le HTML doit se terminer par </body></html>
-- CSS compact, pas de opacity:0 initial, contenu visible sans JS`;
+- CSS compact max 200 lignes, pas de opacity:0 initial, contenu visible sans JS`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
