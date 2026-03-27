@@ -493,36 +493,162 @@ RÈGLE JAVASCRIPT pour public/index.html :
 - JAMAIS de loader/spinner qui masque le contenu en attendant le JS`;
 
 
+// ─── CHAT SYSTEM PROMPT (for modifications after initial generation) ───
+const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, l'assistant de développement de Prestige Build Pro. Tu aides les agents à améliorer leurs projets web générés.
+
+COMPORTEMENT CONVERSATIONNEL :
+1. Réponds TOUJOURS en français
+2. Commence par confirmer ce que tu as compris de la demande
+3. Explique brièvement ce que tu vas modifier (2-3 lignes max)
+4. Fais des modifications CHIRURGICALES — modifie uniquement ce qui est demandé, garde le reste intact
+5. Après chaque modification, propose 3 suggestions pertinentes au secteur du projet
+
+FORMAT DE RÉPONSE pour les modifications de code :
+- D'abord un message conversationnel (1-3 lignes)
+- Puis le code modifié avec les marqueurs ### filename
+- Puis une ligne SUGGESTIONS: suivie de 3 suggestions séparées par |
+
+Exemple:
+✅ Compris ! Je vais ajouter le formulaire de contact dans votre site. Je modifie uniquement la section contact dans index.html et j'ajoute la route /api/contact dans server.js.
+
+### server.js
+[code complet modifié]
+
+### public/index.html
+[code complet modifié]
+
+SUGGESTIONS: Ajouter une carte Google Maps|Intégrer un système de newsletter|Ajouter des témoignages clients
+
+RÈGLES DE MODIFICATION :
+- Retourne TOUJOURS les 3 fichiers complets (package.json, server.js, public/index.html)
+- Garde le code existant qui fonctionne — ne réécris pas tout
+- Respecte le style CSS et le design existants
+- Les fetch doivent utiliser des URLs relatives : fetch('api/...') PAS fetch('/api/...')
+- Le HTML doit se terminer par </body></html>
+- CSS compact, pas de opacity:0 initial, contenu visible sans JS`;
+
+// ─── SECTOR SUGGESTIONS ───
+const SECTOR_SUGGESTIONS = {
+  health: [
+    'Ajouter un système de prise de rendez-vous en ligne',
+    'Créer un espace patient sécurisé avec historique médical',
+    'Intégrer une carte Google Maps pour localiser le cabinet',
+    'Ajouter un formulaire de contact d\'urgence',
+    'Créer une page FAQ santé avec les questions fréquentes',
+  ],
+  restaurant: [
+    'Ajouter un système de réservation en ligne',
+    'Créer un menu interactif avec filtres (végétarien, sans gluten)',
+    'Intégrer un système de commande à emporter',
+    'Ajouter une galerie photos des plats',
+    'Créer un programme de fidélité client',
+  ],
+  ecommerce: [
+    'Ajouter des filtres de recherche avancés (prix, catégorie)',
+    'Créer un système d\'avis clients avec étoiles',
+    'Intégrer un système de codes promo',
+    'Ajouter une page de suivi de commande',
+    'Créer des suggestions de produits similaires',
+  ],
+  corporate: [
+    'Ajouter une section témoignages clients animée',
+    'Créer une page équipe avec photos et bios',
+    'Intégrer un formulaire de demande de devis',
+    'Ajouter un blog/actualités de l\'entreprise',
+    'Créer une page carrières avec offres d\'emploi',
+  ],
+  saas: [
+    'Ajouter un tableau de pricing comparatif',
+    'Créer un dashboard utilisateur avec statistiques',
+    'Intégrer un système d\'onboarding étape par étape',
+    'Ajouter une page changelog/mises à jour',
+    'Créer une section FAQ avec recherche',
+  ],
+  education: [
+    'Ajouter un catalogue de cours avec filtres',
+    'Créer un espace étudiant avec suivi de progression',
+    'Intégrer un système de quiz/évaluation',
+    'Ajouter un calendrier des formations',
+    'Créer un système de certificats téléchargeables',
+  ],
+  realestate: [
+    'Ajouter une recherche avancée avec filtres (prix, surface, quartier)',
+    'Créer des fiches bien détaillées avec galerie photos',
+    'Intégrer un simulateur de crédit immobilier',
+    'Ajouter un formulaire de visite en ligne',
+    'Créer une carte interactive des biens disponibles',
+  ],
+  hotel: [
+    'Ajouter un moteur de réservation avec calendrier',
+    'Créer une galerie immersive des chambres',
+    'Intégrer un système d\'avis clients TripAdvisor-style',
+    'Ajouter une page spa/services avec réservation',
+    'Créer un programme de fidélité hôtelier',
+  ],
+  fitness: [
+    'Ajouter un planning interactif des cours',
+    'Créer un espace membre avec suivi de progression',
+    'Intégrer un système d\'abonnement en ligne',
+    'Ajouter des vidéos d\'exercices par catégorie',
+    'Créer un calculateur IMC/calories',
+  ],
+  default: [
+    'Améliorer le design responsive mobile',
+    'Ajouter un formulaire de contact avec validation',
+    'Intégrer des animations CSS subtiles',
+    'Ajouter une section témoignages',
+    'Optimiser le SEO avec les meta tags',
+  ]
+};
+
+function getSuggestionsForSector(brief) {
+  if (!brief) return SECTOR_SUGGESTIONS.default;
+  const b = brief.toLowerCase();
+  if (b.match(/santé|médical|hôpital|clinique|docteur|médecin/)) return SECTOR_SUGGESTIONS.health;
+  if (b.match(/restaurant|boulangerie|café|bistro|cuisine|menu/)) return SECTOR_SUGGESTIONS.restaurant;
+  if (b.match(/e-commerce|boutique|magasin|vente|produit/)) return SECTOR_SUGGESTIONS.ecommerce;
+  if (b.match(/corporate|entreprise|société|cabinet|conseil/)) return SECTOR_SUGGESTIONS.corporate;
+  if (b.match(/saas|logiciel|plateforme|dashboard|application/)) return SECTOR_SUGGESTIONS.saas;
+  if (b.match(/éducation|école|formation|cours|université/)) return SECTOR_SUGGESTIONS.education;
+  if (b.match(/immobilier|agence|bien|appartement|maison/)) return SECTOR_SUGGESTIONS.realestate;
+  if (b.match(/hôtel|hébergement|chambre|réservation|séjour/)) return SECTOR_SUGGESTIONS.hotel;
+  if (b.match(/fitness|sport|gym|salle|coach|musculation/)) return SECTOR_SUGGESTIONS.fitness;
+  return SECTOR_SUGGESTIONS.default;
+}
+
 // ─── CONVERSATION CONTEXT BUILDER ───
 function buildConversationContext(project, messages, userMessage) {
   const context = [];
 
-  // Project context as first message
   if (project) {
+    const sector = detectSectorProfile(project.brief) ? 'détecté' : 'générique';
+    const hasCode = !!project.generated_code;
     const projectContext = `CONTEXTE DU PROJET:
 Titre: ${project.title || 'Non défini'}
 Client: ${project.client_name || 'Non défini'}
-Type: ${project.project_type || 'Non défini'}
 Brief: ${project.brief || 'Non défini'}
-Sous-domaine: ${project.subdomain ? project.subdomain + '.prestige-build.dev' : 'Non défini'}
-APIs requises: ${project.apis ? JSON.parse(project.apis || '[]').join(', ') : 'Aucune'}
-
-${project.generated_code ? 'Code déjà généré: ' + project.generated_code.substring(0, 500) + '...' : 'Aucun code généré encore.'}`;
+Secteur: ${sector}
+Code existant: ${hasCode ? 'Oui (' + project.generated_code.length + ' caractères)' : 'Non'}
+Build: ${project.build_status || 'aucun'}`;
 
     context.push({ role: 'user', content: projectContext });
-    context.push({ role: 'assistant', content: 'Bien compris. Je prends en compte ce contexte. Comment puis-je vous aider ?' });
+    context.push({ role: 'assistant', content: `Bien compris. Je connais votre projet "${project.title || 'sans titre'}". Je suis prêt à le modifier.` });
   }
 
-  // Previous messages
+  // Last 5 messages for context (not the full history)
   if (messages && messages.length > 0) {
-    messages.forEach(m => {
-      context.push({ role: m.role, content: m.content });
+    const recent = messages.slice(-5);
+    recent.forEach(m => {
+      // Truncate code blocks in history to save tokens
+      let content = m.content;
+      if (content.includes('### ') && content.length > 300) {
+        content = content.substring(0, 200) + '\n[... code tronqué pour le contexte ...]';
+      }
+      context.push({ role: m.role, content });
     });
   }
 
-  // Current user message
   context.push({ role: 'user', content: userMessage });
-
   return context;
 }
 
@@ -574,7 +700,7 @@ function buildProfessionalPrompt(userMessage, project, availableApis) {
   let prompt = userMessage;
 
   if (availableApis && availableApis.length > 0) {
-    prompt += `\n\n[APIs disponibles dans le système: ${availableApis.map(a => `${a.name} (${a.service})`).join(', ')}. Utilise-les si pertinent.]`;
+    prompt += `\n\n[APIs disponibles: ${availableApis.map(a => `${a.name} (${a.service})`).join(', ')}]`;
   }
 
   return prompt;
@@ -582,8 +708,10 @@ function buildProfessionalPrompt(userMessage, project, availableApis) {
 
 module.exports = {
   SYSTEM_PROMPT,
+  CHAT_SYSTEM_PROMPT,
   SECTOR_PROFILES,
   detectSectorProfile,
+  getSuggestionsForSector,
   buildConversationContext,
   analyzeBrief,
   buildProfessionalPrompt,

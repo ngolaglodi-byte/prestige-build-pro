@@ -1012,7 +1012,11 @@ function generateClaude(messages, jobId, brief, options = {}) {
     return; 
   }
   
-  const baseSystemPrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
+  // Use CHAT prompt for modifications (existing code), SYSTEM prompt for new generation
+  const isModificationChat = messages.length > 2;
+  const baseSystemPrompt = ai
+    ? (isModificationChat ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT))
+    : (ABSOLUTE_BROWSER_RULE + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   
   const contentGenPrompt = `
@@ -3446,6 +3450,22 @@ const server = http.createServer(async (req, res) => {
         const credMsg = `✅ Projet prêt ! Identifiants admin : ${creds.email} / ${creds.password}`;
         db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(job.project_id, 'assistant', credMsg);
       }
+      // Extract conversational message and suggestions from Claude response
+      const sugMatch = fullCode.match(/SUGGESTIONS:\s*(.+)/);
+      if (sugMatch) {
+        job.suggestions = sugMatch[1].split('|').map(s => s.trim()).filter(Boolean);
+      } else {
+        // Generate sector-based suggestions
+        const project = db.prepare('SELECT brief FROM projects WHERE id=?').get(job.project_id);
+        if (ai && project) {
+          job.suggestions = ai.getSuggestionsForSector(project.brief).slice(0, 3);
+        }
+      }
+      // Extract conversational message (text before ### markers)
+      const convoMatch = fullCode.match(/^([\s\S]*?)(?=###\s)/);
+      if (convoMatch && convoMatch[1].trim().length > 5 && convoMatch[1].trim().length < 500) {
+        job.chat_message = convoMatch[1].trim();
+      }
       notifyProjectClients(job.project_id, 'code_updated', {
         userName: user.name,
         previewUrl: `/run/${job.project_id}/`,
@@ -3469,7 +3489,9 @@ const server = http.createServer(async (req, res) => {
       progress_message: progressMessage,
       preview_url: job.preview_url,
       framework: job.framework,
-      credentials: job.credentials || null
+      credentials: job.credentials || null,
+      suggestions: job.suggestions || null,
+      chat_message: job.chat_message || null
     });
     return;
   }
