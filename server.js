@@ -3989,19 +3989,27 @@ const server = http.createServer(async (req, res) => {
     const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
     
-    const subdomain = p.subdomain || `project-${id}`;
-    
-    // Copy preview files to sites directory
+    const body = await getBody(req);
+    const subdomain = body.subdomain || p.subdomain || p.title?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').substring(0, 30) || `project-${id}`;
+
+    // Copy project files to sites directory
     try {
-      const previewDir = path.join(PREVIEWS_DIR, String(id));
-      if (!fs.existsSync(previewDir)) {
-        // Try to create preview from generated code
+      // Use Docker project files first (they have the real running site)
+      let sourceDir = path.join(DOCKER_PROJECTS_DIR, String(id), 'public');
+      if (!fs.existsSync(sourceDir)) {
+        // Fallback to preview dir
+        sourceDir = path.join(PREVIEWS_DIR, String(id));
+      }
+      if (!fs.existsSync(sourceDir)) {
+        // Last resort: create from generated code
         if (p.generated_code) {
           savePreviewFiles(id, p.generated_code);
+          sourceDir = path.join(PREVIEWS_DIR, String(id));
         } else {
-          json(res, 400, { error: 'Aucun code à publier.' }); return;
+          json(res, 400, { error: 'Aucun fichier à publier. Compilez le projet d\'abord.' }); return;
         }
       }
+      const previewDir = sourceDir;
       
       // Validate subdomain to prevent path traversal
       const safeSubdomain = subdomain.replace(/[^a-zA-Z0-9-]/g, '');
