@@ -334,54 +334,13 @@ function isPathSafe(basePath, targetPath) {
 
 // ─── CADDY CUSTOM DOMAIN HELPER ───
 async function addCustomDomainToCaddy(customDomain, siteDir) {
-  // Add a route for the custom domain in Caddy via its admin API
-  // Caddy will automatically provision SSL via Let's Encrypt
-  const routeConfig = {
-    '@id': `custom-domain-${customDomain.replace(/[^a-z0-9]/gi, '-')}`,
-    match: [{ host: [customDomain] }],
-    handle: [{
-      handler: 'file_server',
-      root: siteDir
-    }],
-    terminal: true
-  };
-  
-  return new Promise((resolve, reject) => {
-    const url = new URL(CADDY_ADMIN_API + '/config/apps/http/servers/srv0/routes');
-    const options = {
-      hostname: url.hostname,
-      port: url.port || 2019,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    };
-    
-    const req = http.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`Custom domain ${customDomain} added to Caddy successfully`);
-          resolve({ success: true, domain: customDomain });
-        } else {
-          console.warn(`Caddy API response: ${res.statusCode} - ${data}`);
-          // Don't fail the publish if Caddy config fails - domain can be added later
-          resolve({ success: false, domain: customDomain, error: data });
-        }
-      });
-    });
-    
-    req.on('error', (err) => {
-      console.warn(`Could not configure Caddy for ${customDomain}: ${err.message}`);
-      // Don't fail the publish if Caddy is not available
-      resolve({ success: false, domain: customDomain, error: err.message });
-    });
-    
-    req.write(JSON.stringify(routeConfig));
-    req.end();
-  });
+  // Custom domains are routed by server.js (not Caddy).
+  // The client points their domain A record to our server IP.
+  // Caddy accepts all hostnames on :80, proxies to Prestige.
+  // Prestige detects the custom domain via Host header and serves the published site.
+  // SSL is handled by Cloudflare (if they proxy through CF) or not at all (direct A record).
+  console.log(`[Custom Domain] ${customDomain} configured — route via server.js Host header detection`);
+  return { success: true, domain: customDomain };
 }
 
 // ─── AUTH ───
@@ -3377,9 +3336,36 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // PUBLISHED SITES — serve static files for *.prestige-build.dev subdomains
+  // PUBLISHED SITES — custom domains + *.prestige-build.dev subdomains
   // ═══════════════════════════════════════════════════════════════════════════
   const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+
+  // CUSTOM DOMAINS (ex: www.mondentiste.com)
+  if (host && !host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && host !== PUBLISH_DOMAIN && !host.match(/^(localhost|127\.|10\.|172\.|192\.168)/)) {
+    // This is a custom domain — find the project that owns it
+    if (db) {
+      const project = db.prepare('SELECT id, subdomain FROM projects WHERE domain=? AND is_published=1').get(host);
+      if (project && project.subdomain) {
+        const siteDir = path.join(SITES_DIR, project.subdomain.replace(/[^a-zA-Z0-9-]/g, ''));
+        if (fs.existsSync(siteDir)) {
+          let filePath = path.join(siteDir, url === '/' ? 'index.html' : url);
+          if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) filePath = path.join(filePath, 'index.html');
+          if (fs.existsSync(filePath) && isPathSafe(siteDir, filePath)) {
+            const ext = path.extname(filePath).toLowerCase();
+            const mimeTypes = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2' };
+            res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=3600' });
+            fs.createReadStream(filePath).pipe(res);
+            return;
+          }
+          // SPA fallback
+          const indexPath = path.join(siteDir, 'index.html');
+          if (fs.existsSync(indexPath)) { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); fs.createReadStream(indexPath).pipe(res); return; }
+        }
+      }
+    }
+  }
+
+  // SUBDOMAINS (*.prestige-build.dev)
   if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN) {
     const subdomain = host.replace('.' + PUBLISH_DOMAIN, '').replace(/[^a-zA-Z0-9-]/g, '');
     if (subdomain) {
