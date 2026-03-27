@@ -3189,17 +3189,52 @@ async function rebuildContainerMapping() {
 }
 
 // Initialize Docker system
+// Ensure pbp-base image exists (pre-installs all project dependencies)
+async function ensureBaseImage() {
+  if (!docker) return;
+  try {
+    const image = docker.getImage(DOCKER_BASE_IMAGE);
+    await image.inspect();
+    console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' exists`);
+  } catch {
+    console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' not found — building...`);
+    const dockerfileContent = `FROM node:20-alpine
+WORKDIR /app
+RUN npm install express@4.18.2 better-sqlite3@9.4.3 bcryptjs@2.4.3 jsonwebtoken@9.0.2 cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0
+ENV NODE_PATH=/app/node_modules
+EXPOSE 3000
+`;
+    const tmpDir = '/tmp/pbp-base-build';
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'Dockerfile'), dockerfileContent);
+    try {
+      const stream = await docker.buildImage(
+        { context: tmpDir, src: ['Dockerfile'] },
+        { t: DOCKER_BASE_IMAGE }
+      );
+      await new Promise((resolve, reject) => {
+        docker.modem.followProgress(stream, (err, output) => {
+          if (err) reject(err); else resolve(output);
+        });
+      });
+      console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' built successfully`);
+    } catch (buildErr) {
+      console.error(`[Docker] Failed to build base image: ${buildErr.message}`);
+    }
+  }
+}
+
 async function initializeDockerSystem() {
-  // Check Docker availability first
   dockerAvailable = await checkDockerAvailable();
-  
+
   if (!dockerAvailable) {
     console.log('Docker not available - Docker preview system disabled');
     return;
   }
-  
+
   console.log('Docker socket connection verified via dockerode');
   console.log('Initializing Docker preview system...');
+  await ensureBaseImage();
   await ensureDockerNetwork();
   await joinPbpProjectsNetwork();
   await rebuildContainerMapping();
