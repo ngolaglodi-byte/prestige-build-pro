@@ -1079,17 +1079,31 @@ Règles d'intégration automatique :
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
   
   anthropicRequest(payload, opts, (apiRes) => {
+    let buffer = '';
     apiRes.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete last line
+      for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (!data || data === '[DONE]') continue;
         try {
-          const d = JSON.parse(line.slice(6));
-          if (d.type === 'content_block_delta' && d.delta?.text) {
+          const d = JSON.parse(data);
+          // Handle text deltas (regular content)
+          if (d.type === 'content_block_delta' && d.delta?.type === 'text_delta' && d.delta?.text) {
             job.code += d.delta.text;
             job.progress = job.code.length;
           }
+          // Handle web search progress
+          if (d.type === 'content_block_start' && d.content_block?.type === 'server_tool_use') {
+            job.progressMessage = 'Recherche web en cours...';
+          }
+          if (d.type === 'content_block_start' && d.content_block?.type === 'text') {
+            job.progressMessage = 'Prestige AI rédige le code...';
+          }
+          // Handle completion
           if (d.type === 'message_stop') {
-            // Write modified files to project directory
             if (job.project_id && job.code.includes('### ')) {
               try {
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
@@ -1099,10 +1113,31 @@ Règles d'intégration automatique :
             }
             job.status = 'done';
           }
+          // Handle errors in stream
+          if (d.type === 'error') {
+            console.error('[Claude API] Stream error:', JSON.stringify(d.error));
+            job.status = 'error';
+            job.error = d.error?.message || 'Erreur API';
+          }
         } catch(e) {}
       }
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
+    apiRes.on('end', () => {
+      // If stream ended without message_stop, check if we got code
+      if (job.status === 'running' && job.code.length > 0) {
+        if (job.project_id && job.code.includes('### ')) {
+          try {
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+            writeGeneratedFiles(projDir, job.code);
+          } catch (wErr) {}
+        }
+        job.status = 'done';
+      } else if (job.status === 'running') {
+        job.status = 'error';
+        job.error = 'La génération n\'a produit aucun résultat. Réessayez.';
+      }
+    });
   }, (e) => {
     job.status = 'error';
     job.error = e.message;
