@@ -367,7 +367,7 @@ function detectProjectComplexity(brief) {
 
 function getMaxTokensForProject(brief) {
   const complexity = detectProjectComplexity(brief);
-  return complexity === 'complex' ? 32000 : 16000;
+  return complexity === 'complex' ? 64000 : 32000;
 }
 
 function getModelForProject() {

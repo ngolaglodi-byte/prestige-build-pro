@@ -2419,8 +2419,16 @@ async function buildDockerProject(projectId, code, onProgress) {
         const hasNodeCode = /\brequire\s*\(/.test(htmlContent) && !htmlContent.includes('<!-- server-side script removed -->');
         const isTruncated = hasDoctype && (!hasBody || !hasClosingHtml);
 
-        if (isTruncated) {
-          console.warn(`[Docker Build] ✗ public/index.html is TRUNCATED (has <html> but missing ${!hasBody ? '<body>' : '</html>'})`);
+        if (isTruncated && hasBody) {
+          // HTML has content but is truncated — repair it instead of replacing with default
+          let repaired = htmlContent;
+          if (!repaired.includes('</body>')) repaired += '\n</body>';
+          if (!repaired.includes('</html>')) repaired += '\n</html>';
+          fs.writeFileSync(indexHtmlPath, repaired);
+          indexHtmlValid = true;
+          console.log(`[Docker Build] ✓ public/index.html was truncated — repaired (${repaired.length} bytes)`);
+        } else if (isTruncated) {
+          console.warn(`[Docker Build] ✗ public/index.html is TRUNCATED (missing <body>)`);
         } else if (hasNodeCode) {
           console.warn(`[Docker Build] ✗ public/index.html still contains require() after sanitization`);
         } else if (hasDoctype && hasBody && hasClosingHtml) {
