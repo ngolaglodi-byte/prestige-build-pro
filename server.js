@@ -882,25 +882,21 @@ function generateViaAPI(projectId, brief, jobId) {
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
   const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 8000;
-  const model = ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001';
-  console.log(`[API Fallback] Using model: ${model}, max_tokens: ${maxTokens}`);
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  const model = 'claude-sonnet-4-6';
+  console.log(`[API Fallback] model: ${model}, max_tokens: ${maxTokens}`);
 
   const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
 
-  // Enable web search if brief mentions sites or inspiration
-  const wantsSearch = /inspire|visite|recherche|copie|\.com|\.fr|amazon|apple|airbnb/i.test(brief);
+  // Web search always available
   const apiPayload = {
     model: model,
     max_tokens: maxTokens,
     system: systemPrompt,
     stream: true,
-    messages: [{ role: 'user', content: userPrompt }]
+    messages: [{ role: 'user', content: userPrompt }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
   };
-  if (wantsSearch) {
-    apiPayload.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
-    console.log(`[API Fallback] Web search enabled for project ${projectId}`);
-  }
   const payload = JSON.stringify(apiPayload);
 
   const opts = {
@@ -1092,17 +1088,13 @@ Règles d'intégration automatique :
   
   // For modifications: always Sonnet (smarter for surgical edits). For new gen: based on complexity.
   const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  const model = isModificationChat ? 'claude-sonnet-4-6' : (ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001');
-  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, modification: ${isModificationChat}, job: ${jobId}`);
+  const model = 'claude-sonnet-4-6';
+  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
 
-  // Enable web search if the user message mentions URLs, sites, or research keywords
-  const lastMsg = messages[messages.length - 1]?.content || '';
-  const wantsSearch = /inspire|visite|recherche|copie.*style|\.com|\.fr|\.io|amazon|apple|airbnb|netflix|stripe|linear|notion|vercel|shopify|dribbble/i.test(lastMsg);
-  const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages };
-  if (wantsSearch) {
-    apiPayload.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }];
-    console.log(`[Claude API] Web search enabled for job ${jobId}`);
-  }
+  // Web search always available — Claude decides when to use it
+  const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages,
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+  };
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2025-03-01','Content-Length':Buffer.byteLength(payload)} };
   
