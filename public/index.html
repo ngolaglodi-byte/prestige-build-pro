@@ -180,7 +180,9 @@ button.card { padding: 0; }
 .chat-messages { flex: 1; padding: var(--space-md); overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-md); }
 .chat-message { max-width: 90%; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); font-size: 0.875rem; line-height: 1.5; }
 .chat-message.user { align-self: flex-end; background: var(--gold); color: var(--marine); }
-.chat-message.assistant { align-self: flex-start; background: var(--bg-elevated); color: var(--text-primary); }
+.chat-message.assistant { align-self: flex-start; background: var(--bg-elevated); color: var(--text-primary); line-height: 1.5; }
+.chat-message.assistant strong { color: var(--gold); font-weight: 600; }
+.chat-message.assistant code { font-size: 0.85em; }
 .chat-input-container { padding: var(--space-md); border-top: var(--border-default); }
 .chat-suggestions { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-bottom: var(--space-sm); }
 .chat-suggestion { padding: var(--space-xs) var(--space-sm); background: var(--bg-elevated); border: var(--border-default); border-radius: var(--radius-sm); font-size: 0.75rem; color: var(--text-secondary); cursor: pointer; transition: var(--transition-fast); }
@@ -954,7 +956,16 @@ function addChatMessage(role, content) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'chat-message ' + role;
-  div.textContent = content;
+  // Rich text for assistant messages
+  if (role === 'assistant') {
+    let html = escapeHtml(content);
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(212,168,32,0.1);padding:1px 4px;border-radius:3px;font-size:0.85em;">$1</code>');
+    html = html.replace(/\n/g, '<br>');
+    div.innerHTML = html;
+  } else {
+    div.textContent = content;
+  }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 }
@@ -988,10 +999,12 @@ async function sendChatMessage(message) {
   input.value = '';
   addChatMessage('user', msg);
   setGeneratingState(true);
-  
+
   const assistantDiv = document.createElement('div');
   assistantDiv.className = 'chat-message assistant';
+  assistantDiv.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">Prestige AI réfléchit...</span>';
   document.getElementById('chat-messages').appendChild(assistantDiv);
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
   
   try {
     // Start generation job
@@ -1023,24 +1036,30 @@ async function sendChatMessage(message) {
         continue;
       }
 
-      // Update progress display with server message
+      // Show natural progress messages
       if (job.progress_message) {
-        assistantDiv.textContent = job.progress_message;
-      } else if (job.progress > lastProgress) {
-        lastProgress = job.progress;
-        assistantDiv.textContent = 'Génération en cours... (' + job.progress + ' car.)';
+        assistantDiv.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">' + escapeHtml(job.progress_message) + '</span>';
       }
 
       if (job.status === 'done') {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
-        // Show conversational message from Claude or default
-        assistantDiv.textContent = job.chat_message || 'Code généré avec succès !';
+        // Show conversational message from Claude
+        if (job.chat_message) {
+          let html = escapeHtml(job.chat_message);
+          html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+          html = html.replace(/\n/g, '<br>');
+          assistantDiv.innerHTML = html;
+        } else {
+          assistantDiv.textContent = 'C\'est prêt ! Votre projet a été généré.';
+        }
         if (job.credentials) {
           projectCredentials = job.credentials;
-          addChatMessage('assistant', '\u2705 Identifiants admin : ' + job.credentials.email + ' / ' + job.credentials.password);
+          addChatMessage('assistant', '\u2705 Connectez-vous avec : **' + job.credentials.email + '** / **' + job.credentials.password + '**');
         }
         if (job.suggestions) addSuggestions(job.suggestions);
+        // Auto-compile silently
+        addChatMessage('assistant', 'Compilation en cours, votre site sera prêt dans quelques secondes...');
         await autoCompile();
         break;
       }

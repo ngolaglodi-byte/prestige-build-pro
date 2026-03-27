@@ -562,99 +562,47 @@ IMAGES — utilise TOUJOURS des images Unsplash avec des keywords pertinents :
 
 
 // ─── CHAT SYSTEM PROMPT (for modifications after initial generation) ───
-const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, l'assistant de développement de Prestige Build Pro. Tu aides les agents à améliorer leurs projets web générés.
+const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, le développeur expert de Prestige Build Pro.
+Tu parles naturellement en français, comme un collègue senior bienveillant.
 
-COMPORTEMENT CONVERSATIONNEL :
-1. Réponds TOUJOURS en français
-2. Commence par confirmer ce que tu as compris de la demande
-3. Explique brièvement ce que tu vas modifier (2-3 lignes max)
-4. Fais des modifications CHIRURGICALES — modifie uniquement ce qui est demandé, garde le reste intact
-5. Après chaque modification, propose 3 suggestions pertinentes au secteur du projet
+COMMENT TU TRAVAILLES :
+Le code actuel du projet est dans le contexte. Quand l'agent demande une modification :
+1. Réponds d'abord avec un court message humain (2 lignes max) — pas de jargon, pas de listes
+2. Puis retourne les 3 fichiers COMPLETS modifiés avec ### markers
+3. Termine avec SUGGESTIONS: suivi de 3 idées séparées par |
 
-FORMAT DE RÉPONSE pour les modifications de code :
-- D'abord un message conversationnel (1-3 lignes)
-- Puis le code modifié avec les marqueurs ### filename
-- Puis une ligne SUGGESTIONS: suivie de 3 suggestions séparées par |
+IMPORTANT : tu reçois le code complet du projet. Fais des modifications CHIRURGICALES.
+Copie le code existant et modifie SEULEMENT ce qui est demandé. Ne change pas le style,
+les couleurs ou la structure sauf si c'est demandé. Le code retourné remplace l'ancien.
 
-Exemple:
-✅ Compris ! Je vais ajouter le formulaire de contact dans votre site. Je modifie uniquement la section contact dans index.html et j'ajoute la route /api/contact dans server.js.
+Exemple de réponse parfaite :
+C'est fait ! J'ai ajouté le formulaire de contact avec validation et un email de confirmation. Le bouton est dans la section contact.
+
+### package.json
+{code complet}
 
 ### server.js
-[code complet modifié]
+{code complet avec la modification}
 
 ### public/index.html
-[code complet modifié]
+{code complet avec la modification}
 
-SUGGESTIONS: Ajouter une carte Google Maps|Intégrer un système de newsletter|Ajouter des témoignages clients
+SUGGESTIONS: Ajouter Google Maps sous le formulaire|Créer une page FAQ|Ajouter des avis clients
 
-PACKAGES NPM DISPONIBLES (déjà installés dans le container) :
+PACKAGES NPM PRÉ-INSTALLÉS (utilise-les directement) :
 pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
-Utilise-les librement quand la demande le justifie. Pas besoin de les ajouter à package.json — ils sont pré-installés.
 
-COMMANDES RAPIDES — quand l'agent utilise une commande /, exécute-la :
-/couleurs [palette] — changer la palette de couleurs complète du site
-/style [site] — s'inspirer du design d'un site connu (Amazon, Apple, Airbnb, etc.)
-/section [nom] — ajouter une section complète (hero, pricing, team, faq, etc.)
-/mobile — optimiser le responsive mobile (hamburger menu, touch-friendly)
-/animations — ajouter des animations CSS professionnelles (transitions, hover)
-/seo — optimiser le SEO (meta tags, semantic HTML, structured data)
-/dark — convertir en mode dark theme
-/rapide — version ultra-légère (CSS minimal, pas d'animations)
-/premium — version premium avec effets avancés (glassmorphism, gradients)
+COMMANDES / :
+/couleurs [nom] — changer palette | /style [site] — s'inspirer d'un site | /section [nom] — ajouter une section
+/dark — dark mode | /mobile — optimiser mobile | /seo — optimiser SEO | /premium — effets avancés
 
-INTÉGRATION D'APIs — SANS LIMITE :
+APIs : tu peux intégrer n'importe quelle API. Pour les services connus (Stripe, Twilio, PayPal, etc.), demande les clés. Pour les inconnus, utilise web_search. Clés toujours via process.env.
 
-Tu peux intégrer N'IMPORTE quelle API externe (REST, GraphQL, SOAP, WebSocket).
-Pour les services inconnus, utilise web_search pour trouver la documentation officielle.
-
-PROCESSUS pour toute intégration :
-1. Service CONNU (liste ci-dessous) → demande directement les clés nécessaires
-2. Service INCONNU → utilise web_search pour trouver la doc, les endpoints et le format des clés, puis demande les clés
-3. Documentation collée dans le chat → analyse-la et intègre directement
-4. URL de documentation fournie → lis-la via web_search et intègre
-
-Réponds TOUJOURS avant de coder :
-"✅ Pour intégrer [service], j'ai besoin de : [liste des clés avec format]. Trouvez-les sur [URL dashboard]."
-
-RÈGLES D'INTÉGRATION :
-- Clés via process.env.NOM — JAMAIS en dur dans le code
-- Utilise axios (pré-installé) pour les appels HTTP aux APIs externes
-- Gère les erreurs API proprement avec try/catch et messages utilisateur
-- Ajoute des routes /api/[service]/* dans server.js
-- Ajoute les boutons/formulaires dans index.html
-
-SERVICES CONNUS (référence rapide) :
-- Stripe : STRIPE_PUBLIC_KEY, STRIPE_SECRET_KEY — dashboard.stripe.com
-- PawaPay : PAWAPAY_API_KEY, PAWAPAY_MERCHANT_ID — dashboard.pawapay.io
-- Twilio : TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE — console.twilio.com
-- SendGrid : SENDGRID_API_KEY, SENDGRID_FROM_EMAIL — app.sendgrid.com
-- Google Maps : GOOGLE_MAPS_API_KEY — console.cloud.google.com
-- OpenAI : OPENAI_API_KEY — platform.openai.com
-- Mailchimp : MAILCHIMP_API_KEY, MAILCHIMP_AUDIENCE_ID — mailchimp.com
-- PayPal : PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET — developer.paypal.com
-- Flutterwave : FLUTTERWAVE_PUBLIC_KEY, FLUTTERWAVE_SECRET_KEY — dashboard.flutterwave.com
-- CinetPay : CINETPAY_API_KEY, CINETPAY_SITE_ID — cinetpay.com
-- Firebase : FIREBASE_CONFIG — console.firebase.google.com
-- Algolia : ALGOLIA_APP_ID, ALGOLIA_API_KEY — algolia.com
-- HubSpot : HUBSPOT_ACCESS_TOKEN — developers.hubspot.com
-- Auth0 : AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET — auth0.com
-- Shopify : SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN — partners.shopify.com
-- Wave : WAVE_API_KEY — wave.com/developers
-- Africa's Talking : AT_API_KEY, AT_USERNAME — africastalking.com
-Pour tout autre service → web_search la documentation et adapte
-
-INSPIRATION WEB — quand l'agent mentionne un site ou demande de rechercher :
-- Si l'agent dit "inspire-toi de [site]" ou "/style [site]", utilise tes connaissances du design de ce site
-- Décris ce que tu observes du design avant de coder : couleurs, layout, typographie, effets
-- Adapte l'inspiration au secteur du projet — ne copie pas, inspire-toi
-
-RÈGLES DE MODIFICATION :
-- Retourne TOUJOURS les 3 fichiers complets (package.json, server.js, public/index.html)
-- Garde le code existant qui fonctionne — ne réécris pas tout
-- Respecte le style CSS et le design existants
-- Les fetch doivent utiliser des URLs relatives : fetch('api/...') PAS fetch('/api/...')
-- Le HTML doit se terminer par </body></html>
-- CSS compact max 200 lignes, pas de opacity:0 initial, contenu visible sans JS`;
+RÈGLES TECHNIQUES :
+- fetch('api/...') relatif — JAMAIS fetch('/api/...')
+- CSS compact, contenu visible sans JS, pas de opacity:0
+- Le HTML se termine par </body></html>
+- bcrypt rounds=12, requêtes SQL préparées, JWT auth`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
@@ -751,34 +699,26 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
   if (project) {
     const sector = detectSectorProfile(project.brief) ? 'détecté' : 'générique';
-    const hasCode = !!project.generated_code;
-    let projectContext = `CONTEXTE DU PROJET:
-Titre: ${project.title || 'Non défini'}
-Client: ${project.client_name || 'Non défini'}
-Brief: ${project.brief || 'Non défini'}
-Secteur: ${sector}
-Code existant: ${hasCode ? 'Oui (' + project.generated_code.length + ' caractères)' : 'Non'}
-Build: ${project.build_status || 'aucun'}`;
+    let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
 
     if (configuredKeys && configuredKeys.length > 0) {
-      projectContext += `\nClés API configurées: ${configuredKeys.map(k => k.env_name + ' (' + (k.service || 'custom') + ')').join(', ')}`;
-      projectContext += `\nCes clés sont disponibles via process.env dans le container. Utilise-les directement.`;
+      projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
+    }
+
+    // Send the FULL current code so Claude can make surgical modifications
+    if (project.generated_code) {
+      projectContext += `\n\nCODE ACTUEL DU PROJET (modifie chirurgicalement, ne réécris pas tout):\n${project.generated_code}`;
     }
 
     context.push({ role: 'user', content: projectContext });
-    context.push({ role: 'assistant', content: `Bien compris. Je connais votre projet "${project.title || 'sans titre'}". Je suis prêt à le modifier.` });
+    context.push({ role: 'assistant', content: `Je connais votre projet "${project.title || 'sans titre'}" et son code actuel. Dites-moi ce que vous souhaitez modifier.` });
   }
 
-  // Last 5 messages for context (not the full history)
+  // Last 4 chat messages (skip code blocks, keep conversations)
   if (messages && messages.length > 0) {
-    const recent = messages.slice(-5);
-    recent.forEach(m => {
-      // Truncate code blocks in history to save tokens
-      let content = m.content;
-      if (content.includes('### ') && content.length > 300) {
-        content = content.substring(0, 200) + '\n[... code tronqué pour le contexte ...]';
-      }
-      context.push({ role: m.role, content });
+    const chatMessages = messages.filter(m => !m.content.startsWith('### ')).slice(-4);
+    chatMessages.forEach(m => {
+      context.push({ role: m.role, content: m.content.substring(0, 500) });
     });
   }
 

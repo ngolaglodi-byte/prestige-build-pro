@@ -1090,10 +1090,10 @@ Règles d'intégration automatique :
     ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
     : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
   
-  // Select model and tokens based on brief complexity
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 8000;
-  const model = ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001';
-  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
+  // For modifications: always Sonnet (smarter for surgical edits). For new gen: based on complexity.
+  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  const model = isModificationChat ? 'claude-sonnet-4-6' : (ai && ai.getModelForProject ? ai.getModelForProject(brief) : 'claude-haiku-4-5-20251001');
+  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, modification: ${isModificationChat}, job: ${jobId}`);
 
   // Enable web search if the user message mentions URLs, sites, or research keywords
   const lastMsg = messages[messages.length - 1]?.content || '';
@@ -1104,7 +1104,7 @@ Règles d'intégration automatique :
     console.log(`[Claude API] Web search enabled for job ${jobId}`);
   }
   const payload = JSON.stringify(apiPayload);
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2025-03-01','Content-Length':Buffer.byteLength(payload)} };
   
   const r = https.request(opts, apiRes => {
     apiRes.on('data', chunk => {
