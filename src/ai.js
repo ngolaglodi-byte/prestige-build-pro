@@ -441,12 +441,19 @@ QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
 
 STRUCTURE OBLIGATOIRE de public/index.html — dans cet ORDRE EXACT :
 1. <!DOCTYPE html> et <html>
-2. <head> avec <meta charset>, <title>, <style> (CSS COMPACT)
+2. <head> avec <meta charset>, <title>, <style>
 3. </head>
 4. <body> avec TOUT le contenu HTML visible
 5. <script> en fin de body avec TOUT le JavaScript
 6. </body></html>
+
+GESTION DU BUDGET — TRÈS IMPORTANT :
 Le fichier DOIT se terminer par </body></html>. Un fichier tronqué est INACCEPTABLE.
+Pour éviter la troncation, RESPECTE ces proportions :
+- server.js : max 40% du code total — backend efficace, pas de code répétitif
+- public/index.html : max 50% — CSS concis avec variables, HTML sémantique
+- package.json : max 10%
+Si le projet est complexe, simplifie le CSS (utilise des variables, pas de duplication) et le JS (fonctions réutilisables). Termine TOUJOURS par </body></html>.
 
 PROFILS SECTORIELS — appliqués automatiquement selon le brief :
 
