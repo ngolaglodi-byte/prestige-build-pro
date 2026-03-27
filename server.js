@@ -245,8 +245,16 @@ try {
     CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, error_type TEXT NOT NULL, error_message TEXT, docker_logs TEXT, correction_attempt INTEGER DEFAULT 1, corrected INTEGER DEFAULT 0, corrected_code TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
   `);
   const bcrypt = require('bcryptjs');
-  if (!db.prepare("SELECT id FROM users WHERE role='admin'").get()) {
-    db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run('admin@prestige-build.dev', bcrypt.hashSync('Admin2026!',10), 'Administrateur', 'admin');
+  const ADMIN_EMAIL = 'admin@prestige-build.dev';
+  const ADMIN_PASSWORD = 'Prestige2026!';
+  const adminExists = db.prepare("SELECT id FROM users WHERE email=?").get(ADMIN_EMAIL);
+  if (!adminExists) {
+    db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run(ADMIN_EMAIL, bcrypt.hashSync(ADMIN_PASSWORD, 12), 'Administrateur', 'admin');
+    console.log(`[DB] Admin account created: ${ADMIN_EMAIL}`);
+  } else {
+    // Always sync password on startup to prevent desync after redeploy
+    db.prepare('UPDATE users SET password=? WHERE email=?').run(bcrypt.hashSync(ADMIN_PASSWORD, 12), ADMIN_EMAIL);
+    console.log(`[DB] Admin password synced`);
   }
 } catch(e) { console.error('DB:', e.message); }
 
