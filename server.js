@@ -252,10 +252,12 @@ try {
     db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run(ADMIN_EMAIL, bcrypt.hashSync(ADMIN_PASSWORD, 12), 'Administrateur', 'admin');
     console.log(`[DB] Admin account created: ${ADMIN_EMAIL}`);
   } else {
-    // Always sync password on startup to prevent desync after redeploy
+    // Always sync admin password on startup to prevent desync after redeploy
     db.prepare('UPDATE users SET password=? WHERE email=?').run(bcrypt.hashSync(ADMIN_PASSWORD, 12), ADMIN_EMAIL);
-    console.log(`[DB] Admin password synced`);
   }
+  // Log all users on startup (never touch agent passwords — they persist in the volume)
+  const allUsers = db.prepare('SELECT id, email, role FROM users').all();
+  console.log(`[DB] ${allUsers.length} user(s): ${allUsers.map(u => u.email + ' (' + u.role + ')').join(', ')}`);
 } catch(e) { console.error('DB:', e.message); }
 
 // Add github_repo column to projects if missing
