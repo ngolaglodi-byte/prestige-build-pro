@@ -400,6 +400,7 @@ button.card { padding: 0; }
         <button class="admin-tab active" data-panel="users" onclick="showAdminPanel('users')">Utilisateurs</button>
         <button class="admin-tab" data-panel="apis" onclick="showAdminPanel('apis')">APIs externes</button>
         <button class="admin-tab" data-panel="all-projects" onclick="showAdminPanel('all-projects')">Tous les projets</button>
+        <button class="admin-tab" data-panel="github" onclick="showAdminPanel('github');loadGithubConfig()">GitHub</button>
       </div>
       <div id="users-panel" class="admin-panel active">
         <div class="admin-section">
@@ -418,6 +419,17 @@ button.card { padding: 0; }
       <div id="all-projects-panel" class="admin-panel">
         <div class="admin-section"><div class="admin-section-header"><h3 class="admin-section-title">Tous les projets</h3></div><table class="admin-table" id="all-projects-table"><thead><tr><th>Projet</th><th>Client</th><th>Agent</th><th>Statut</th><th>Modifié</th><th></th></tr></thead><tbody></tbody></table></div>
       </div>
+      <div id="github-panel" class="admin-panel">
+        <div class="admin-section">
+          <div class="admin-section-header"><h3 class="admin-section-title">GitHub Entreprise</h3><span id="github-status" style="font-size:0.8rem;color:var(--text-muted);"></span></div>
+          <div style="display:grid;gap:var(--space-md);max-width:500px;">
+            <div><label style="font-size:0.85rem;font-weight:500;display:block;margin-bottom:4px;">Token GitHub (Personal Access Token)</label><input type="password" id="gh-token" class="input" placeholder="ghp_xxxxxxxxxxxx"></div>
+            <div><label style="font-size:0.85rem;font-weight:500;display:block;margin-bottom:4px;">Username GitHub</label><input type="text" id="gh-username" class="input" placeholder="votre-username"></div>
+            <div><label style="font-size:0.85rem;font-weight:500;display:block;margin-bottom:4px;">Organisation (optionnel)</label><input type="text" id="gh-org" class="input" placeholder="votre-organisation"></div>
+            <div style="display:flex;gap:var(--space-md);"><button class="btn btn-primary" onclick="saveGithubConfig()">Sauvegarder</button><button class="btn btn-secondary" onclick="testGithubConfig()">Tester la connexion</button></div>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="workspace-view">
       <div class="workspace-topbar">
@@ -431,6 +443,7 @@ button.card { padding: 0; }
           <button class="btn btn-ghost" id="ws-domain-btn" onclick="openCustomDomainModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Domaine</button>
           <button class="btn btn-ghost" id="ws-presentation-btn" onclick="openPresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>Présentation</button>
           <button class="btn btn-ghost" id="ws-history-btn" onclick="openHistoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Historique</button>
+          <button class="btn btn-ghost" id="ws-github-btn" onclick="exportToGithub()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>GitHub</button>
           <button class="btn btn-primary" id="ws-publish-btn" onclick="publishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>Publier</button>
         </div>
       </div>
@@ -1410,6 +1423,58 @@ async function triggerAutoCorrect() {
   } catch (e) {
     addChatMessage('assistant', 'Erreur: ' + e.message);
   }
+}
+
+// ─── GITHUB CONFIG (admin) ───
+async function loadGithubConfig() {
+  try {
+    const cfg = await api('/api/admin/github/config');
+    document.getElementById('gh-username').value = cfg.github_username || '';
+    document.getElementById('gh-org').value = cfg.github_org || '';
+    document.getElementById('github-status').textContent = cfg.github_username ? 'Configuré' : 'Non configuré';
+    document.getElementById('github-status').style.color = cfg.github_username ? 'var(--success)' : 'var(--text-muted)';
+  } catch(e) {}
+}
+
+async function saveGithubConfig() {
+  try {
+    await api('/api/admin/github/config', 'POST', {
+      github_token: document.getElementById('gh-token').value,
+      github_username: document.getElementById('gh-username').value,
+      github_org: document.getElementById('gh-org').value
+    });
+    document.getElementById('gh-token').value = '';
+    document.getElementById('github-status').textContent = 'Sauvegardé';
+    document.getElementById('github-status').style.color = 'var(--success)';
+  } catch(e) { alert('Erreur: ' + e.message); }
+}
+
+async function testGithubConfig() {
+  try {
+    const r = await api('/api/admin/github/test', 'POST');
+    document.getElementById('github-status').textContent = 'Connecté : ' + r.login;
+    document.getElementById('github-status').style.color = 'var(--success)';
+  } catch(e) {
+    document.getElementById('github-status').textContent = 'Erreur : ' + e.message;
+    document.getElementById('github-status').style.color = 'var(--error)';
+  }
+}
+
+// ─── GITHUB EXPORT ───
+async function exportToGithub() {
+  if (!currentProject) return;
+  const repoName = (currentProject.title || 'project').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
+  const name = prompt('Nom du repo GitHub :', repoName);
+  if (!name) return;
+  const isPrivate = confirm('Créer un repo privé ? (OK=Privé, Annuler=Public)');
+  try {
+    addChatMessage('assistant', 'Export vers GitHub en cours...');
+    const r = await api('/api/projects/' + currentProject.id + '/export-github', 'POST', {
+      repo_name: name, description: currentProject.brief || '', private: isPrivate
+    });
+    addChatMessage('assistant', '\u2705 Projet exporté : ' + r.url);
+    currentProject.github_repo = r.url;
+  } catch(e) { addChatMessage('assistant', 'Erreur GitHub : ' + e.message); }
 }
 
 // ─── PROJECT API KEYS ───

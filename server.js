@@ -235,6 +235,7 @@ try {
     CREATE TABLE IF NOT EXISTS project_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, service TEXT NOT NULL, key_value TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS project_api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, env_name TEXT NOT NULL, env_value TEXT NOT NULL, service TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
+    CREATE TABLE IF NOT EXISTS github_config (id INTEGER PRIMARY KEY, github_token TEXT NOT NULL, github_username TEXT NOT NULL, github_org TEXT, updated_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message TEXT, type TEXT DEFAULT 'info', read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS builds (id TEXT PRIMARY KEY, project_id INTEGER, status TEXT DEFAULT 'building', progress INTEGER DEFAULT 0, message TEXT, url TEXT, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
@@ -246,6 +247,9 @@ try {
     db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run('admin@prestige-build.dev', bcrypt.hashSync('Admin2026!',10), 'Administrateur', 'admin');
   }
 } catch(e) { console.error('DB:', e.message); }
+
+// Add github_repo column to projects if missing
+try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) { /* already exists */ }
 
 // ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
 const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName}>>
@@ -4190,6 +4194,140 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/apikeys/names' && req.method==='GET') { json(res,200,db.prepare('SELECT name,service,description FROM api_keys').all()); return; }
   if (url==='/api/apikeys' && req.method==='POST') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} const {name,service,key_value,description}=await getBody(req); const i=db.prepare('INSERT INTO api_keys (name,service,key_value,description) VALUES (?,?,?,?)').run(name,service,key_value,description); json(res,200,{id:i.lastInsertRowid}); return; }
   if (url.match(/^\/api\/apikeys\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM api_keys WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+
+  // ─── GITHUB CONFIG (admin only) ───
+  if (url === '/api/admin/github/config' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const cfg = db.prepare('SELECT github_username, github_org, updated_at FROM github_config WHERE id=1').get();
+    json(res, 200, cfg || { github_username: '', github_org: '' }); return;
+  }
+  if (url === '/api/admin/github/config' && req.method === 'POST') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const { github_token, github_username, github_org } = await getBody(req);
+    if (!github_token || !github_username) { json(res, 400, { error: 'Token et username requis.' }); return; }
+    const encrypted = encryptValue(github_token);
+    db.prepare('INSERT OR REPLACE INTO github_config (id, github_token, github_username, github_org, updated_at) VALUES (1,?,?,?,datetime("now"))').run(encrypted, github_username, github_org || '');
+    json(res, 200, { ok: true }); return;
+  }
+  if (url === '/api/admin/github/test' && req.method === 'POST') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const cfg = db.prepare('SELECT github_token, github_username FROM github_config WHERE id=1').get();
+    if (!cfg) { json(res, 404, { error: 'GitHub non configuré.' }); return; }
+    try {
+      const tok = decryptValue(cfg.github_token);
+      const r = await new Promise((resolve, reject) => {
+        const req = https.get('https://api.github.com/user', { headers: { 'Authorization': `token ${tok}`, 'User-Agent': 'PrestigeBuildPro' } }, res => {
+          let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ status: res.statusCode, data: d }));
+        }); req.on('error', reject);
+      });
+      if (r.status === 200) {
+        const u = JSON.parse(r.data);
+        json(res, 200, { ok: true, login: u.login, name: u.name });
+      } else { json(res, 401, { error: 'Token GitHub invalide.' }); }
+    } catch (e) { json(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ─── GITHUB EXPORT ───
+  if (url.match(/^\/api\/projects\/\d+\/export-github$/) && req.method === 'POST') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const cfg = db.prepare('SELECT github_token, github_username, github_org FROM github_config WHERE id=1').get();
+    if (!cfg) { json(res, 400, { error: 'GitHub non configuré par l\'administrateur.' }); return; }
+    const body = await getBody(req);
+    const repoName = (body.repo_name || p.title || 'project-' + pid).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').substring(0, 50);
+    const description = body.description || p.brief || '';
+    const isPrivate = body.private !== false;
+    const tok = decryptValue(cfg.github_token);
+    const owner = cfg.github_org || cfg.github_username;
+
+    try {
+      // Create repo
+      const createRes = await new Promise((resolve, reject) => {
+        const endpoint = cfg.github_org ? `/orgs/${cfg.github_org}/repos` : '/user/repos';
+        const payload = JSON.stringify({ name: repoName, description: description.substring(0, 350), private: isPrivate, auto_init: false });
+        const req = https.request({ hostname: 'api.github.com', path: endpoint, method: 'POST', headers: { 'Authorization': `token ${tok}`, 'User-Agent': 'PrestigeBuildPro', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, res => {
+          let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ status: res.statusCode, data: d }));
+        }); req.on('error', reject); req.write(payload); req.end();
+      });
+      if (createRes.status !== 201) {
+        const err = JSON.parse(createRes.data);
+        json(res, 400, { error: err.message || 'Erreur création repo.' }); return;
+      }
+      const repo = JSON.parse(createRes.data);
+      const repoUrl = repo.html_url;
+
+      // Collect files from project directory
+      const projDir = path.join(DOCKER_PROJECTS_DIR, String(pid));
+      const filesToPush = {};
+      const collectFiles = (dir, prefix) => {
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir).forEach(f => {
+          if (['node_modules', '.git', 'data', 'Dockerfile', 'BRIEF.md', 'CLAUDE.md', 'READY', 'ERROR'].includes(f)) return;
+          const fp = path.join(dir, f);
+          const rel = prefix ? prefix + '/' + f : f;
+          if (fs.statSync(fp).isDirectory()) { collectFiles(fp, rel); }
+          else { filesToPush[rel] = fs.readFileSync(fp); }
+        });
+      };
+      collectFiles(projDir, '');
+
+      // Add .gitignore
+      filesToPush['.gitignore'] = Buffer.from('node_modules/\n.env\n*.db\n/data/\n.DS_Store\n');
+
+      // Add .env.example
+      const envKeys = ['PORT=3000', 'JWT_SECRET=your_jwt_secret_here', 'DATABASE_PATH=./data/app.db'];
+      const pKeys = db.prepare('SELECT env_name FROM project_api_keys WHERE project_id=?').all(pid);
+      pKeys.forEach(k => envKeys.push(`${k.env_name}=your_value_here`));
+      filesToPush['.env.example'] = Buffer.from(envKeys.join('\n') + '\n');
+
+      // Add README.md
+      const readme = `# ${p.title || 'Projet'}\n\n${p.brief || ''}\n\n**Client:** ${p.client_name || '-'}\n**Généré par:** [Prestige Build Pro](https://app.prestige-build.dev)\n**Date:** ${new Date().toLocaleDateString('fr-FR')}\n\n## Installation\n\n\`\`\`bash\nnpm install\ncp .env.example .env\n# Configurez vos variables d'environnement\nnode server.js\n\`\`\`\n\nLe serveur démarre sur http://localhost:3000\n`;
+      filesToPush['README.md'] = Buffer.from(readme);
+
+      // Push all files via GitHub API (create tree + commit)
+      const ghApi = (method, apiPath, payload) => new Promise((resolve, reject) => {
+        const data = payload ? JSON.stringify(payload) : '';
+        const req = https.request({ hostname: 'api.github.com', path: apiPath, method, headers: { 'Authorization': `token ${tok}`, 'User-Agent': 'PrestigeBuildPro', 'Content-Type': 'application/json', ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) } }, res => {
+          let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } });
+        }); req.on('error', reject); if (data) req.write(data); req.end();
+      });
+
+      // Create blobs for each file
+      const tree = [];
+      for (const [fpath, content] of Object.entries(filesToPush)) {
+        const blob = await ghApi('POST', `/repos/${owner}/${repoName}/git/blobs`, {
+          content: content.toString('base64'), encoding: 'base64'
+        });
+        tree.push({ path: fpath, mode: '100644', type: 'blob', sha: blob.sha });
+      }
+
+      // Create tree
+      const treeRes = await ghApi('POST', `/repos/${owner}/${repoName}/git/trees`, { tree });
+
+      // Create commit
+      const commitRes = await ghApi('POST', `/repos/${owner}/${repoName}/git/commits`, {
+        message: `Initial commit — ${p.title || 'Projet'} via Prestige Build Pro`,
+        tree: treeRes.sha
+      });
+
+      // Update default branch ref
+      await ghApi('POST', `/repos/${owner}/${repoName}/git/refs`, {
+        ref: 'refs/heads/main', sha: commitRes.sha
+      });
+
+      // Save repo URL in project
+      db.prepare('UPDATE projects SET github_repo=? WHERE id=?').run(repoUrl, pid);
+      db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(pid, 'assistant', `✅ Projet exporté sur GitHub : ${repoUrl}`);
+
+      json(res, 200, { ok: true, url: repoUrl, repo: repoName });
+    } catch (e) {
+      console.error('[GitHub Export] Error:', e.message);
+      json(res, 500, { error: 'Erreur export GitHub: ' + e.message });
+    }
+    return;
+  }
 
   // ─── PROJECT BACKUPS ───
   if (url.match(/^\/api\/projects\/\d+\/backups$/) && req.method === 'GET') {
