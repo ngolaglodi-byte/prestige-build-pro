@@ -90,6 +90,8 @@ const MAX_CODE_DISPLAY_LENGTH = 50000; // 50KB max for fallback code display
 // ─── ERROR MANAGEMENT SYSTEM CONSTANTS ───
 const MAX_AUTO_CORRECTION_ATTEMPTS = 3;
 const CONTAINER_MONITORING_INTERVAL = 30000; // 30 seconds
+const SLEEP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const containerLastAccess = new Map(); // projectId → timestamp
 const ERROR_TYPES = {
   SYNTAX: 'syntax',
   DEPENDENCY: 'dependency',
@@ -3039,48 +3041,37 @@ async function backupAllProjects() {
 
 async function monitorContainers() {
   if (!db || !isDockerAvailable()) return;
-  
+
   try {
-    const projects = db.prepare("SELECT id, user_id, title FROM projects WHERE build_status = 'done'").all();
-    
+    const projects = db.prepare("SELECT id, user_id, title, is_published FROM projects WHERE build_status = 'done'").all();
+
     for (const project of projects) {
-      // Check if container should be running but isn't
       const running = await isContainerRunningAsync(project.id);
-      if (!running) {
+      const lastAccess = containerLastAccess.get(project.id) || 0;
+      const idle = Date.now() - lastAccess;
+
+      // Auto-sleep: stop idle containers (unless published)
+      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && lastAccess > 0) {
+        console.log(`[Sleep] Stopping idle container for project ${project.id} (idle ${Math.round(idle / 60000)}min)`);
+        try {
+          const container = docker.getContainer(getContainerName(project.id));
+          await container.stop({ t: 5 });
+        } catch (e) { /* already stopped */ }
+        continue;
+      }
+
+      // Keep published sites running
+      if (!running && project.is_published) {
         const containerName = getContainerName(project.id);
-        console.log(`Container ${containerName} stopped unexpectedly. Attempting restart...`);
-        
-        // Try simple restart first
         try {
           await startContainerAsync(project.id);
           await new Promise(r => setTimeout(r, 3000));
-          
-          // Check if healthy now
           const healthy = await waitForContainerHealth(project.id, 10000);
           if (healthy) {
-            console.log(`Container ${containerName} restarted successfully`);
-            
-            // Add notification for user
-            db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
-              .run(project.user_id, `Le projet "${project.title}" a été redémarré automatiquement.`, 'info');
-          } else {
-            // Container not healthy after restart - trigger auto-correction
-            console.log(`Container ${containerName} unhealthy after restart. Triggering auto-correction...`);
-            
-            autoCorrectProject(project.id, (p) => {
-              console.log(`Auto-correction ${project.id}: ${p.message}`);
-            }).then(result => {
-              if (result.success) {
-                db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
-                  .run(project.user_id, `Le projet "${project.title}" a été corrigé automatiquement par Prestige AI.`, 'success');
-              } else if (result.reason === 'max_attempts') {
-                db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)')
-                  .run(project.user_id, `Le projet "${project.title}" nécessite votre attention. ${result.lastError || ''}`, 'warning');
-              }
-            });
+            console.log(`[Monitor] Published container ${containerName} restarted`);
           }
         } catch (e) {
-          console.error(`Failed to restart container ${containerName}:`, e.message);
+          console.error(`[Monitor] Failed to restart ${containerName}:`, e.message);
         }
       }
     }
@@ -3452,6 +3443,17 @@ const server = http.createServer(async (req, res) => {
     targetPath = targetPath.replace(/([?&])token=[^&]*/g, (m) => {
       return m.startsWith('?') ? '?' : '';
     }).replace(/\?&/, '?').replace(/\?$/, '');
+
+    // Track access for auto-sleep
+    containerLastAccess.set(projectId, Date.now());
+
+    // Wake container if sleeping
+    const running = await isContainerRunningAsync(projectId);
+    if (!running) {
+      console.log(`[Sleep] Waking container for project ${projectId}`);
+      await startContainerAsync(projectId);
+      await waitForContainerHealth(projectId, 10000);
+    }
 
     // Proxy to the container
     proxyToContainer(req, res, projectId, targetPath);
@@ -4076,10 +4078,10 @@ const server = http.createServer(async (req, res) => {
     // Order: analytics, project_versions, notifications (user-based, not project-linked), messages, then project
     db.prepare('DELETE FROM analytics WHERE project_id=?').run(id);
     db.prepare('DELETE FROM project_versions WHERE project_id=?').run(id);
-    // Note: notifications table uses user_id, not project_id - no direct project link
     db.prepare('DELETE FROM project_messages WHERE project_id=?').run(id);
     db.prepare('DELETE FROM builds WHERE project_id=?').run(id);
     db.prepare('DELETE FROM error_history WHERE project_id=?').run(id);
+    db.prepare('DELETE FROM project_api_keys WHERE project_id=?').run(id);
     db.prepare('DELETE FROM projects WHERE id=?').run(id);
     
     // Clean up correction attempts tracking
@@ -4114,7 +4116,17 @@ const server = http.createServer(async (req, res) => {
         try { fs.rmSync(siteDir, { recursive: true, force: true }); } catch(e) { console.warn('Site cleanup error:', e.message); }
       }
     }
-    
+
+    // Clean up backups
+    const backupDir = path.join(BACKUP_DIR, String(id));
+    if (fs.existsSync(backupDir)) {
+      try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch(e) { console.warn('Backup cleanup error:', e.message); }
+    }
+
+    // Clean up sleep tracking
+    containerLastAccess.delete(id);
+
+    console.log(`[Delete] Project ${id} fully cleaned up`);
     json(res,200,{ok:true}); return;
   }
 
@@ -4232,6 +4244,34 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/apikeys/names' && req.method==='GET') { json(res,200,db.prepare('SELECT name,service,description FROM api_keys').all()); return; }
   if (url==='/api/apikeys' && req.method==='POST') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} const {name,service,key_value,description}=await getBody(req); const i=db.prepare('INSERT INTO api_keys (name,service,key_value,description) VALUES (?,?,?,?)').run(name,service,key_value,description); json(res,200,{id:i.lastInsertRowid}); return; }
   if (url.match(/^\/api\/apikeys\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM api_keys WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+
+  // ─── ADMIN SYSTEM STATS ───
+  if (url === '/api/admin/system' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const mem = process.memoryUsage();
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedPercent = Math.round(((totalMem - freeMem) / totalMem) * 100);
+    const cpus = os.cpus();
+    const projects = db.prepare("SELECT id, title, build_status, is_published FROM projects WHERE build_status='done'").all();
+    const containers = [];
+    for (const p of projects) {
+      const running = await isContainerRunningAsync(p.id);
+      const lastAccess = containerLastAccess.get(p.id);
+      containers.push({
+        id: p.id, title: p.title, running, published: !!p.is_published,
+        lastAccess: lastAccess ? new Date(lastAccess).toISOString() : null,
+        sleeping: !running && !p.is_published
+      });
+    }
+    json(res, 200, {
+      memory: { total: totalMem, free: freeMem, used: totalMem - freeMem, percent: usedPercent, server: mem },
+      cpu: { cores: cpus.length, model: cpus[0]?.model },
+      uptime: Math.round(process.uptime()),
+      containers,
+      alert: usedPercent > 75 ? `RAM à ${usedPercent}% — envisagez un upgrade` : null
+    }); return;
+  }
 
   // ─── GITHUB CONFIG (admin only) ───
   if (url === '/api/admin/github/config' && req.method === 'GET') {
