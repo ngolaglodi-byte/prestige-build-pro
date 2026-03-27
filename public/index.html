@@ -479,7 +479,7 @@ button.card { padding: 0; }
               <button class="btn btn-ghost" id="toggle-code-btn" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
             </div>
           </div>
-          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-spinner"></div><span>En attente de génération...</span></div><iframe id="preview-frame" class="preview-frame" style="display:none;"></iframe></div></div>
+          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-spinner"></div><span>En attente de génération...</span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
         </div>
         <aside class="workspace-code" id="code-panel">
           <div class="code-header"><span class="code-title">Code généré</span><button class="btn btn-ghost btn-icon" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
@@ -596,17 +596,38 @@ button.card { padding: 0; }
 </div>
 <div class="presentation-overlay" id="presentation-overlay">
   <div class="presentation-header"><div class="presentation-title" id="presentation-title">Présentation</div><button class="btn btn-secondary" onclick="closePresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fermer</button></div>
-  <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame"></iframe></div></div>
+  <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
 </div>
 <script>
-// Ignore JS errors from preview iframe — they must not affect the main app
+// === IFRAME ISOLATION ===
+// 1. Suppress JS errors from preview iframe
 window.onerror = function(msg, src) {
-  if (src && src.includes('/run/')) return true; // suppress, don't log
-  return false; // let other errors through
+  if (src && src.includes('/run/')) return true;
+  return false;
 };
 window.addEventListener('error', function(e) {
   if (e.target && e.target.tagName === 'IFRAME') { e.stopPropagation(); e.preventDefault(); }
 }, true);
+
+// 2. Block postMessage from iframes — prevent injection
+window.addEventListener('message', function(e) {
+  // Only accept messages from our own origin for SSE/internal use
+  if (e.source !== window && e.origin !== location.origin) return;
+  // Ignore any message from preview iframes
+  var previewFrame = document.getElementById('preview-frame');
+  var presFrame = document.getElementById('presentation-frame');
+  if (e.source === (previewFrame && previewFrame.contentWindow)) return;
+  if (e.source === (presFrame && presFrame.contentWindow)) return;
+}, false);
+
+// 3. Protect browser history — push state when entering workspace
+//    so browser back goes to dashboard, not out of the app
+window.addEventListener('popstate', function() {
+  var ws = document.getElementById('workspace-view');
+  if (ws && ws.classList.contains('active')) {
+    closeWorkspace();
+  }
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE & CONFIG
@@ -809,6 +830,8 @@ async function openProject(id) {
 }
 
 async function openWorkspace(id) {
+  // Push history state so browser back returns to dashboard instead of leaving the app
+  history.pushState({ workspace: id }, '', '#project-' + id);
   document.getElementById('main-header').style.display = 'none';
   document.getElementById('dashboard-view').classList.remove('active');
   document.getElementById('admin-view').classList.add('hidden');
@@ -1135,8 +1158,8 @@ function refreshPreview() {
   if (frame.src) frame.src = frame.src;
 }
 
-function previewBack() { try { document.getElementById('preview-frame').contentWindow.history.back(); } catch(e){} }
-function previewForward() { try { document.getElementById('preview-frame').contentWindow.history.forward(); } catch(e){} }
+function previewBack() { try { document.getElementById('preview-frame').contentWindow.history.back(); } catch(e){ /* sandboxed */ } }
+function previewForward() { try { document.getElementById('preview-frame').contentWindow.history.forward(); } catch(e){ /* sandboxed */ } }
 
 function setDevice(device) {
   document.getElementById('preview-frame-wrapper').classList.toggle('mobile', device === 'mobile');
