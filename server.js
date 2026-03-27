@@ -82,6 +82,49 @@ try {
   console.warn('Failed to initialize Dockerode client:', e.message);
 }
 
+// ─── ANTHROPIC API RATE LIMIT HANDLER ───
+const API_MAX_RETRIES = 5;
+const API_QUEUE = [];
+let apiRunning = false;
+
+function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 0) {
+  const r = https.request(opts, apiRes => {
+    if (apiRes.statusCode === 429 || apiRes.statusCode === 529) {
+      // Rate limited or overloaded — wait and retry
+      let body = '';
+      apiRes.on('data', c => body += c);
+      apiRes.on('end', () => {
+        const retryAfter = parseInt(apiRes.headers['retry-after'] || '60');
+        const wait = Math.min(retryAfter, 120) * 1000;
+        if (retryCount < API_MAX_RETRIES) {
+          console.log(`[API] Rate limited (${apiRes.statusCode}), retry ${retryCount + 1}/${API_MAX_RETRIES} in ${wait / 1000}s`);
+          if (job) job.progressMessage = `File d'attente API... (tentative ${retryCount + 1}/${API_MAX_RETRIES})`;
+          setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), wait);
+        } else {
+          console.error(`[API] Rate limit exhausted after ${API_MAX_RETRIES} retries`);
+          onError(new Error('Limite API atteinte. Réessayez dans quelques minutes.'));
+        }
+      });
+      return;
+    }
+    onResponse(apiRes);
+  });
+  r.on('error', e => {
+    if (retryCount < 2) {
+      console.log(`[API] Network error, retrying in 5s: ${e.message}`);
+      setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), 5000);
+    } else {
+      onError(e);
+    }
+  });
+  r.setTimeout(CLAUDE_CODE_TIMEOUT_MS, () => {
+    r.destroy();
+    onError(new Error('Délai dépassé pour la génération API.'));
+  });
+  r.write(payload);
+  r.end();
+}
+
 // Preview system constants
 const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -923,18 +966,17 @@ function generateViaAPI(projectId, brief, jobId) {
 
   let accumulatedCode = '';
 
-  const r = https.request(opts, apiRes => {
+  anthropicRequest(payload, opts, (apiRes) => {
     if (apiRes.statusCode !== 200) {
       let errorBody = '';
       apiRes.on('data', chunk => { errorBody += chunk.toString(); });
       apiRes.on('end', () => {
         console.error(`[API Fallback] API returned ${apiRes.statusCode}: ${errorBody.substring(0, 500)}`);
         job.status = 'error';
-        job.error = `Erreur API Anthropic (${apiRes.statusCode}). Vérifiez la clé API.`;
+        job.error = `Erreur API (${apiRes.statusCode}).`;
       });
       return;
     }
-
     apiRes.on('data', chunk => {
       for (const line of chunk.toString().split('\n')) {
         if (!line.startsWith('data: ')) continue;
@@ -944,57 +986,29 @@ function generateViaAPI(projectId, brief, jobId) {
             accumulatedCode += d.delta.text;
             job.code = accumulatedCode;
             job.progress = accumulatedCode.length;
-
-            // Update progress message based on content
             const text = d.delta.text;
             if (text.includes('package.json')) job.progressMessage = 'Génération du package.json...';
             else if (text.includes('server.js')) job.progressMessage = 'Génération du backend Express...';
             else if (text.includes('index.html')) job.progressMessage = 'Génération du frontend...';
           }
           if (d.type === 'message_stop') {
-            // Write generated files to project directory
             try {
               writeGeneratedFiles(projectDir, accumulatedCode);
               job.status = 'done';
-              job.progressMessage = 'Projet généré avec succès via API !';
-              console.log(`[API Fallback] Generation successful for project ${projectId}`);
+              job.progressMessage = 'Projet généré avec succès !';
             } catch (writeErr) {
-              console.error(`[API Fallback] Error writing files: ${writeErr.message}`);
-              // Still mark as done — the code is in job.code for Docker build
               job.status = 'done';
-              job.progressMessage = 'Projet généré (écriture fichiers partielle).';
+              job.progressMessage = 'Projet généré (écriture partielle).';
             }
           }
-        } catch (e) {
-          // Ignore JSON parse errors for non-data lines
-        }
+        } catch (e) {}
       }
     });
-
-    apiRes.on('error', e => {
-      console.error(`[API Fallback] Stream error: ${e.message}`);
-      job.status = 'error';
-      job.error = `Erreur de stream API: ${e.message}`;
-    });
-  });
-
-  r.on('error', e => {
-    console.error(`[API Fallback] Request error: ${e.message}`);
+    apiRes.on('error', e => { job.status = 'error'; job.error = `Erreur stream: ${e.message}`; });
+  }, (e) => {
     job.status = 'error';
-    job.error = `Erreur de connexion API: ${e.message}`;
-  });
-
-  // Timeout for API request (5 minutes)
-  r.setTimeout(CLAUDE_CODE_TIMEOUT_MS, () => {
-    r.destroy();
-    if (job.status === 'running') {
-      job.status = 'error';
-      job.error = 'Délai dépassé pour la génération API.';
-    }
-  });
-
-  r.write(payload);
-  r.end();
+    job.error = e.message;
+  }, job);
 }
 
 // Write ### marked code sections to files in the project directory
@@ -1108,34 +1122,27 @@ Règles d'intégration automatique :
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2025-03-01','Content-Length':Buffer.byteLength(payload)} };
   
-  const r = https.request(opts, apiRes => {
+  anthropicRequest(payload, opts, (apiRes) => {
     apiRes.on('data', chunk => {
       for (const line of chunk.toString().split('\n')) {
         if (!line.startsWith('data: ')) continue;
         try {
           const d = JSON.parse(line.slice(6));
-          if (d.type === 'content_block_delta' && d.delta?.text) { 
-            job.code += d.delta.text; 
+          if (d.type === 'content_block_delta' && d.delta?.text) {
+            job.code += d.delta.text;
             job.progress = job.code.length;
           }
-          if (d.type === 'message_stop') { 
+          if (d.type === 'message_stop') {
             job.status = 'done';
           }
-        } catch(e) {
-          console.error('Generate parse error:', e.message);
-        }
+        } catch(e) {}
       }
     });
-    apiRes.on('error', e => { 
-      job.status = 'error';
-      job.error = e.message;
-    });
-  });
-  r.on('error', e => { 
+    apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
+  }, (e) => {
     job.status = 'error';
     job.error = e.message;
-  });
-  r.write(payload); r.end();
+  }, job);
 }
 
 // ─── GENERATE CLAUDE WITH IMAGE (NON-STREAMING, FOR POLLING) ───
