@@ -3540,9 +3540,16 @@ const server = http.createServer(async (req, res) => {
   // Login (no auth required)
   if (url==='/api/login' && req.method==='POST') {
     const {email,password}=await getBody(req);
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+      json(res, 400, { error: 'Email et mot de passe requis.' }); return;
+    }
     const bcrypt=require('bcryptjs');
-    const u=db.prepare('SELECT * FROM users WHERE email=?').get(email);
-    if (!u||!bcrypt.compareSync(password,u.password)) { json(res,401,{error:'Email ou mot de passe incorrect.'}); return; }
+    const u=db.prepare('SELECT * FROM users WHERE email=?').get(email.trim().toLowerCase());
+    if (!u||!bcrypt.compareSync(password,u.password)) {
+      console.log(`[Auth] Failed login attempt for: ${email}`);
+      json(res,401,{error:'Email ou mot de passe incorrect.'}); return;
+    }
+    console.log(`[Auth] Login: ${u.email} (${u.role})`);
     json(res,200,{token:signToken({id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}),user:{id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}});
     return;
   }
@@ -3572,7 +3579,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   const user=getAuth(req);
-  if (!user) { json(res,401,{error:'Non autorisé.'}); return; }
+  if (!user) { json(res,401,{error:'Session expirée. Veuillez vous reconnecter.'}); return; }
 
   // ─── GET JOB STATUS (POLLING) ───
   const jobMatch = url.match(/^\/api\/jobs\/([a-zA-Z0-9-]+)$/);

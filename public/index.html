@@ -682,8 +682,18 @@ let projectCredentials = null;
 async function api(url, method = 'GET', body = null) {
   const opts = { method, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(url, opts);
-  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'Erreur'); }
+  let r;
+  try { r = await fetch(url, opts); } catch (netErr) {
+    throw new Error('Connexion au serveur impossible. Vérifiez votre réseau.');
+  }
+  if (r.status === 401) {
+    token = null; localStorage.removeItem('token');
+    document.getElementById('login-screen').classList.add('active');
+    document.getElementById('dashboard-view').classList.remove('active');
+    document.getElementById('workspace-view').classList.remove('active');
+    throw new Error('Session expirée. Veuillez vous reconnecter.');
+  }
+  if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'Erreur serveur (' + r.status + ')'); }
   return r.json();
 }
 
@@ -695,20 +705,26 @@ function statusClass(s) { return 'badge-' + (s || 'draft'); }
 // ═══════════════════════════════════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════════════════════════════════
+document.getElementById('login-email').addEventListener('input', () => { document.getElementById('login-error').style.display = 'none'; });
+document.getElementById('login-password').addEventListener('input', () => { document.getElementById('login-error').style.display = 'none'; });
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const email = document.getElementById('login-email').value;
+  const email = document.getElementById('login-email').value.trim();
   const pass = document.getElementById('login-password').value;
   const errEl = document.getElementById('login-error');
+  if (!email || !pass) { errEl.textContent = 'Veuillez remplir tous les champs.'; errEl.style.display = 'block'; return; }
+  const btn = e.target.querySelector('button[type="submit"]');
+  const origText = btn.textContent;
+  btn.textContent = 'Connexion...'; btn.disabled = true;
   try {
     const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: pass }) });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.error || 'Erreur');
+    if (!r.ok) throw new Error(data.error || 'Email ou mot de passe incorrect');
     token = data.token;
     currentUser = data.user;
     localStorage.setItem('token', token);
     showApp();
-  } catch (err) { errEl.textContent = err.message; errEl.style.display = 'block'; }
+  } catch (err) { errEl.textContent = err.message; errEl.style.display = 'block'; } finally { btn.textContent = origText; btn.disabled = false; }
 });
 
 document.getElementById('logout-btn').addEventListener('click', () => {
@@ -741,10 +757,14 @@ async function loadStats() {
 }
 
 async function loadProjects() {
+  const grid = document.getElementById('projects-grid');
+  if (grid) grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">Chargement des projets...</div>';
   try {
     allProjects = await api('/api/projects') || [];
     renderProjects();
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    if (grid) grid.innerHTML = '<div style="text-align:center;padding:40px;color:var(--error);">Impossible de charger les projets. ' + escapeHtml(e.message) + '</div>';
+  }
 }
 
 function renderProjects() {
@@ -859,7 +879,17 @@ async function createAndGenerate() {
 // WORKSPACE
 // ═══════════════════════════════════════════════════════════════════════════
 async function openProject(id) {
-  try { currentProject = await api('/api/projects/' + id); await openWorkspace(id); } catch (e) { alert('Erreur: ' + e.message); }
+  // Show loading on the clicked card
+  const card = document.querySelector(`[onclick="openProject(${id})"]`);
+  if (card) { card.style.opacity = '0.5'; card.style.pointerEvents = 'none'; }
+  try {
+    currentProject = await api('/api/projects/' + id);
+    await openWorkspace(id);
+  } catch (e) {
+    addChatMessage('assistant', 'Erreur: ' + e.message);
+  } finally {
+    if (card) { card.style.opacity = '1'; card.style.pointerEvents = 'auto'; }
+  }
 }
 
 async function openWorkspace(id) {
