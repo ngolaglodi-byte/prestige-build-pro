@@ -3050,11 +3050,12 @@ async function monitorContainers() {
       const lastAccess = containerLastAccess.get(project.id) || 0;
       const idle = Date.now() - lastAccess;
 
-      // Auto-sleep: stop idle containers (unless published)
-      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && lastAccess > 0) {
-        console.log(`[Sleep] Stopping idle container for project ${project.id} (idle ${Math.round(idle / 60000)}min)`);
+      // Auto-sleep: stop idle pbp-project-* containers only (never the main Prestige container)
+      const targetContainer = getContainerName(project.id);
+      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && lastAccess > 0 && targetContainer.startsWith('pbp-project-')) {
+        console.log(`[Sleep] Stopping idle ${targetContainer} (idle ${Math.round(idle / 60000)}min)`);
         try {
-          const container = docker.getContainer(getContainerName(project.id));
+          const container = docker.getContainer(targetContainer);
           await container.stop({ t: 5 });
         } catch (e) { /* already stopped */ }
         continue;
