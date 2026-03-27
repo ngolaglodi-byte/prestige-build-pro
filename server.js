@@ -3364,6 +3364,44 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // PUBLISHED SITES — serve static files for *.prestige-build.dev subdomains
+  // ═══════════════════════════════════════════════════════════════════════════
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN) {
+    const subdomain = host.replace('.' + PUBLISH_DOMAIN, '').replace(/[^a-zA-Z0-9-]/g, '');
+    if (subdomain) {
+      const siteDir = path.join(SITES_DIR, subdomain);
+      if (fs.existsSync(siteDir)) {
+        // Serve published site static files
+        let filePath = path.join(siteDir, url === '/' ? 'index.html' : url);
+        // Directory → index.html
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+          filePath = path.join(filePath, 'index.html');
+        }
+        if (fs.existsSync(filePath) && isPathSafe(siteDir, filePath)) {
+          const ext = path.extname(filePath).toLowerCase();
+          const mimeTypes = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
+          const contentType = mimeTypes[ext] || 'application/octet-stream';
+          res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=3600' });
+          fs.createReadStream(filePath).pipe(res);
+          return;
+        }
+        // Fallback to index.html for SPA routing
+        const indexPath = path.join(siteDir, 'index.html');
+        if (fs.existsSync(indexPath)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          fs.createReadStream(indexPath).pipe(res);
+          return;
+        }
+      }
+      // Subdomain exists but no files — show "site not found"
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Site non trouvé</title></head><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0d1120;color:#e2e8f0;"><div style="text-align:center;"><h1 style="color:#D4A820;">Site non disponible</h1><p>${subdomain}.${PUBLISH_DOMAIN} n'est pas encore publié.</p></div></body></html>`);
+      return;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // DOCKER PROXY ROUTE: /run/:projectId/*
   // Proxies requests to isolated Docker containers running project previews
   // Path rewriting: /run/23/ → /, /run/23/api/login → /api/login
