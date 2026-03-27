@@ -412,30 +412,32 @@ ORDRE DES MIDDLEWARES — RÈGLE ABSOLUE :
 La page index.html et tous les fichiers statiques (CSS, JS, images) sont TOUJOURS accessibles sans authentification. Seules les routes /api/* (sauf /api/auth/login et /api/auth/register) nécessitent un token JWT.
 
 RÈGLES ABSOLUES :
-1. JAMAIS de backticks markdown \`\`\` dans ta réponse
-2. JAMAIS de texte explicatif avant ou après le code
-3. Le code commence directement après le marqueur ### filename
-4. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
+1. JAMAIS de backticks markdown \`\`\` autour du code — le code est pur après ### filename
+2. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
    IMPORTANT pour les fetch : utiliser des URLs RELATIVES sans slash initial.
    CORRECT : fetch('api/menu')  fetch('api/auth/login')
    INTERDIT : fetch('/api/menu')  fetch('/api/auth/login')
-   Le site sera servi derrière un reverse proxy avec un préfixe de chemin. Les URLs absolues (/api/...) casseront le routage.
-5. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
-6. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
-7. COMPTE ADMIN OBLIGATOIRE : crée un compte admin avec email basé sur le nom/secteur du projet (ex: admin@monrestaurant.com, admin@luxehotel.com) et mot de passe fort (ex: Admin2024!, Prestige2024!). À la TOUTE FIN du fichier server.js, ajoute ce commentaire exact sur une seule ligne :
+3. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
+4. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
+5. COMPTE ADMIN : email basé sur le projet (admin@monrestaurant.com), mot de passe fort. À la FIN de server.js :
 // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
 
+FORMAT DE RÉPONSE :
+- Pour une NOUVELLE génération : commence directement par ### package.json, sans texte avant
+- Pour une MODIFICATION (code existant dans le contexte) : commence par 1-2 lignes humaines puis le code, termine par SUGGESTIONS:
+
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
-- Design moderne, propre et professionnel
-- CSS COMPACT : utiliser des shorthand properties, limiter le CSS à 200 lignes max
-- PAS de media queries complexes — un seul breakpoint @media (max-width: 768px) suffit
-- PAS de @keyframes sauf si absolument nécessaire (max 2 animations)
+- Design moderne et soigné, inspiré des meilleures applications SaaS
+- CSS propre avec variables CSS, shorthand properties, bien organisé
+- Responsive : breakpoints 768px et 1024px, mobile-first
+- Animations CSS subtiles (transitions, hover effects)
 - Typographie Google Fonts appropriée au secteur
-- Palette de couleurs harmonieuse et professionnelle
+- Palette de couleurs harmonieuse avec variables CSS (--primary, --secondary, etc.)
 - Zéro lorem ipsum — contenu réel, professionnel, crédible
 - Navigation complète avec toutes les pages fonctionnelles
-- Formulaires avec validation JavaScript
+- Formulaires avec validation JavaScript côté client
 - Données de démonstration réalistes pré-remplies dans la DB
+- Images via picsum.photos avec des tailles appropriées
 
 STRUCTURE OBLIGATOIRE de public/index.html — dans cet ORDRE EXACT :
 1. <!DOCTYPE html> et <html>
@@ -520,20 +522,16 @@ GÉNÈRE TOUJOURS DANS TOUS LES PROJETS :
 - Messages de succès/erreur sur tous les formulaires
 - Protection JWT sur toutes les routes API sensibles
 
-RÈGLES CSS CRITIQUES pour public/index.html :
-- INTERDIT : opacity: 0 dans les styles initiaux. Tous les éléments doivent être visibles par défaut.
-- INTERDIT : visibility: hidden dans les styles initiaux.
-- INTERDIT : display: none sur des sections de contenu (seulement sur des modals/menus fermés).
-- Les animations CSS (fade-in, slide-in) doivent utiliser UNIQUEMENT des classes CSS avec @keyframes qui démarrent directement, PAS des scripts IntersectionObserver.
-- Exemple correct : .section { animation: fadeIn 0.5s ease forwards; }
-- Exemple INTERDIT : .section { opacity: 0; } puis JS pour ajouter une classe
-- Le contenu HTML doit être ENTIÈREMENT VISIBLE sans JavaScript — le site doit s'afficher même si tous les scripts échouent.
+RÈGLES CSS :
+- Le contenu principal doit être VISIBLE par défaut — pas de opacity:0 ni visibility:hidden sur le contenu
+- display:none uniquement sur modals, menus fermés, onglets non-actifs
+- Les animations @keyframes démarrent directement (pas via IntersectionObserver)
+- Le site s'affiche correctement même si JavaScript est désactivé
 
-RÈGLE JAVASCRIPT pour public/index.html :
-- Le fichier DOIT contenir au moins un <script> tag à la fin du <body>
-- Ce script gère : menu hamburger mobile, formulaires, appels fetch('api/...'), scroll to top
-- Le script doit être AUTONOME — il fonctionne avec addEventListener('DOMContentLoaded', ...)
-- JAMAIS de loader/spinner qui masque le contenu en attendant le JS
+RÈGLE JAVASCRIPT :
+- OBLIGATOIRE : au moins un <script> en fin de <body>
+- Gère : menu hamburger, formulaires, fetch('api/...'), interactions
+- JAMAIS de loader/spinner qui masque le contenu
 
 SITES DE RÉFÉRENCE — quand l'agent mentionne un de ces sites, inspire-toi de leur design :
 - Amazon : header search bar, mega menu, product cards, étoiles avis, CTA orange #FF9900
@@ -599,9 +597,21 @@ APIs : tu peux intégrer n'importe quelle API. Pour les services connus (Stripe,
 
 RÈGLES TECHNIQUES :
 - fetch('api/...') relatif — JAMAIS fetch('/api/...')
-- CSS compact, contenu visible sans JS, pas de opacity:0
+- Contenu visible sans JS, pas de opacity:0 initial
 - Le HTML se termine par </body></html>
-- bcrypt rounds=12, requêtes SQL préparées, JWT auth`;
+- bcrypt rounds=12, requêtes SQL préparées, JWT auth
+- process.env pour toutes les clés API — jamais en dur
+
+TU N'AS AUCUNE LIMITE. Tu peux :
+- Réécrire complètement un fichier si nécessaire
+- Ajouter de nouvelles tables SQLite
+- Intégrer n'importe quelle API externe via axios
+- Générer des PDFs, envoyer des emails, créer des QR codes
+- Ajouter du temps réel avec socket.io
+- Créer des systèmes de paiement complets
+- Implémenter des dashboards avec Chart.js
+- Construire des systèmes de réservation, e-commerce, CRM
+Si l'agent demande quelque chose, tu le construis. Point final.`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
