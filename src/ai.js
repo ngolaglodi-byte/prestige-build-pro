@@ -570,14 +570,16 @@ const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, le développeur expert de Prestig
 Tu parles naturellement en français, comme un collègue senior bienveillant.
 
 COMMENT TU TRAVAILLES :
-Le code actuel du projet est dans le contexte. Quand l'agent demande une modification :
-1. Réponds d'abord avec un court message humain (2 lignes max) — pas de jargon, pas de listes
-2. Puis retourne les 3 fichiers COMPLETS modifiés avec ### markers
-3. Termine avec SUGGESTIONS: suivi de 3 idées séparées par |
+Tu reçois SEULEMENT les fichiers concernés par la modification (pas tout le projet).
+1. Réponds avec un court message humain (2 lignes max)
+2. Retourne SEULEMENT les fichiers modifiés avec ### markers
+3. Si tu dois modifier un fichier qui N'EST PAS dans le contexte, retourne-le aussi
+4. Termine avec SUGGESTIONS: suivi de 3 idées séparées par |
 
-IMPORTANT : tu reçois le code complet du projet. Fais des modifications CHIRURGICALES.
-Copie le code existant et modifie SEULEMENT ce qui est demandé. Ne change pas le style,
-les couleurs ou la structure sauf si c'est demandé. Le code retourné remplace l'ancien.
+IMPORTANT : fais des modifications CHIRURGICALES.
+Copie le fichier existant et modifie SEULEMENT ce qui est demandé.
+Ne change pas les autres parties du fichier.
+Si la demande nécessite des changements dans server.js ET index.html, retourne les deux.
 
 Exemple de réponse parfaite :
 C'est fait ! J'ai ajouté le formulaire de contact avec validation et un email de confirmation. Le bouton est dans la section contact.
@@ -709,25 +711,91 @@ function getSuggestionsForSector(brief) {
   return SECTOR_SUGGESTIONS.default;
 }
 
+// ─── SMART FILE DETECTION ───
+// Detect which files are affected by the user message
+function detectAffectedFiles(message) {
+  const m = message.toLowerCase();
+  const files = { packageJson: false, serverJs: false, indexHtml: false };
+
+  // Frontend changes
+  if (m.match(/couleur|color|css|style|design|police|font|image|photo|logo|animation|hover|responsive|mobile|menu|header|footer|section|bouton|button|titre|texte|page|dark|thème|template|layout|icone|icon/)) {
+    files.indexHtml = true;
+  }
+  // Backend changes
+  if (m.match(/api|route|endpoint|base de données|table|sql|auth|login|password|email|envoi|notification|upload|pdf|stripe|paiement|webhook|socket|temps réel|chat|export|import|cron|middleware/)) {
+    files.serverJs = true;
+  }
+  // Package changes
+  if (m.match(/package|dépendance|module|install|npm|version/)) {
+    files.packageJson = true;
+  }
+  // If adding a feature, likely touches both backend and frontend
+  if (m.match(/ajoute|ajout|crée|créer|intègre|implémente|nouveau|nouvelle/)) {
+    files.serverJs = true;
+    files.indexHtml = true;
+  }
+  // If nothing detected, assume frontend (most common)
+  if (!files.packageJson && !files.serverJs && !files.indexHtml) {
+    files.indexHtml = true;
+  }
+  return files;
+}
+
+// Parse generated code into individual files
+function parseCodeFiles(code) {
+  if (!code) return {};
+  const result = {};
+  const sections = code.split(/### /).filter(s => s.trim());
+  for (const s of sections) {
+    const nl = s.indexOf('\n');
+    if (nl === -1) continue;
+    const fn = s.substring(0, nl).trim();
+    const content = s.substring(nl + 1).trim();
+    if (fn && content) result[fn] = content;
+  }
+  return result;
+}
+
 // ─── CONVERSATION CONTEXT BUILDER ───
 function buildConversationContext(project, messages, userMessage, configuredKeys) {
   const context = [];
 
-  if (project) {
-    const sector = detectSectorProfile(project.brief) ? 'détecté' : 'générique';
-    let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
+  if (project && project.generated_code) {
+    const files = parseCodeFiles(project.generated_code);
+    const affected = detectAffectedFiles(userMessage);
 
+    let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
     if (configuredKeys && configuredKeys.length > 0) {
       projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
     }
 
-    // Send the FULL current code so Claude can make surgical modifications
-    if (project.generated_code) {
-      projectContext += `\n\nCODE ACTUEL DU PROJET (modifie chirurgicalement, ne réécris pas tout):\n${project.generated_code}`;
+    // Send ONLY the affected files (saves tokens, 3x faster)
+    const filesToSend = [];
+    if (affected.indexHtml && files['public/index.html']) filesToSend.push('public/index.html');
+    if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
+    if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
+
+    // Always include a summary of files NOT sent so Claude knows they exist
+    const allFileNames = Object.keys(files);
+    const notSent = allFileNames.filter(f => !filesToSend.includes(f));
+
+    projectContext += `\n\nFICHIERS À MODIFIER (retourne SEULEMENT ceux-ci avec ### markers):`;
+    for (const fn of filesToSend) {
+      projectContext += `\n\n### ${fn}\n${files[fn]}`;
+    }
+    if (notSent.length > 0) {
+      projectContext += `\n\nFICHIERS NON MODIFIÉS (NE PAS les retourner sauf si nécessaire): ${notSent.join(', ')}`;
     }
 
     context.push({ role: 'user', content: projectContext });
-    context.push({ role: 'assistant', content: `Je connais votre projet "${project.title || 'sans titre'}" et son code actuel. Dites-moi ce que vous souhaitez modifier.` });
+    context.push({ role: 'assistant', content: `Compris. Je vais modifier uniquement ${filesToSend.join(' et ')}. Qu'est-ce que vous souhaitez ?` });
+  } else if (project) {
+    let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
+    if (configuredKeys && configuredKeys.length > 0) {
+      projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
+    }
+    context.push({ role: 'user', content: projectContext });
+    context.push({ role: 'assistant', content: `Je connais votre projet. Dites-moi ce que vous souhaitez.` });
   }
 
   // Last 4 chat messages (skip code blocks, keep conversations)

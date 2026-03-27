@@ -972,6 +972,42 @@ function generateViaAPI(projectId, brief, jobId) {
 }
 
 // Write ### marked code sections to files in the project directory
+// Merge modified files with existing code — keeps files Claude didn't return
+function mergeModifiedCode(existingCode, newCode) {
+  const existingFiles = {};
+  const newFiles = {};
+  // Parse existing
+  const eSections = existingCode.split(/### /).filter(s => s.trim());
+  for (const s of eSections) {
+    const nl = s.indexOf('\n');
+    if (nl === -1) continue;
+    const fn = s.substring(0, nl).trim();
+    if (fn) existingFiles[fn] = s.substring(nl + 1).trim();
+  }
+  // Parse new (may be partial — only modified files)
+  const nSections = newCode.split(/### /).filter(s => s.trim());
+  for (const s of nSections) {
+    const nl = s.indexOf('\n');
+    if (nl === -1) continue;
+    const fn = s.substring(0, nl).trim();
+    if (fn) newFiles[fn] = s.substring(nl + 1).trim();
+  }
+  // Merge: new files override existing, existing files kept if not in new
+  const merged = { ...existingFiles, ...newFiles };
+  // Rebuild code string
+  const order = ['package.json', 'server.js', 'public/index.html'];
+  let result = '';
+  for (const fn of order) {
+    if (merged[fn]) {
+      result += (result ? '\n\n' : '') + `### ${fn}\n${merged[fn]}`;
+    }
+  }
+  const modifiedCount = Object.keys(newFiles).length;
+  const totalCount = Object.keys(merged).length;
+  console.log(`[Merge] ${modifiedCount} file(s) modified, ${totalCount} total`);
+  return result;
+}
+
 function writeGeneratedFiles(projectDir, code) {
   const sections = code.split(/^### /m).filter(s => s.trim());
   for (const section of sections) {
@@ -1104,11 +1140,16 @@ Règles d'intégration automatique :
           }
           // Handle completion
           if (d.type === 'message_stop') {
+            // Merge: Claude may return only modified files — merge with existing code
             if (job.project_id && job.code.includes('### ')) {
               try {
+                const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+                if (existingCode && existingCode.generated_code) {
+                  job.code = mergeModifiedCode(existingCode.generated_code, job.code);
+                }
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 writeGeneratedFiles(projDir, job.code);
-                console.log(`[Claude API] Files written to ${projDir}`);
+                console.log(`[Claude API] Files merged and written to ${projDir}`);
               } catch (wErr) { console.error('[Claude API] Write error:', wErr.message); }
             }
             job.status = 'done';
@@ -1124,10 +1165,13 @@ Règles d'intégration automatique :
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
     apiRes.on('end', () => {
-      // If stream ended without message_stop, check if we got code
       if (job.status === 'running' && job.code.length > 0) {
         if (job.project_id && job.code.includes('### ')) {
           try {
+            const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+            if (existingCode && existingCode.generated_code) {
+              job.code = mergeModifiedCode(existingCode.generated_code, job.code);
+            }
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
             writeGeneratedFiles(projDir, job.code);
           } catch (wErr) {}
