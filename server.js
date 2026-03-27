@@ -2362,15 +2362,21 @@ async function buildDockerProject(projectId, code, onProgress) {
     if (fs.existsSync(indexHtmlPath)) {
       try {
         const htmlContent = fs.readFileSync(indexHtmlPath, 'utf8');
-        const hasHtmlStructure = htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html');
+        const hasDoctype = htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html');
+        const hasBody = htmlContent.includes('<body');
+        const hasClosingHtml = htmlContent.includes('</html>');
         const hasNodeCode = /\brequire\s*\(/.test(htmlContent) && !htmlContent.includes('<!-- server-side script removed -->');
-        if (hasHtmlStructure && !hasNodeCode) {
-          indexHtmlValid = true;
-          console.log(`[Docker Build] ✓ public/index.html contains valid HTML structure`);
+        const isTruncated = hasDoctype && (!hasBody || !hasClosingHtml);
+
+        if (isTruncated) {
+          console.warn(`[Docker Build] ✗ public/index.html is TRUNCATED (has <html> but missing ${!hasBody ? '<body>' : '</html>'})`);
         } else if (hasNodeCode) {
           console.warn(`[Docker Build] ✗ public/index.html still contains require() after sanitization`);
+        } else if (hasDoctype && hasBody && hasClosingHtml) {
+          indexHtmlValid = true;
+          console.log(`[Docker Build] ✓ public/index.html is complete HTML (${htmlContent.length} bytes)`);
         } else {
-          console.warn(`[Docker Build] ✗ public/index.html missing <!DOCTYPE html>`);
+          console.warn(`[Docker Build] ✗ public/index.html missing HTML structure`);
         }
       } catch (readError) {
         console.warn(`[Docker Build] ✗ Error reading public/index.html: ${readError.message}`);

@@ -367,7 +367,7 @@ function detectProjectComplexity(brief) {
 
 function getMaxTokensForProject(brief) {
   const complexity = detectProjectComplexity(brief);
-  return complexity === 'complex' ? 16000 : 8000;
+  return complexity === 'complex' ? 32000 : 16000;
 }
 
 function getModelForProject(brief) {
@@ -427,15 +427,25 @@ RÈGLES ABSOLUES :
 // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
 
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
-- Design moderne inspiré des meilleures applications SaaS mondiales
-- Animations CSS subtiles — transitions, fade-in, hover effects
-- Responsive mobile-first avec breakpoints 320px, 768px, 1024px, 1440px
+- Design moderne, propre et professionnel
+- CSS COMPACT : utiliser des shorthand properties, limiter le CSS à 200 lignes max
+- PAS de media queries complexes — un seul breakpoint @media (max-width: 768px) suffit
+- PAS de @keyframes sauf si absolument nécessaire (max 2 animations)
 - Typographie Google Fonts appropriée au secteur
 - Palette de couleurs harmonieuse et professionnelle
 - Zéro lorem ipsum — contenu réel, professionnel, crédible
 - Navigation complète avec toutes les pages fonctionnelles
 - Formulaires avec validation JavaScript
 - Données de démonstration réalistes pré-remplies dans la DB
+
+STRUCTURE OBLIGATOIRE de public/index.html — dans cet ORDRE EXACT :
+1. <!DOCTYPE html> et <html>
+2. <head> avec <meta charset>, <title>, <style> (CSS COMPACT)
+3. </head>
+4. <body> avec TOUT le contenu HTML visible
+5. <script> en fin de body avec TOUT le JavaScript
+6. </body></html>
+Le fichier DOIT se terminer par </body></html>. Un fichier tronqué est INACCEPTABLE.
 
 PROFILS SECTORIELS — appliqués automatiquement selon le brief :
 
