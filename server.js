@@ -48,6 +48,29 @@ const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
 const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
 const DOCKER_NETWORK = 'pbp-projects';
 const DOCKER_BASE_IMAGE = 'pbp-base';
+
+// ─── ENCRYPTION FOR API KEYS AT REST ───
+const ENCRYPT_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest();
+function encryptValue(text) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
+  let enc = cipher.update(text, 'utf8', 'hex');
+  enc += cipher.final('hex');
+  const tag = cipher.getAuthTag().toString('hex');
+  return iv.toString('hex') + ':' + tag + ':' + enc;
+}
+function decryptValue(encrypted) {
+  try {
+    const [ivHex, tagHex, enc] = encrypted.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const tag = Buffer.from(tagHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
+    decipher.setAuthTag(tag);
+    let dec = decipher.update(enc, 'hex', 'utf8');
+    dec += decipher.final('utf8');
+    return dec;
+  } catch { return encrypted; } // fallback for unencrypted legacy values
+}
 const DOCKER_HEALTH_TIMEOUT = 15000; // 15 seconds max wait for container health
 const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 
@@ -2435,12 +2458,14 @@ WORKDIR /app
 COPY package.json ./
 COPY server.js ./
 COPY public/ ./public/
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && chown -R appuser:appgroup /app
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
 ENV NODE_OPTIONS="--max-old-space-size=256"
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
+USER appuser
 CMD ["node", "server.js"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
@@ -2483,7 +2508,7 @@ CMD ["node", "server.js"]
     const projectEnv = ['PORT=3000'];
     if (db) {
       const keys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(projectId);
-      keys.forEach(k => projectEnv.push(`${k.env_name}=${k.env_value}`));
+      keys.forEach(k => projectEnv.push(`${k.env_name}=${decryptValue(k.env_value)}`));
       if (keys.length > 0) console.log(`[Docker Build] Injecting ${keys.length} API keys as env vars`);
     }
 
@@ -2496,7 +2521,10 @@ CMD ["node", "server.js"]
       HostConfig: {
         NetworkMode: DOCKER_NETWORK,
         RestartPolicy: { Name: 'unless-stopped' },
-        Binds: [`${dataDir}:/app/data`]
+        Binds: [`${dataDir}:/app/data`],
+        Memory: 512 * 1024 * 1024,    // 512MB max
+        NanoCpus: 500000000,           // 0.5 CPU
+        SecurityOpt: ['no-new-privileges']
       }
     });
     console.log(`[Docker Build] Container created, starting...`);
@@ -2966,6 +2994,45 @@ async function autoCorrectProject(projectId, onProgress) {
 }
 
 // Monitor all active containers every 30 seconds
+// ─── PROJECT BACKUP SYSTEM ───
+const BACKUP_DIR = '/data/backups';
+const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const MAX_BACKUPS = 7;
+
+async function backupProject(projectId) {
+  const projectDataDir = path.join(DOCKER_PROJECTS_DIR, String(projectId), 'data');
+  const dbFile = path.join(projectDataDir, 'database.db');
+  if (!fs.existsSync(dbFile)) return null;
+
+  const backupDir = path.join(BACKUP_DIR, String(projectId));
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupFile = path.join(backupDir, `${timestamp}.db`);
+  fs.copyFileSync(dbFile, backupFile);
+
+  // Prune old backups, keep last MAX_BACKUPS
+  const backups = fs.readdirSync(backupDir).filter(f => f.endsWith('.db')).sort().reverse();
+  for (let i = MAX_BACKUPS; i < backups.length; i++) {
+    fs.unlinkSync(path.join(backupDir, backups[i]));
+  }
+
+  console.log(`[Backup] Project ${projectId} backed up: ${backupFile}`);
+  return backupFile;
+}
+
+async function backupAllProjects() {
+  if (!db) return;
+  try {
+    const projects = db.prepare("SELECT id FROM projects WHERE build_status='done'").all();
+    let count = 0;
+    for (const p of projects) {
+      try { if (await backupProject(p.id)) count++; } catch (e) { /* skip */ }
+    }
+    if (count > 0) console.log(`[Backup] ${count} projects backed up`);
+  } catch (e) { console.error('[Backup] Error:', e.message); }
+}
+
 async function monitorContainers() {
   if (!db || !isDockerAvailable()) return;
   
@@ -4124,6 +4191,45 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/apikeys' && req.method==='POST') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} const {name,service,key_value,description}=await getBody(req); const i=db.prepare('INSERT INTO api_keys (name,service,key_value,description) VALUES (?,?,?,?)').run(name,service,key_value,description); json(res,200,{id:i.lastInsertRowid}); return; }
   if (url.match(/^\/api\/apikeys\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM api_keys WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
 
+  // ─── PROJECT BACKUPS ───
+  if (url.match(/^\/api\/projects\/\d+\/backups$/) && req.method === 'GET') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const bDir = path.join(BACKUP_DIR, String(pid));
+    if (!fs.existsSync(bDir)) { json(res, 200, []); return; }
+    const backups = fs.readdirSync(bDir).filter(f => f.endsWith('.db')).sort().reverse().map(f => ({
+      filename: f,
+      date: f.replace('.db', '').replace(/-/g, (m, i) => i < 10 ? '-' : i < 13 ? 'T' : i < 16 ? ':' : '.'),
+      size: fs.statSync(path.join(bDir, f)).size
+    }));
+    json(res, 200, backups); return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/backup$/) && req.method === 'POST') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const pid = parseInt(url.split('/')[3]);
+    try {
+      const file = await backupProject(pid);
+      json(res, 200, { ok: true, file: file ? path.basename(file) : null });
+    } catch (e) { json(res, 500, { error: e.message }); }
+    return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/restore$/) && req.method === 'POST') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const pid = parseInt(url.split('/')[3]);
+    const { filename } = await getBody(req);
+    if (!filename) { json(res, 400, { error: 'filename requis.' }); return; }
+    const bFile = path.join(BACKUP_DIR, String(pid), path.basename(filename));
+    const dbFile = path.join(DOCKER_PROJECTS_DIR, String(pid), 'data', 'database.db');
+    if (!fs.existsSync(bFile)) { json(res, 404, { error: 'Backup non trouvé.' }); return; }
+    try {
+      fs.copyFileSync(bFile, dbFile);
+      await restartContainerAsync(pid);
+      json(res, 200, { ok: true, message: 'Backup restauré et container redémarré.' });
+    } catch (e) { json(res, 500, { error: e.message }); }
+    return;
+  }
+
   // ─── PROJECT API KEYS ───
   if (url.match(/^\/api\/projects\/\d+\/keys$/) && req.method === 'GET') {
     const pid = parseInt(url.split('/')[3]);
@@ -4140,7 +4246,7 @@ const server = http.createServer(async (req, res) => {
     if (!env_name || !env_value) { json(res, 400, { error: 'env_name et env_value requis.' }); return; }
     // Upsert: replace if same env_name exists for this project
     db.prepare('DELETE FROM project_api_keys WHERE project_id=? AND env_name=?').run(pid, env_name);
-    db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(pid, env_name, env_value, service || '');
+    db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(pid, env_name, encryptValue(env_value), service || '');
     console.log(`[API Keys] Set ${env_name} for project ${pid}`);
     json(res, 200, { ok: true }); return;
   }
@@ -4331,4 +4437,9 @@ server.listen(PORT, ()=>{
     console.log('Starting container monitoring (30s interval)...');
     setInterval(monitorContainers, CONTAINER_MONITORING_INTERVAL);
   }
+
+  // Start automatic backups every 6 hours
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  setInterval(backupAllProjects, BACKUP_INTERVAL_MS);
+  console.log('Automatic backup system active (every 6h)');
 });

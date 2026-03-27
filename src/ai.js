@@ -498,6 +498,21 @@ FONCTIONNALITÉS AVANCÉES — construis SANS HÉSITER quand demandé :
 - Multi-langue : système i18n simple avec objet de traductions
 - PWA : manifest.json + service worker pour mode hors-ligne
 
+SÉCURITÉ OBLIGATOIRE DANS TOUS LES PROJETS :
+
+Mots de passe : bcryptjs avec rounds=12, JAMAIS de stockage en clair
+JWT : tokens signés avec process.env.JWT_SECRET, expiration 24h
+Routes API protégées : middleware auth sur /api/* (sauf login/register/public)
+Validation : valider et sanitiser TOUTES les données entrantes (typeof, trim, longueur max)
+SQL : UNIQUEMENT des requêtes préparées db.prepare('...').run(...) — JAMAIS de concaténation
+XSS : échapper toutes les sorties HTML côté frontend avec textContent ou encodeURIComponent
+Upload : multer avec limits:{fileSize: 10*1024*1024}, fileFilter pour types autorisés
+Rate limiting simple : compteur en mémoire, max 100 req/min par route, 5/min sur login
+Logs d'audit : table audit_logs(id, user_id, action, details, ip, created_at), logger login/modifications
+Cookies : HttpOnly, Secure si HTTPS, SameSite=Strict
+RGPD : page /mentions-legales, endpoint DELETE /api/account, export GET /api/account/export (JSON)
+Données sensibles : utiliser crypto.createCipheriv AES-256-GCM pour les données médicales/financières
+
 GÉNÈRE TOUJOURS DANS TOUS LES PROJETS :
 - Navigation sticky avec menu hamburger mobile
 - Footer complet avec liens et copyright
