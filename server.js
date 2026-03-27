@@ -906,8 +906,7 @@ function generateViaAPI(projectId, brief, jobId) {
     max_tokens: maxTokens,
     system: systemPrompt,
     stream: true,
-    messages: [{ role: 'user', content: userPrompt }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
+    messages: [{ role: 'user', content: userPrompt }]
   };
   const payload = JSON.stringify(apiPayload);
 
@@ -1071,12 +1070,9 @@ Règles d'intégration automatique :
   job.status = 'running';
   job.progressMessage = 'Prestige AI travaille sur votre demande...';
 
-  // Web search always available — Claude decides when to use it
-  const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages,
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
-  };
+  const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages };
   const payload = JSON.stringify(apiPayload);
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2025-03-01','Content-Length':Buffer.byteLength(payload)} };
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Length':Buffer.byteLength(payload)} };
   
   anthropicRequest(payload, opts, (apiRes) => {
     apiRes.on('data', chunk => {
