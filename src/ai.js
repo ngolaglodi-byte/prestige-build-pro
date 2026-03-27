@@ -371,7 +371,7 @@ function getMaxTokensForProject(brief) {
 }
 
 function getModelForProject() {
-  return 'claude-sonnet-4-6';
+  return 'claude-sonnet-4-20250514';
 }
 
 const SYSTEM_PROMPT = `Tu es Prestige AI, un générateur de code expert niveau senior. Tu génères des applications web fullstack COMPLÈTES et PROFESSIONNELLES.

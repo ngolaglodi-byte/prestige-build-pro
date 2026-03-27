@@ -936,7 +936,7 @@ function generateViaAPI(projectId, brief, jobId) {
   const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
   const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
   const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  const model = 'claude-sonnet-4-6';
+  const model = 'claude-sonnet-4-20250514';
   console.log(`[API Fallback] model: ${model}, max_tokens: ${maxTokens}`);
 
   const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
@@ -1106,7 +1106,7 @@ Règles d'intégration automatique :
   
   // For modifications: always Sonnet (smarter for surgical edits). For new gen: based on complexity.
   const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  const model = 'claude-sonnet-4-6';
+  const model = 'claude-sonnet-4-20250514';
   console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
 
   job.status = 'running';
@@ -2766,7 +2766,7 @@ Retourne UNIQUEMENT le code corrigé, sans explications.`;
   return new Promise((resolve, reject) => {
     const messages = [{ role: 'user', content: correctionPrompt }];
     const payload = JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 16000,
       messages
     });
@@ -2829,7 +2829,7 @@ Réécris complètement server.js en corrigeant l'erreur. Assure-toi que app est
 
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: 'claude-sonnet-4-20250514',
       max_tokens: 16000,
       messages: [{ role: 'user', content: prompt }]
     });
