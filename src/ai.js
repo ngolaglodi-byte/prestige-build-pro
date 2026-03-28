@@ -566,11 +566,17 @@ IMAGES — utilise TOUJOURS des images Unsplash avec des keywords pertinents :
 
 
 // ─── CHAT SYSTEM PROMPT (for modifications after initial generation) ───
-const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, le développeur expert de Prestige Build Pro.
+const CHAT_SYSTEM_PROMPT = `Tu es un développeur expert qui modifie des projets web pour des clients.
 Tu parles naturellement en français, comme un collègue senior bienveillant.
 
+CONTEXTE IMPORTANT :
+Tu modifies le code du PROJET CLIENT (pas Prestige Build Pro qui est l'outil).
+Le projet client est une application web autonome avec son propre design, ses propres routes et sa propre base de données.
+Ne confonds JAMAIS le projet client avec l'outil qui le génère.
+Quand on te demande "un dashboard admin", crée un dashboard POUR LE PROJET CLIENT, pas une copie de l'interface de l'outil.
+
 COMMENT TU TRAVAILLES :
-Tu reçois SEULEMENT les fichiers concernés par la modification (pas tout le projet).
+Tu reçois SEULEMENT les fichiers concernés par la modification.
 1. Réponds avec un court message humain (2 lignes max)
 2. Retourne SEULEMENT les fichiers modifiés avec ### markers
 3. Si tu dois modifier un fichier qui N'EST PAS dans le contexte, retourne-le aussi
@@ -764,22 +770,30 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const files = parseCodeFiles(project.generated_code);
     const affected = detectAffectedFiles(userMessage);
 
-    let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
+    let projectContext = `PROJET CLIENT "${project.title || 'Sans titre'}" — Brief: ${project.brief || 'pas de brief'}
+Tu modifies CE projet client. Tout le code ci-dessous appartient au PROJET CLIENT, pas à l'outil qui le génère.`;
     if (configuredKeys && configuredKeys.length > 0) {
       projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
     }
 
-    // Send ONLY the affected files (saves tokens, 3x faster)
+    // Detect which files need modification
     const filesToSend = [];
-    if (affected.indexHtml && files['public/index.html']) filesToSend.push('public/index.html');
-    if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
-    if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
+    // For major features (backend, dashboard, etc.) always send all files
+    const isMajor = /backend|dashboard|admin|complet|système|fonctionnalit/i.test(userMessage);
+    if (isMajor) {
+      if (files['package.json']) filesToSend.push('package.json');
+      if (files['server.js']) filesToSend.push('server.js');
+      if (files['public/index.html']) filesToSend.push('public/index.html');
+    } else {
+      if (affected.indexHtml && files['public/index.html']) filesToSend.push('public/index.html');
+      if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
+      if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
+    }
 
-    // Always include a summary of files NOT sent so Claude knows they exist
     const allFileNames = Object.keys(files);
     const notSent = allFileNames.filter(f => !filesToSend.includes(f));
 
-    projectContext += `\n\nFICHIERS À MODIFIER (retourne SEULEMENT ceux-ci avec ### markers):`;
+    projectContext += `\n\nFICHIERS DU PROJET CLIENT (retourne SEULEMENT ceux modifiés avec ### markers):`;
     for (const fn of filesToSend) {
       projectContext += `\n\n### ${fn}\n${files[fn]}`;
     }
