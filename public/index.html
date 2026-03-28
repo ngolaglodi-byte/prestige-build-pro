@@ -1356,8 +1356,32 @@ async function autoCompile() {
     console.error('[AUTOCOMPILE] Cannot compile: currentProject.id is missing');
     return;
   }
-  console.log('COMPILE TRIGGERED');
-  console.log('[AUTOCOMPILE] Starting for project:', currentProject.id);
+
+  // Try hot reload first if container is already running (~3s instead of 30-60s)
+  if (currentProject.build_status === 'done') {
+    try {
+      const status = document.getElementById('preview-status');
+      const loading = document.getElementById('preview-loading');
+      status.className = 'preview-status generating';
+      status.innerHTML = '<span>Mise à jour rapide...</span>';
+      loading.style.display = 'flex';
+      loading.querySelector('span').textContent = 'Application des modifications...';
+      document.getElementById('preview-frame').style.display = 'none';
+
+      const r = await api('/api/hot-reload', 'POST', { project_id: currentProject.id });
+      if (r.hot) {
+        // Hot reload succeeded — just refresh the iframe
+        console.log('[AUTOCOMPILE] Hot reload succeeded');
+        loadDockerPreview(r.url);
+        return;
+      }
+      console.log('[AUTOCOMPILE] Hot reload failed:', r.reason, '— falling back to full build');
+    } catch (e) {
+      console.log('[AUTOCOMPILE] Hot reload error:', e.message, '— falling back to full build');
+    }
+  }
+
+  // Full Docker rebuild
   await compileProject();
 }
 

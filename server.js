@@ -3907,18 +3907,66 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ─── COMPILE (DOCKER ISOLATED PREVIEW) ───
+  // ─── HOT RELOAD: update files in running container without full rebuild (~3s) ───
+  if (url === '/api/hot-reload' && req.method === 'POST') {
+    const { project_id } = await getBody(req);
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
+    if (!project?.generated_code) { json(res, 400, { error: 'Pas de code.' }); return; }
+    if (user.role !== 'admin' && project.user_id !== user.id) { json(res, 403, { error: 'Accès refusé.' }); return; }
+
+    const containerName = getContainerName(project_id);
+    const running = await isContainerRunningAsync(project_id);
+
+    if (!running) {
+      // Container not running — need full build
+      json(res, 200, { hot: false, reason: 'container_not_running' }); return;
+    }
+
+    try {
+      console.log(`[Hot Reload] Updating files in ${containerName}`);
+      const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
+      const container = docker.getContainer(containerName);
+
+      // Copy updated files into the running container
+      const { execSync } = require('child_process');
+      execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+      execSync(`docker cp ${projDir}/public/index.html ${containerName}:/app/public/index.html`, { timeout: 10000 });
+
+      // Restart the Node process inside the container
+      await container.restart({ t: 2 });
+
+      // Wait for health
+      await new Promise(r => setTimeout(r, 2000));
+      const healthy = await waitForContainerHealth(project_id, 8000);
+
+      if (healthy) {
+        db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${project_id}/`, project_id);
+        console.log(`[Hot Reload] ${containerName} updated in ~3s`);
+        json(res, 200, { hot: true, url: `/run/${project_id}/` });
+      } else {
+        // Hot reload failed — container unhealthy after restart
+        console.warn(`[Hot Reload] ${containerName} unhealthy after restart — need full build`);
+        json(res, 200, { hot: false, reason: 'unhealthy_after_restart' });
+      }
+    } catch (e) {
+      console.error(`[Hot Reload] Error: ${e.message}`);
+      json(res, 200, { hot: false, reason: e.message });
+    }
+    return;
+  }
+
   if (url==='/api/compile' && req.method==='POST') {
     const {project_id, mode}=await getBody(req);
     console.log('[COMPILE] Starting for project:', project_id);
     const project=db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
     if (!project?.generated_code) { json(res,400,{error:'Générez le code d\'abord.'}); return; }
-    
+
     // Authorization check: user must own the project or be admin
     if (user.role !== 'admin' && project.user_id !== user.id) {
       json(res, 403, { error: 'Accès refusé à ce projet.' });
       return;
     }
-    
+
     const buildId=crypto.randomBytes(8).toString('hex');
     db.prepare('INSERT INTO builds (id,project_id,status,progress,message) VALUES (?,?,?,?,?)').run(buildId,project_id,'building',0,'Démarrage...');
     db.prepare("UPDATE projects SET build_id=?,build_status='building' WHERE id=?").run(buildId,project_id);
