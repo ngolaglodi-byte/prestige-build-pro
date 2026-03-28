@@ -2790,6 +2790,21 @@ async function buildDockerProject(projectId, code, onProgress) {
     // VALIDATION 4: index.html must have <div id="root"> and module script
     validateReactIndexHtml(projectDir);
 
+    // VALIDATION 5: vite.config.js must have allowedHosts: true (required for Docker DNS access)
+    const viteConfigPath = path.join(projectDir, 'vite.config.js');
+    if (fs.existsSync(viteConfigPath)) {
+      let viteConfig = fs.readFileSync(viteConfigPath, 'utf8');
+      if (!viteConfig.includes('allowedHosts')) {
+        // Inject allowedHosts: true after port: 5173
+        viteConfig = viteConfig.replace(
+          /(port:\s*5173\s*,?)/,
+          '$1\n    allowedHosts: true,'
+        );
+        fs.writeFileSync(viteConfigPath, viteConfig);
+        console.log(`[Docker Build] Patched vite.config.js: added allowedHosts: true`);
+      }
+    }
+
     console.log(`[Docker Build] React project validation completed`);
 
     // Step 2.5: Create Dockerfile for React + Vite project
