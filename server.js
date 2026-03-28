@@ -973,6 +973,109 @@ function generateViaAPI(projectId, brief, jobId) {
 
 // Write ### marked code sections to files in the project directory
 // Merge modified files with existing code — keeps files Claude didn't return
+// Validate generated server.js syntax and auto-fix with Claude (like Lovable)
+async function validateAndFixCode(projectId, code, maxAttempts = 3) {
+  const projDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  const serverJsPath = path.join(projDir, 'server.js');
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Write files to disk
+    writeGeneratedFiles(projDir, code);
+
+    // Check if server.js exists and validate syntax
+    if (!fs.existsSync(serverJsPath)) break;
+    try {
+      const { spawnSync } = require('child_process');
+      const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
+      if (result.status === 0) {
+        console.log(`[Validate] server.js syntax OK (attempt ${attempt})`);
+        return code; // Valid — return as-is
+      }
+      const error = (result.stderr || result.stdout || '').substring(0, 500);
+      console.log(`[Validate] Syntax error (attempt ${attempt}/${maxAttempts}): ${error.substring(0, 100)}`);
+
+      if (attempt >= maxAttempts) break;
+
+      // Send error back to Claude to fix
+      const fixPrompt = `Le server.js du projet a cette erreur de syntaxe:\n${error}\n\nCorrige UNIQUEMENT l'erreur. Retourne le server.js complet corrigé avec ### server.js`;
+      const fixPayload = JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 32000,
+        messages: [
+          { role: 'user', content: `### server.js\n${fs.readFileSync(serverJsPath, 'utf8')}` },
+          { role: 'user', content: fixPrompt }
+        ]
+      });
+      const fixOpts = { hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(fixPayload) }
+      };
+
+      const fixedCode = await new Promise((resolve, reject) => {
+        const req = https.request(fixOpts, res => {
+          let d = ''; res.on('data', c => d += c);
+          res.on('end', () => {
+            try {
+              const r = JSON.parse(d);
+              const text = r.content?.[0]?.text || '';
+              if (text.includes('### server.js')) {
+                // Merge the fixed server.js with existing code
+                resolve(mergeModifiedCode(code, text));
+              } else { resolve(code); }
+            } catch { resolve(code); }
+          });
+        });
+        req.on('error', () => resolve(code));
+        req.setTimeout(60000, () => { req.destroy(); resolve(code); });
+        req.write(fixPayload); req.end();
+      });
+      code = fixedCode;
+      console.log(`[Validate] Fix received from Claude, retrying...`);
+    } catch (e) {
+      console.error(`[Validate] Error: ${e.message}`);
+      break;
+    }
+  }
+  return code;
+}
+
+// Build a project structure summary for Claude (like Lovable showing the file tree)
+function buildProjectStructure(code) {
+  const files = {};
+  code.split(/### /).filter(s => s.trim()).forEach(s => {
+    const nl = s.indexOf('\n');
+    if (nl === -1) return;
+    const fn = s.substring(0, nl).trim();
+    const content = s.substring(nl + 1).trim();
+    if (fn) files[fn] = content;
+  });
+
+  let structure = 'STRUCTURE DU PROJET:\n';
+  for (const [fn, content] of Object.entries(files)) {
+    if (fn === 'server.js') {
+      // Extract routes and tables
+      const routes = (content.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []);
+      const tables = (content.match(/CREATE TABLE[^(]+/g) || []);
+      structure += `\n📄 server.js (${content.length} chars)\n`;
+      structure += `  Routes: ${routes.slice(0, 15).join(', ')}\n`;
+      structure += `  Tables: ${tables.join(', ')}\n`;
+    } else if (fn === 'public/index.html') {
+      const pages = (content.match(/showPage\(['"][^'"]+['"]\)/g) || []);
+      const sections = (content.match(/id="[^"]*page[^"]*"/gi) || []);
+      structure += `\n📄 public/index.html (${content.length} chars)\n`;
+      structure += `  Pages SPA: ${pages.join(', ')}\n`;
+      structure += `  Sections: ${sections.join(', ')}\n`;
+    } else if (fn === 'package.json') {
+      try {
+        const pkg = JSON.parse(content);
+        const deps = Object.keys(pkg.dependencies || {});
+        structure += `\n📄 package.json — ${pkg.name}\n`;
+        structure += `  Dependencies: ${deps.join(', ')}\n`;
+      } catch { structure += `\n📄 package.json\n`; }
+    }
+  }
+  return structure;
+}
+
 function mergeModifiedCode(existingCode, newCode) {
   const existingFiles = {};
   const newFiles = {};
@@ -1138,21 +1241,9 @@ Règles d'intégration automatique :
           if (d.type === 'content_block_start' && d.content_block?.type === 'text') {
             job.progressMessage = 'Prestige AI rédige le code...';
           }
-          // Handle completion
+          // Handle completion — set flag, process in 'end' handler
           if (d.type === 'message_stop') {
-            // Merge: Claude may return only modified files — merge with existing code
-            if (job.project_id && job.code.includes('### ')) {
-              try {
-                const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
-                if (existingCode && existingCode.generated_code) {
-                  job.code = mergeModifiedCode(existingCode.generated_code, job.code);
-                }
-                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-                writeGeneratedFiles(projDir, job.code);
-                console.log(`[Claude API] Files merged and written to ${projDir}`);
-              } catch (wErr) { console.error('[Claude API] Write error:', wErr.message); }
-            }
-            job.status = 'done';
+            job._messageComplete = true;
           }
           // Handle errors in stream
           if (d.type === 'error') {
@@ -1164,18 +1255,22 @@ Règles d'intégration automatique :
       }
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
-    apiRes.on('end', () => {
+    apiRes.on('end', async () => {
       if (job.status === 'running' && job.code.length > 0) {
-        if (job.project_id && job.code.includes('### ')) {
-          try {
+        try {
+          // Merge with existing code if modification
+          if (job.project_id && job.code.includes('### ')) {
             const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
             if (existingCode && existingCode.generated_code) {
               job.code = mergeModifiedCode(existingCode.generated_code, job.code);
             }
-            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-            writeGeneratedFiles(projDir, job.code);
-          } catch (wErr) {}
-        }
+          }
+          // Validate and auto-fix syntax (like Lovable)
+          if (job.project_id) {
+            job.progressMessage = 'Vérification du code...';
+            job.code = await validateAndFixCode(job.project_id, job.code);
+          }
+        } catch (e) { console.error('[Claude API] Post-process error:', e.message); }
         job.status = 'done';
       } else if (job.status === 'running') {
         job.status = 'error';

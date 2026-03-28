@@ -771,11 +771,23 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const files = parseCodeFiles(project.generated_code);
     const affected = detectAffectedFiles(userMessage);
 
-    let projectContext = `PROJET CLIENT "${project.title || 'Sans titre'}" — Brief: ${project.brief || 'pas de brief'}
-Tu modifies CE projet client. Tout le code ci-dessous appartient au PROJET CLIENT, pas à l'outil qui le génère.`;
+    // Build project structure overview (like Lovable's file tree)
+    let structure = 'PROJET CLIENT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
     if (configuredKeys && configuredKeys.length > 0) {
-      projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
+      structure += 'APIs: ' + configuredKeys.map(k => k.env_name).join(', ') + '\n';
     }
+    // Extract structure from code
+    const serverJs = files['server.js'] || '';
+    const routes = (serverJs.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []).slice(0, 20);
+    const tables = (serverJs.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+    const htmlPages = ((files['public/index.html'] || '').match(/showPage\(['"]([^'"]+)['"]\)/g) || []);
+    structure += '\nSTRUCTURE:\n';
+    structure += '  Routes API: ' + (routes.length ? routes.join(', ') : 'aucune') + '\n';
+    structure += '  Tables SQLite: ' + (tables.length ? tables.join(', ') : 'aucune') + '\n';
+    structure += '  Pages SPA: ' + (htmlPages.length ? htmlPages.join(', ') : 'aucune') + '\n';
+    structure += '\nTu modifies CE projet client. Applique UNIQUEMENT le changement demandé.';
+
+    let projectContext = structure;
 
     // Detect which files need modification
     const filesToSend = [];
