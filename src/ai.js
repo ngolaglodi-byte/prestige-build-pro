@@ -417,6 +417,9 @@ RÈGLES ABSOLUES :
    IMPORTANT pour les fetch : utiliser des URLs RELATIVES sans slash initial.
    CORRECT : fetch('api/menu')  fetch('api/auth/login')
    INTERDIT : fetch('/api/menu')  fetch('/api/auth/login')
+   NAVIGATION : le site est une SPA — JAMAIS de window.location.href = '/...'
+   Utiliser des sections <div class="page"> avec display:none/block et showPage('admin')
+   Après login, faire showPage('dashboard') — PAS de redirection window.location
 3. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
 4. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
 5. COMPTE ADMIN : email basé sur le projet (admin@monrestaurant.com), mot de passe fort. À la FIN de server.js :
@@ -609,6 +612,10 @@ APIs : tu peux intégrer n'importe quelle API. Pour les services connus (Stripe,
 
 RÈGLES TECHNIQUES :
 - fetch('api/...') relatif — JAMAIS fetch('/api/...')
+- JAMAIS de window.location.href = '/...' ni window.location = '/...'
+- Navigation entre pages : utiliser des sections avec display:none/block et une fonction showPage('admin')
+- Le site est une SPA (Single Page Application) — TOUT dans un seul index.html
+- Pas de redirection HTTP, pas de window.location avec chemin absolu
 - Contenu visible sans JS, pas de opacity:0 initial
 - Le HTML se termine par </body></html>
 - bcrypt rounds=12, requêtes SQL préparées, JWT auth

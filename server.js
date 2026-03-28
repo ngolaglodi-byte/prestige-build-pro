@@ -3249,9 +3249,13 @@ async function proxyToContainer(req, res, projectId, targetPath) {
         try {
           const pid = Number(projectId);
           const baseTag = `<base href="/run/${pid}/">`;
-          const proxyScript = `<script>(function(){` +
+          const proxyScript = `<script>(function(){var B='/run/${pid}/';` +
             `var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};` +
             `var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};` +
+            // Intercept window.location changes that would navigate to Prestige
+            `var _a=HTMLAnchorElement.prototype;Object.defineProperty(_a,'href',{set:function(v){if(typeof v==='string'&&v.startsWith('/')&&!v.startsWith(B))v=B+v.substring(1);this.setAttribute('href',v);}});` +
+            // Intercept form actions
+            `document.addEventListener('submit',function(e){var a=e.target.action;if(a&&a.includes(location.origin)&&!a.includes(B)){e.target.action=a.replace(location.origin+'/',location.origin+B);}},true);` +
             // Visibility rescue: fix opacity:0, visibility:hidden, and SPA .page display:none
             `window.addEventListener('load',function(){` +
             `document.querySelectorAll('*').forEach(function(el){var s=getComputedStyle(el);if(s.opacity==='0')el.style.opacity='1';if(s.visibility==='hidden')el.style.visibility='visible';});` +
