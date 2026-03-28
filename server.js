@@ -2292,6 +2292,10 @@ async function buildDockerProject(projectId, code, onProgress) {
   const imageName = `pbp-project-${projectId}:latest`;
 
   console.log(`[Docker Build] Starting build for project ${projectId}`);
+
+  // Ensure pbp-base image exists before every build (Coolify prunes it during deploys)
+  await ensureBaseImage();
+
   console.log(`[Docker Build] Project directory: ${projectDir}`);
   console.log(`[Docker Build] Container name: ${containerName}`);
   console.log(`[Docker Build] Image name: ${imageName}`);
