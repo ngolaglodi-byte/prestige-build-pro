@@ -1,4 +1,4 @@
-// ─── PROFESSIONAL AI SYSTEM FOR PRESTIGE BUILD PRO ───
+// ─── PROFESSIONAL AI SYSTEM FOR PRESTIGE BUILD PRO v2 (React + Vite) ───
 
 // ─── SECTOR PROFILES (INVISIBLE TEMPLATES) ───
 const SECTOR_PROFILES = {
@@ -9,24 +9,21 @@ Tu génères un site pour le secteur médical/santé. Applique automatiquement :
 
 **Design :**
 - Couleurs apaisantes : blanc dominant, bleu médical (#0077B6), vert menthe (#2EC4B6)
-- Typographie claire : Nunito, Open Sans ou Inter
+- Typographie claire : Inter ou system-ui
 - Espaces généreux, design épuré inspirant confiance
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, numéro d'urgence visible, bouton RDV
-- Hero rassurant avec photo d'équipe ou établissement
-- Présentation de l'équipe médicale avec photos et spécialités
-- Services médicaux avec icônes explicites
-- Prise de rendez-vous en ligne (formulaire ou intégration Doctolib)
-- Horaires et urgences bien visibles
-- Certifications et accréditations
-- Témoignages patients
-- Contact avec carte et infos d'accès
+- HeroSection rassurant avec photo d'équipe
+- TeamSection : grille de médecins avec spécialités
+- ServicesSection : cartes avec icônes Lucide
+- AppointmentForm : formulaire de prise de RDV
+- ScheduleSection : horaires et urgences
+- TestimonialsSection : témoignages patients
+- ContactSection : carte et infos d'accès
 
-**Accessibilité WCAG :**
-- Contraste suffisant, police lisible min 16px
-- Navigation clavier, attributs aria
-- Textes alternatifs sur images`
+**Tables SQLite :** patients, doctors, appointments, services
+**Pages React :** Home, Services, Team, Appointments, Contact`
   },
   restaurant: {
     keywords: ['restaurant', 'café', 'bistro', 'traiteur', 'cuisine', 'pizzeria', 'brasserie', 'gastronomie', 'chef', 'menu'],
@@ -35,24 +32,21 @@ Tu génères un site pour la restauration. Applique automatiquement :
 
 **Design :**
 - Ambiance chaleureuse : couleurs terre (marron, crème, or)
-- Typographie élégante : Playfair Display pour titres, Lato pour texte
-- Grande photo hero appétissante occupant l'écran
+- Typographie élégante : Playfair Display pour titres
+- Grande photo hero appétissante
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, bouton réservation, horaires
-- Hero plein écran avec photo signature du restaurant
-- Menu interactif organisé par catégories
-- Galerie photos des plats en grille attractive
-- À propos du chef et de l'établissement
-- Réservation en ligne (formulaire avec date/heure/couverts)
-- Horaires d'ouverture bien visibles
-- Localisation avec carte Google Maps
-- Avis clients TripAdvisor/Google style
+- HeroSection plein écran avec photo signature
+- MenuSection : menu interactif avec catégories (useState pour filtres)
+- GallerySection : grille photos des plats
+- AboutSection : histoire du chef et du restaurant
+- ReservationForm : formulaire date/heure/couverts
+- ReviewsSection : avis clients
+- ContactSection : carte et localisation
 
-**Ambiance visuelle :**
-- Photos haute qualité des plats
-- Animations subtiles au scroll
-- Icônes food élégantes`
+**Tables SQLite :** menu_items, categories, reservations, reviews
+**Pages React :** Home, Menu, Reservation, About, Contact`
   },
   ecommerce: {
     keywords: ['boutique', 'vente', 'produits', 'shop', 'magasin', 'e-commerce', 'acheter', 'panier', 'commande', 'livraison'],
@@ -64,22 +58,18 @@ Tu génères une boutique en ligne. Applique automatiquement :
 - Mise en avant des produits
 - CTA visibles : Ajouter au panier, Acheter maintenant
 
-**Sections indispensables :**
-- Header avec logo, recherche, panier, compte
-- Hero promotionnel avec produit vedette
-- Catalogue produits avec filtres (catégorie, prix, taille)
-- Fiches produits détaillées (images, description, prix, variantes)
-- Panier persistant avec récapitulatif
-- Checkout simplifié avec Stripe
-- Avis clients par produit
-- Section promotions et nouveautés
-- Footer avec CGV, livraison, retours
+**Composants React à créer :**
+- Header avec logo, SearchBar, CartIcon avec badge count
+- HeroSection promotionnel avec produit vedette
+- ProductGrid : catalogue avec filtres (useState/useEffect)
+- ProductCard : photo, prix, bouton ajout panier
+- CartDrawer : panier latéral avec récapitulatif
+- FilterSidebar : filtres catégorie, prix, taille
+- CheckoutForm : formulaire de commande
+- ReviewStars : composant d'avis étoilés
 
-**Fonctionnalités :**
-- Filtres dynamiques
-- Zoom sur images produit
-- Indicateur stock
-- Produits similaires`
+**Tables SQLite :** products, categories, orders, order_items, reviews, cart_items
+**Pages React :** Home, Products, ProductDetail, Cart, Checkout, Account`
   },
   corporate: {
     keywords: ['entreprise', 'société', 'services', 'b2b', 'consulting', 'conseil', 'cabinet', 'agence', 'industrie', 'groupe'],
@@ -89,24 +79,21 @@ Tu génères un site d'entreprise professionnel. Applique automatiquement :
 **Design :**
 - Style sobre et professionnel
 - Couleurs corporate : bleu marine, gris, touches d'accent
-- Typographie business : Poppins, Roboto
+- Typographie business : Inter, system-ui
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, navigation, bouton contact
-- Hero impactant avec proposition de valeur
-- Services détaillés avec icônes et descriptions
-- Chiffres clés animés (clients, projets, années)
-- Équipe dirigeante avec photos et LinkedIn
-- Témoignages clients B2B
-- Logos clients de référence
-- Actualités / Blog
-- Formulaire de contact business
+- HeroSection impactant avec proposition de valeur
+- ServicesSection : cartes détaillées avec icônes Lucide
+- StatsCounter : chiffres clés animés (clients, projets, années)
+- TeamSection : dirigeants avec photos et LinkedIn
+- TestimonialsSection : témoignages clients B2B
+- ClientLogos : logos de référence en défilement
+- ContactForm : formulaire business
 - Footer complet avec mentions légales
 
-**Ton :**
-- Professionnel mais accessible
-- Chiffres et résultats concrets
-- Call-to-action clairs`
+**Tables SQLite :** services, team_members, testimonials, contacts
+**Pages React :** Home, Services, About, Team, Contact`
   },
   saas: {
     keywords: ['application', 'logiciel', 'plateforme', 'saas', 'startup', 'tech', 'solution', 'outil', 'software', 'cloud'],
@@ -114,25 +101,22 @@ Tu génères un site d'entreprise professionnel. Applique automatiquement :
 Tu génères une landing page SaaS moderne. Applique automatiquement :
 
 **Design :**
-- Style moderne tech : gradients subtils, glassmorphism
-- Couleurs vives : violet, bleu électrique, accents néon
+- Style moderne tech : gradients subtils via Tailwind
+- Couleurs vives : violet, bleu électrique, accents
 - Typographie moderne : Inter, DM Sans
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header sticky avec logo, features, pricing, CTA "Essayer gratuit"
-- Hero avec headline percutante, sous-titre, CTA et visual produit
-- Section features avec icônes Lucide et descriptions
-- Démonstration interactive ou vidéo
-- Pricing avec 3 tiers (Free, Pro, Enterprise)
-- Intégrations (logos partenaires)
-- Témoignages avec photos et entreprises
-- FAQ technique accordéon
-- CTA final "Commencer maintenant"
+- HeroSection avec headline percutante, sous-titre, CTA et visual
+- FeaturesGrid : icônes Lucide et descriptions
+- PricingTable : 3 tiers (Free, Pro, Enterprise) avec toggle mensuel/annuel
+- IntegrationsSection : logos partenaires
+- TestimonialsSection : avec photos et entreprises
+- FAQAccordion : questions techniques avec state open/close
+- CTASection final "Commencer maintenant"
 
-**Animations :**
-- Fade-in au scroll
-- Hover effects sur cards
-- Curseur personnalisé (optionnel)`
+**Tables SQLite :** users, plans, subscriptions, features
+**Pages React :** Home, Features, Pricing, Dashboard, Login`
   },
   education: {
     keywords: ['école', 'formation', 'cours', 'université', 'académie', 'apprentissage', 'enseignement', 'étudiant', 'professeur', 'diplôme'],
@@ -141,25 +125,21 @@ Tu génères un site éducatif. Applique automatiquement :
 
 **Design :**
 - Couleurs inspirantes : bleu savoir, orange dynamique, blanc
-- Typographie lisible : Nunito, Source Sans Pro
+- Typographie lisible : Inter, system-ui
 - Interface intuitive et accessible
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, formations, connexion espace élève
-- Hero motivant avec accroche et bouton inscription
-- Catalogue des formations avec filtres
-- Fiches formation (durée, niveau, objectifs, programme)
-- Profils formateurs avec expertise
-- Témoignages étudiants avec résultats
-- Calendrier des sessions
-- Processus d'inscription étape par étape
-- Certifications et reconnaissances
-- Blog éducatif / ressources
+- HeroSection motivant avec accroche et bouton inscription
+- CourseCatalog : catalogue avec filtres (catégorie, niveau, durée)
+- CourseCard : durée, niveau, objectifs, prix
+- InstructorSection : profils formateurs
+- TestimonialsSection : étudiants avec résultats
+- ScheduleCalendar : sessions à venir
+- EnrollmentForm : inscription étape par étape
 
-**Fonctionnalités :**
-- Recherche de formations
-- Inscription en ligne
-- Espace membre`
+**Tables SQLite :** courses, instructors, students, enrollments, sessions
+**Pages React :** Home, Courses, CourseDetail, Instructors, Enroll, StudentDashboard`
   },
   realestate: {
     keywords: ['immobilier', 'agence', 'appartements', 'maisons', 'location', 'achat', 'vente immobilière', 'logement', 'propriété', 'bien'],
@@ -169,23 +149,20 @@ Tu génères un site immobilier. Applique automatiquement :
 **Design :**
 - Style premium : noir, or, blanc
 - Photos immobilières plein format
-- Typographie élégante : Cormorant Garamond, Montserrat
+- Typographie élégante
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, recherche rapide, espace propriétaire
-- Hero avec barre de recherche avancée (localisation, type, budget)
-- Biens en vedette avec photos, prix, caractéristiques
-- Filtres avancés (surface, chambres, parking, etc.)
-- Fiches propriétés complètes avec galerie, plan, caractéristiques
-- Carte interactive des biens
-- Profils agents avec contact direct
-- Estimation en ligne
-- Guides acheteur/vendeur/locataire
+- HeroSection avec SearchBar avancée (localisation, type, budget)
+- PropertyGrid : biens avec photos, prix, caractéristiques
+- PropertyCard : photo, prix, surface, chambres, localisation
+- FilterPanel : filtres avancés (surface, chambres, parking)
+- PropertyDetail : galerie, plan, caractéristiques complètes
+- AgentCard : profil agent avec contact direct
+- ContactForm : demande de visite
 
-**Fonctionnalités :**
-- Recherche avec filtres
-- Favoris
-- Alertes email`
+**Tables SQLite :** properties, agents, visits, favorites, contacts
+**Pages React :** Home, Properties, PropertyDetail, Agents, Contact`
   },
   hotel: {
     keywords: ['hôtel', 'resort', 'chambre', 'voyage', 'tourisme', 'hébergement', 'réservation', 'séjour', 'vacances', 'spa'],
@@ -195,23 +172,20 @@ Tu génères un site hôtelier. Applique automatiquement :
 **Design :**
 - Ambiance luxueuse : couleurs chaudes, or, beige
 - Photos plein écran inspirantes
-- Typographie élégante : Libre Baskerville, Raleway
+- Typographie élégante
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, langues, bouton réservation
-- Hero immersif avec vidéo ou slider des lieux
-- Moteur de réservation (dates, chambres, personnes)
-- Présentation des chambres avec galerie et tarifs
-- Services et équipements (spa, restaurant, piscine)
-- Galerie photos immersive
-- Localisation et activités à proximité
-- Avis guests
-- Offres spéciales et packages
+- HeroSection immersif avec slider
+- BookingWidget : moteur de réservation (dates, chambres, personnes)
+- RoomCard : galerie et tarifs par chambre
+- ServicesSection : spa, restaurant, piscine avec icônes
+- GallerySection : photos immersives en grille
+- ReviewsSection : avis guests
+- OffersSection : packages et offres spéciales
 
-**Expérience :**
-- Navigation fluide
-- Lazy loading images
-- Disponibilités en temps réel`
+**Tables SQLite :** rooms, reservations, services, reviews, offers
+**Pages React :** Home, Rooms, RoomDetail, Services, Gallery, Booking`
   },
   portfolio: {
     keywords: ['portfolio', 'photographe', 'designer', 'artiste', 'créatif', 'freelance', 'studio', 'création', 'graphiste', 'illustrateur'],
@@ -221,23 +195,20 @@ Tu génères un portfolio créatif. Applique automatiquement :
 **Design :**
 - Design minimal mettant en valeur les œuvres
 - Fond neutre : blanc, noir ou gris clair
-- Typographie design : Playfair Display, Helvetica Neue
+- Typographie design
 
-**Sections indispensables :**
-- Header minimal avec logo/nom et navigation
-- Hero impactant avec une œuvre signature
-- Galerie projets en grille avec hover effects
-- Fiches projet avec images, contexte, processus
-- À propos avec photo et biographie
-- Process créatif / méthode de travail
-- Clients et collaborations
-- Contact avec formulaire de brief
+**Composants React à créer :**
+- Header minimal avec nom et navigation
+- HeroSection impactant avec œuvre signature
+- ProjectGrid : grille projets avec hover effects (Tailwind transitions)
+- ProjectCard : image, titre, catégorie
+- ProjectDetail : images, contexte, processus
+- AboutSection : photo et biographie
+- ProcessSection : méthode de travail
+- ContactForm : formulaire de brief
 
-**Effets visuels :**
-- Transitions smooth entre pages
-- Curseur personnalisé
-- Animations au scroll subtiles
-- Lightbox pour images`
+**Tables SQLite :** projects, categories, clients, contacts
+**Pages React :** Home, Projects, ProjectDetail, About, Contact`
   },
   nonprofit: {
     keywords: ['association', 'ong', 'humanitaire', 'bénévolat', 'don', 'solidarité', 'fondation', 'caritative', 'aide', 'cause'],
@@ -246,25 +217,21 @@ Tu génères un site associatif. Applique automatiquement :
 
 **Design :**
 - Couleurs engagées selon la cause
-- Photos émotionnelles de terrain
+- Photos émotionnelles
 - Design accessible et chaleureux
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, mission, bouton don
-- Hero émotionnel avec appel à l'action
-- Mission et valeurs de l'association
-- Impact et chiffres (personnes aidées, projets)
-- Projets en cours avec avancement
-- Comment aider (don, bénévolat, parrainage)
-- Formulaire de don sécurisé Stripe
-- Équipe et bénévoles
-- Actualités / Blog
-- Transparence financière (rapports)
+- HeroSection émotionnel avec appel à l'action
+- MissionSection : valeurs de l'association
+- ImpactCounter : personnes aidées, projets (chiffres animés)
+- ProjectsSection : projets en cours avec avancement
+- DonationForm : formulaire de don
+- VolunteerForm : inscription bénévole
+- TransparencySection : rapports financiers
 
-**Appels à l'action :**
-- Boutons don visibles
-- Formulaires d'engagement
-- Partage social`
+**Tables SQLite :** projects, donations, volunteers, events, reports
+**Pages React :** Home, Mission, Projects, Donate, Volunteer, Contact`
   },
   dashboard: {
     keywords: ['dashboard', 'admin', 'gestion', 'back-office', 'erp', 'tableau de bord', 'analytics', 'statistiques', 'crm', 'interne'],
@@ -272,26 +239,22 @@ Tu génères un site associatif. Applique automatiquement :
 Tu génères une interface admin/dashboard. Applique automatiquement :
 
 **Design :**
-- Interface fonctionnelle : sidebar + contenu principal
+- Interface fonctionnelle : Sidebar + contenu principal
 - Couleurs sobres : gris, bleu, accents pour actions
 - Composants UI clairs : cards, tables, boutons
 
-**Sections indispensables :**
-- Sidebar navigation avec icônes
-- Header avec recherche, notifications, profil
-- Dashboard avec KPIs en cards
-- Graphiques interactifs (Chart.js ou Recharts)
-- Tableaux de données avec tri et pagination
-- Formulaires CRUD complets
-- Gestion utilisateurs et rôles
-- Paramètres et configuration
-- Export de données (CSV, PDF)
+**Composants React à créer :**
+- Sidebar : navigation avec icônes Lucide, collapsible
+- TopBar : recherche, notifications badge, profil dropdown
+- StatCard : KPI card avec icône, valeur, variation
+- DataTable : tableau triable avec pagination (useState)
+- ChartCard : wrapper pour Chart.js (useEffect pour init)
+- FormModal : modal CRUD avec validation
+- UserManagement : liste utilisateurs avec rôles
+- SettingsPanel : configuration
 
-**Fonctionnalités :**
-- State management
-- Filtres et recherche
-- Actions groupées
-- Notifications toast`
+**Tables SQLite :** selon domaine métier + users, roles, audit_logs
+**Pages React :** Dashboard, Users, Settings, Reports + pages métier`
   },
   fitness: {
     keywords: ['sport', 'fitness', 'salle de sport', 'coach', 'nutrition', 'musculation', 'entraînement', 'gym', 'crossfit', 'yoga'],
@@ -300,25 +263,22 @@ Tu génères un site fitness. Applique automatiquement :
 
 **Design :**
 - Style énergique : noir, couleurs vives (orange, vert)
-- Photos dynamiques de personnes en action
-- Typographie forte : Bebas Neue, Oswald
+- Photos dynamiques
+- Typographie forte
 
-**Sections indispensables :**
+**Composants React à créer :**
 - Header avec logo, planning, espace membre
-- Hero motivant avec CTA "Commencer"
-- Planning des cours interactif
-- Présentation des activités (CrossFit, Yoga, etc.)
-- Profils coachs avec spécialités
-- Formules d'abonnement avec prix
-- Galerie transformations avant/après
-- Témoignages membres
-- Blog nutrition/santé
-- Contact et localisation
+- HeroSection motivant avec CTA "Commencer"
+- ScheduleGrid : planning des cours interactif (useState pour jour)
+- ClassCard : activité, coach, horaire, places
+- CoachCard : photo, spécialités, certifications
+- PricingSection : formules d'abonnement
+- TransformationGallery : avant/après
+- TestimonialsSection : membres
+- ContactSection : localisation
 
-**Énergie visuelle :**
-- Animations dynamiques
-- Compteurs animés
-- Progress bars`
+**Tables SQLite :** classes, coaches, members, subscriptions, schedules
+**Pages React :** Home, Schedule, Classes, Coaches, Pricing, Contact`
   }
 };
 
@@ -326,11 +286,10 @@ Tu génères un site fitness. Applique automatiquement :
 function detectSectorProfile(brief) {
   if (!brief) return null;
   const b = brief.toLowerCase();
-  
-  // Score each sector by counting keyword matches
+
   let bestMatch = null;
   let highestScore = 0;
-  
+
   for (const [sector, profile] of Object.entries(SECTOR_PROFILES)) {
     let score = 0;
     for (const keyword of profile.keywords) {
@@ -343,7 +302,7 @@ function detectSectorProfile(brief) {
       bestMatch = profile.prompt;
     }
   }
-  
+
   return highestScore > 0 ? bestMatch : null;
 }
 
@@ -374,209 +333,149 @@ function getModelForProject() {
   return 'claude-sonnet-4-20250514';
 }
 
-const SYSTEM_PROMPT = `Tu es Prestige AI, un générateur de code expert niveau senior. Tu génères des applications web fullstack COMPLÈTES et PROFESSIONNELLES.
+// ─── REACT + VITE MULTI-FILE SYSTEM PROMPT ───
+const SYSTEM_PROMPT = `Tu es Prestige AI, un générateur de code expert React/Vite niveau senior. Tu génères des applications web fullstack COMPLÈTES et PROFESSIONNELLES avec React + Vite + TailwindCSS.
 
 FORMAT DE SORTIE OBLIGATOIRE — utilise exactement ces marqueurs sans backticks markdown :
 
 ### package.json
 {contenu JSON pur}
 
+### vite.config.js
+{config Vite}
+
+### index.html
+{HTML racine avec <div id="root"> et <script type="module" src="/src/main.jsx">}
+
 ### server.js
-{code JavaScript pur}
+{backend Express}
 
-### public/index.html
-{code HTML pur}
+### src/main.jsx
+{point d'entrée React}
 
-VERSIONS OBLIGATOIRES — utilise EXACTEMENT ces versions dans package.json et server.js :
-- express 4.18.2 — JAMAIS express 5.x
+### src/index.css
+{styles globaux Tailwind}
+
+### src/App.jsx
+{composant racine avec Router}
+
+### src/components/Header.jsx
+{composant Header}
+
+### src/components/Footer.jsx
+{composant Footer}
+
+### src/pages/Home.jsx
+{page d'accueil}
+
+(+ autant de ### src/components/*.jsx et ### src/pages/*.jsx que nécessaire)
+
+STACK TECHNIQUE OBLIGATOIRE :
+- React 19.1.0 avec JSX
+- Vite 6.3.5 + @vitejs/plugin-react 4.5.2
+- TailwindCSS 4.1.7 via @tailwindcss/vite 4.1.7
+- React Router DOM 7.6.1
+- Lucide React 0.511.0 pour les icônes
+- clsx 2.1.1 pour les classes conditionnelles
+- Express 4.18.2 backend (server.js)
 - better-sqlite3 9.4.3
-- bcryptjs 2.4.3
-- jsonwebtoken 9.0.2
-- cors 2.8.5
-- helmet 7.1.0
-- compression 1.7.4
+- bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2.8.5, helmet 7.1.0, compression 1.7.4
 
-SYNTAXE EXPRESS 4.18.2 OBLIGATOIRE :
-- Route catch-all OBLIGATOIRE : app.get(/.*/, (req, res) => {...}) — JAMAIS app.get('*') ni app.get('/*')
-- Middleware : app.use(express.json()) — pas bodyParser séparé
-- Static files : app.use(express.static('public'))
-- Error handler : (err, req, res, next) avec 4 paramètres
+VERSIONS DANS package.json — SANS ^ (versions fixes) :
+{
+  "type": "module",
+  "scripts": { "dev": "vite --host 0.0.0.0 --port 5173", "build": "vite build", "start": "node server.js" },
+  "dependencies": { "react": "19.1.0", "react-dom": "19.1.0", "react-router-dom": "7.6.1", "lucide-react": "0.511.0", "clsx": "2.1.1", "express": "4.18.2", "better-sqlite3": "9.4.3", ... },
+  "devDependencies": { "vite": "6.3.5", "@vitejs/plugin-react": "4.5.2", "tailwindcss": "4.1.7", "@tailwindcss/vite": "4.1.7" }
+}
 
-ORDRE DES MIDDLEWARES — RÈGLE ABSOLUE :
-1. app.use(express.json())
-2. app.use(express.static('public'))  ← AVANT toute auth — les fichiers statiques sont PUBLICS
-3. app.get('/health', ...) et app.post('/api/auth/login', ...) ← routes publiques SANS auth
-4. Middleware JWT auth UNIQUEMENT sur /api/* (sauf login) : app.use('/api', authMiddleware)
-5. Routes /api/* protégées
-6. app.get(/.*/, ...) catch-all qui sert index.html
-La page index.html et tous les fichiers statiques (CSS, JS, images) sont TOUJOURS accessibles sans authentification. Seules les routes /api/* (sauf /api/auth/login et /api/auth/register) nécessitent un token JWT.
+STRUCTURE vite.config.js OBLIGATOIRE :
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  server: { host: '0.0.0.0', port: 5173, proxy: { '/api': 'http://localhost:3000', '/health': 'http://localhost:3000' } },
+  build: { outDir: 'dist' }
+});
 
-RÈGLES ABSOLUES :
-1. JAMAIS de backticks markdown \`\`\` autour du code — le code est pur après ### filename
-2. public/index.html : HTML/CSS/JS vanilla UNIQUEMENT — INTERDIT : require(), exports, import, process, __dirname
-   IMPORTANT pour les fetch : utiliser des URLs RELATIVES sans slash initial.
-   CORRECT : fetch('api/menu')  fetch('api/auth/login')
-   INTERDIT : fetch('/api/menu')  fetch('/api/auth/login')
-   NAVIGATION : le site est une SPA — JAMAIS de window.location.href = '/...'
-   Utiliser des sections <div class="page"> avec display:none/block et showPage('admin')
-   Après login, faire showPage('dashboard') — PAS de redirection window.location
-3. package.json : JSON strict valide UNIQUEMENT — dépendances avec versions fixes (sans ^)
-4. server.js : écoute sur PORT 3000, sert /public, route /health, crée les tables SQLite au démarrage
-5. COMPTE ADMIN : email basé sur le projet (admin@monrestaurant.com), mot de passe fort. À la FIN de server.js :
-// CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
+STRUCTURE index.html OBLIGATOIRE (racine du projet, PAS dans public/) :
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>...</title></head>
+<body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
+</html>
 
-FORMAT DE RÉPONSE :
-- Pour une NOUVELLE génération : commence directement par ### package.json, sans texte avant
-- Pour une MODIFICATION (code existant dans le contexte) : commence par 1-2 lignes humaines puis le code, termine par SUGGESTIONS:
+STRUCTURE src/index.css OBLIGATOIRE :
+@import "tailwindcss";
+(+ custom styles si nécessaire)
+
+STRUCTURE src/main.jsx OBLIGATOIRE :
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+ReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
+
+STRUCTURE src/App.jsx OBLIGATOIRE :
+- import { BrowserRouter, Routes, Route } from 'react-router-dom'
+- Import de tous les composants et pages
+- BrowserRouter > Routes avec toutes les <Route>
+- Header et Footer inclus dans le layout
+
+RÈGLES REACT :
+1. Un composant = un fichier .jsx avec export default
+2. Les composants dans src/components/, les pages dans src/pages/
+3. Utiliser useState, useEffect, useCallback pour le state et les effets
+4. fetch('/api/...') pour les appels backend (avec slash initial — Vite proxy s'en charge)
+5. Icônes : import { Icon } from 'lucide-react' — JAMAIS de CDN icônes
+6. Classes CSS : TailwindCSS classes dans className="..." — JAMAIS de CSS inline sauf cas exceptionnel
+7. Responsive : classes Tailwind mobile-first (sm:, md:, lg:)
+8. Animations : classes Tailwind (transition, hover:, group-hover:)
+9. Navigation : <Link to="/page"> de react-router-dom — JAMAIS window.location
+10. État global simple : props drilling ou context API si nécessaire
+
+STRUCTURE server.js OBLIGATOIRE :
+- Port 3000, route /health
+- Sert dist/ en production : app.use(express.static('dist'))
+- SQLite avec tables selon le secteur
+- JWT auth, compte admin
+- SPA fallback : app.get(/.*/, ...) qui sert dist/index.html
+- Ordre : static → public routes → auth middleware → protected routes → SPA fallback
+- À la FIN : // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
 
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
-- Design moderne et soigné, inspiré des meilleures applications SaaS
-- CSS propre avec variables CSS, shorthand properties, bien organisé
-- Responsive : breakpoints 768px et 1024px, mobile-first
-- Animations CSS subtiles (transitions, hover effects)
-- Typographie Google Fonts appropriée au secteur
-- Palette de couleurs harmonieuse avec variables CSS (--primary, --secondary, etc.)
+- Design moderne avec TailwindCSS, inspiré des meilleures apps
+- Responsive : mobile-first avec breakpoints Tailwind (sm, md, lg, xl)
+- Animations Tailwind subtiles (transition, duration, hover:, group-hover:)
 - Zéro lorem ipsum — contenu réel, professionnel, crédible
-- Navigation complète avec toutes les pages fonctionnelles
-- Formulaires avec validation JavaScript côté client
-- Données de démonstration réalistes pré-remplies dans la DB
-- Images via picsum.photos avec des tailles appropriées
+- Toutes les pages fonctionnelles avec navigation React Router
+- Formulaires avec validation côté client (useState pour errors)
+- Données de démonstration réalistes dans la DB
+- Images via picsum.photos avec tailles appropriées
 
-STRUCTURE OBLIGATOIRE de public/index.html — dans cet ORDRE EXACT :
-1. <!DOCTYPE html> et <html>
-2. <head> avec <meta charset>, <title>, <style>
-3. </head>
-4. <body> avec TOUT le contenu HTML visible
-5. <script> en fin de body avec TOUT le JavaScript
-6. </body></html>
+SÉCURITÉ OBLIGATOIRE :
+- bcryptjs rounds=12, JWT signé, SQL préparé
+- Validation des entrées, rate limiting
+- process.env pour les clés API
 
-GESTION DU BUDGET — TRÈS IMPORTANT :
-Le fichier DOIT se terminer par </body></html>. Un fichier tronqué est INACCEPTABLE.
-Pour éviter la troncation, RESPECTE ces proportions :
-- server.js : max 40% du code total — backend efficace, pas de code répétitif
-- public/index.html : max 50% — CSS concis avec variables, HTML sémantique
-- package.json : max 10%
-Si le projet est complexe, simplifie le CSS (utilise des variables, pas de duplication) et le JS (fonctions réutilisables). Termine TOUJOURS par </body></html>.
+PACKAGES NPM DISPONIBLES dans le container :
+pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
 
-PROFILS SECTORIELS — appliqués automatiquement selon le brief :
+IMAGES : https://picsum.photos/800/600 ou https://images.unsplash.com/photo-XXXXX?w=800&q=80
 
-SANTÉ : tables patients/médecins/rendez-vous/dossiers, rôles admin/médecin/patient/infirmier, design blanc et bleu médical, prise de RDV en ligne, urgences visibles
-
-RESTAURANT : tables menu/commandes/réservations/tables, design chaleureux et appétissant, menu interactif avec photos Unsplash, réservation en ligne, caisse simple
-
-E-COMMERCE : tables produits/commandes/panier/clients, catalogue avec filtres, panier fonctionnel, checkout, gestion stock admin, avis clients
-
-CORPORATE : tables services/équipe/témoignages/contacts, hero professionnel, stats animées, formulaire contact, design sérieux et élégant
-
-SAAS : tables users/plans/features/analytics, landing page moderne style Linear, pricing tiers, dashboard utilisateur, onboarding
-
-ÉDUCATION : tables cours/étudiants/formateurs/inscriptions, catalogue formations, espace étudiant, progression, certificats
-
-IMMOBILIER : tables biens/agents/visites/clients, recherche avec filtres, fiches détaillées, carte placeholder, contact agent
-
-HÔTELLERIE : tables chambres/réservations/clients/services, galerie immersive, booking en ligne, services et équipements
-
-FITNESS : tables cours/coachs/membres/séances, planning interactif, abonnements, suivi progression
-
-DASHBOARD/ERP : tables selon domaine métier, sidebar navigation, tableaux Chart.js, CRUD complet, exports, rôles multiples
-
-DÉTECTION AUTOMATIQUE DES BESOINS — ajoute SANS que l'agent le demande :
-- Restaurant/Café/Boulangerie → réservation en ligne + menu interactif
-- E-commerce/Boutique → panier fonctionnel + checkout + gestion stock
-- Hôpital/Clinique/Médecin → prise de RDV en ligne + espace patient
-- Corporate/Cabinet/Conseil → formulaire de devis + page équipe
-- SaaS/Plateforme → système d'abonnement + dashboard utilisateur
-- Hôtel/Hébergement → moteur de réservation + galerie chambres
-- Fitness/Sport → planning cours + abonnements en ligne
-
-PACKAGES NPM DISPONIBLES dans le serveur (déjà installés, utilise-les librement) :
-express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet, compression,
-pdfkit (génération PDF), nodemailer (envoi emails), stripe (paiements),
-socket.io (temps réel/chat), multer (upload fichiers), sharp (traitement images),
-qrcode (génération QR), exceljs (export Excel), csv-parse (import CSV),
-marked (markdown→HTML), axios (requêtes HTTP)
-
-FONCTIONNALITÉS AVANCÉES — construis SANS HÉSITER quand demandé :
-- PDF : utilise pdfkit pour factures, devis, certificats, rapports
-- Paiements : Stripe checkout complet avec webhooks
-- Emails : nodemailer pour confirmations, notifications
-- Temps réel : socket.io pour chat live, notifications push
-- Upload : multer pour photos, documents, avatars
-- QR Code : qrcode pour liens, billets, cartes de visite
-- Export : exceljs pour Excel, CSV pour données tabulaires
-- Logo SVG : génère des logos SVG professionnels en code (pas d'API externe)
-- Charts : Chart.js CDN pour graphiques et analytics dans le frontend
-- Multi-langue : système i18n simple avec objet de traductions
-- PWA : manifest.json + service worker pour mode hors-ligne
-
-SÉCURITÉ OBLIGATOIRE DANS TOUS LES PROJETS :
-
-Mots de passe : bcryptjs avec rounds=12, JAMAIS de stockage en clair
-JWT : tokens signés avec process.env.JWT_SECRET, expiration 24h
-Routes API protégées : middleware auth sur /api/* (sauf login/register/public)
-Validation : valider et sanitiser TOUTES les données entrantes (typeof, trim, longueur max)
-SQL : UNIQUEMENT des requêtes préparées db.prepare('...').run(...) — JAMAIS de concaténation
-XSS : échapper toutes les sorties HTML côté frontend avec textContent ou encodeURIComponent
-Upload : multer avec limits:{fileSize: 10*1024*1024}, fileFilter pour types autorisés
-Rate limiting simple : compteur en mémoire, max 100 req/min par route, 5/min sur login
-Logs d'audit : table audit_logs(id, user_id, action, details, ip, created_at), logger login/modifications
-Cookies : HttpOnly, Secure si HTTPS, SameSite=Strict
-RGPD : page /mentions-legales, endpoint DELETE /api/account, export GET /api/account/export (JSON)
-Données sensibles : utiliser crypto.createCipheriv AES-256-GCM pour les données médicales/financières
-
-GÉNÈRE TOUJOURS DANS TOUS LES PROJETS :
-- Navigation sticky avec menu hamburger mobile
-- Footer complet avec liens et copyright
-- Meta tags SEO
-- Smooth scroll via CSS (scroll-behavior: smooth)
-- Messages de succès/erreur sur tous les formulaires
-- Protection JWT sur toutes les routes API sensibles
-
-RÈGLES CSS :
-- Le contenu principal doit être VISIBLE par défaut — pas de opacity:0 ni visibility:hidden sur le contenu
-- display:none uniquement sur modals, menus fermés, onglets non-actifs
-- Les animations @keyframes démarrent directement (pas via IntersectionObserver)
-- Le site s'affiche correctement même si JavaScript est désactivé
-
-RÈGLE JAVASCRIPT :
-- OBLIGATOIRE : au moins un <script> en fin de <body>
-- Gère : menu hamburger, formulaires, fetch('api/...'), interactions
-- JAMAIS de loader/spinner qui masque le contenu
-
-SITES DE RÉFÉRENCE — quand l'agent mentionne un de ces sites, inspire-toi de leur design :
-- Amazon : header search bar, mega menu, product cards, étoiles avis, CTA orange #FF9900
-- Apple : minimalisme extrême, grandes images, animations scroll, fond blanc, typo SF Pro
-- Airbnb : cards photos immersives, filtres horizontaux, carte intégrée, accent coral #FF5A5F
-- Netflix : dark theme #141414, carousels horizontaux, hover zoom, rouge #E50914
-- Stripe : gradient purple-blue #635BFF, exemples de code, typographie clean, badges confiance
-- Linear : dark minimal #1A1A2E, animations rapides, raccourcis clavier, accent violet
-- Notion : sidebar navigation, blocs modulaires, blanc épuré, icônes emoji
-- Vercel : dark theme, triangles logo, focus vitesse, noir blanc avec accent
-- Shopify : e-commerce, vert CTA #5C6AC4/#95BF47, outils marchands
-- Dribbble : cards créatives, couleurs vives, grille masonry, rose #EA4C89
-
-IMAGES — utilise TOUJOURS des images Unsplash avec des keywords pertinents :
-- Format : https://images.unsplash.com/photo-XXXXX?w=800&q=80
-- Alternative : https://picsum.photos/800/600
-- Santé : medical team, hospital, doctor, healthcare
-- Restaurant : food plating, restaurant interior, chef cooking
-- E-commerce : fashion store, product photography, shopping
-- Corporate : modern office, business team, conference room
-- Hôtel : luxury hotel, hotel room, resort pool
-- Fitness : gym training, yoga class, fitness equipment
-- Immobilier : modern house, apartment interior, real estate`;
-
+FORMAT DE RÉPONSE :
+- Pour une NOUVELLE génération : commence directement par ### package.json
+- Pour une MODIFICATION : 1-2 lignes humaines puis les fichiers modifiés avec ### markers, termine par SUGGESTIONS:`;
 
 
 // ─── CHAT SYSTEM PROMPT (for modifications after initial generation) ───
-const CHAT_SYSTEM_PROMPT = `Tu es un développeur expert qui modifie des projets web pour des clients.
+const CHAT_SYSTEM_PROMPT = `Tu es un développeur React expert qui modifie des projets web React + Vite + TailwindCSS.
 Tu parles naturellement en français, comme un collègue senior bienveillant.
 
 CONTEXTE IMPORTANT :
 Tu modifies le code du PROJET CLIENT (pas Prestige Build Pro qui est l'outil).
-Le projet client est une application web autonome avec son propre design, ses propres routes et sa propre base de données.
-Ne confonds JAMAIS le projet client avec l'outil qui le génère.
-Quand on te demande "un dashboard admin", crée un dashboard POUR LE PROJET CLIENT, pas une copie de l'interface de l'outil.
+Le projet client est une application React + Vite avec son propre design, ses propres routes et sa propre base de données.
 
 COMMENT TU TRAVAILLES :
 Tu reçois les fichiers concernés par la modification.
@@ -585,49 +484,30 @@ Tu reçois les fichiers concernés par la modification.
 3. NE RETOURNE PAS un fichier si tu ne l'as pas modifié
 4. Termine avec SUGGESTIONS: suivi de 3 idées séparées par |
 
-RÈGLE CRITIQUE :
-- Si on te demande de changer la couleur → retourne SEULEMENT ### public/index.html
-- Si on te demande d'ajouter une route API → retourne SEULEMENT ### server.js
-- Si on te demande une feature complète (dashboard, réservation) → retourne les fichiers nécessaires
-- NE CRÉE JAMAIS de fichiers supplémentaires (pas de app.js, routes.js, etc.)
-- Le projet a EXACTEMENT 3 fichiers : package.json, server.js, public/index.html
-- Fais des modifications CHIRURGICALES — garde le code existant intact
+RÈGLE CRITIQUE — FICHIERS MULTI :
+- Le projet a PLUSIEURS fichiers : package.json, vite.config.js, index.html, server.js, src/main.jsx, src/App.jsx, src/index.css, src/components/*.jsx, src/pages/*.jsx
+- Retourne SEULEMENT les fichiers modifiés
+- Pour un changement de couleur → seulement ### src/index.css ou le composant concerné
+- Pour une nouvelle page → ### src/pages/NewPage.jsx + ### src/App.jsx (pour la route)
+- Pour une nouvelle feature complète → les fichiers nécessaires (composants + pages + server.js si API)
+- Tu PEUX créer de nouveaux fichiers (### src/components/NewComponent.jsx)
 
-Exemple — changement de couleur :
-C'est fait ! J'ai changé la couleur principale en rouge dans le CSS.
+RÈGLES REACT :
+- Composants fonctionnels avec hooks (useState, useEffect, useCallback)
+- TailwindCSS pour le styling — classes dans className
+- Lucide React pour les icônes : import { Icon } from 'lucide-react'
+- React Router pour la navigation : <Link to="/...">
+- fetch('/api/...') pour le backend
+- Un composant = un fichier .jsx
 
-### public/index.html
-{fichier complet avec la couleur modifiée}
-
-SUGGESTIONS: Ajouter un mode dark|Améliorer les animations|Changer la typographie
-
-PACKAGES NPM PRÉ-INSTALLÉS (utilise-les directement) :
+PACKAGES NPM PRÉ-INSTALLÉS :
 pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
 
 COMMANDES / :
 /couleurs [nom] — changer palette | /style [site] — s'inspirer d'un site | /section [nom] — ajouter une section
 /dark — dark mode | /mobile — optimiser mobile | /seo — optimiser SEO | /premium — effets avancés
 
-APIs : tu peux intégrer n'importe quelle API. Pour les services connus (Stripe, Twilio, PayPal, etc.), demande les clés. Pour les inconnus, utilise web_search. Clés toujours via process.env.
-
-RÈGLES TECHNIQUES :
-- fetch('api/...') relatif — JAMAIS fetch('/api/...')
-- JAMAIS de window.location.href = '/...' ni window.location = '/...'
-- Navigation entre pages : utiliser des sections avec display:none/block et une fonction showPage('admin')
-- Le site est une SPA (Single Page Application) — TOUT dans un seul index.html
-- Pas de redirection HTTP, pas de window.location avec chemin absolu
-- Contenu visible sans JS, pas de opacity:0 initial
-- Le HTML se termine par </body></html>
-- bcrypt rounds=12, requêtes SQL préparées, JWT auth
-- process.env pour toutes les clés API — jamais en dur
-
-TU PEUX TOUT CONSTRUIRE dans les 3 fichiers du projet :
-- Ajouter des tables SQLite, des routes API, des pages dans server.js
-- Ajouter des sections, formulaires, dashboards dans public/index.html
-- Intégrer Stripe, socket.io, nodemailer, pdfkit, etc.
-- Mais TOUJOURS dans les 3 fichiers existants — JAMAIS de fichiers supplémentaires
-- Construire des systèmes de réservation, e-commerce, CRM
-Si l'agent demande quelque chose, tu le construis. Point final.`;
+SÉCURITÉ : bcrypt rounds=12, SQL préparé, JWT, process.env pour les clés API`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
@@ -697,7 +577,7 @@ const SECTOR_SUGGESTIONS = {
   default: [
     'Améliorer le design responsive mobile',
     'Ajouter un formulaire de contact avec validation',
-    'Intégrer des animations CSS subtiles',
+    'Intégrer des animations Tailwind subtiles',
     'Ajouter une section témoignages',
     'Optimiser le SEO avec les meta tags',
   ]
@@ -718,37 +598,57 @@ function getSuggestionsForSector(brief) {
   return SECTOR_SUGGESTIONS.default;
 }
 
-// ─── SMART FILE DETECTION ───
-// Detect which files are affected by the user message
+// ─── SMART FILE DETECTION (React multi-file) ───
 function detectAffectedFiles(message) {
   const m = message.toLowerCase();
-  const files = { packageJson: false, serverJs: false, indexHtml: false };
+  const files = {
+    packageJson: false,
+    viteConfig: false,
+    serverJs: false,
+    indexHtml: false,
+    mainJsx: false,
+    appJsx: false,
+    indexCss: false,
+    components: [], // list of component names to modify
+    pages: []       // list of page names to modify
+  };
 
-  // Frontend changes
-  if (m.match(/couleur|color|css|style|design|police|font|image|photo|logo|animation|hover|responsive|mobile|menu|header|footer|section|bouton|button|titre|texte|page|dark|thème|template|layout|icone|icon/)) {
-    files.indexHtml = true;
+  // CSS/style changes
+  if (m.match(/couleur|color|css|style|design|police|font|thème|dark|theme|tailwind/)) {
+    files.indexCss = true;
+  }
+  // Layout/header/footer changes
+  if (m.match(/header|menu|navigation|navbar|nav/)) {
+    files.components.push('Header');
+  }
+  if (m.match(/footer|pied de page/)) {
+    files.components.push('Footer');
   }
   // Backend changes
-  if (m.match(/api|route|endpoint|base de données|table|sql|auth|login|password|email|envoi|notification|upload|pdf|stripe|paiement|webhook|socket|temps réel|chat|export|import|cron|middleware/)) {
+  if (m.match(/api|route|endpoint|base de données|table|sql|auth|login|password|email|envoi|notification|upload|pdf|stripe|paiement|webhook|socket|temps réel|chat|export|import|middleware/)) {
     files.serverJs = true;
   }
   // Package changes
   if (m.match(/package|dépendance|module|install|npm|version/)) {
     files.packageJson = true;
   }
-  // If adding a feature, likely touches both backend and frontend
+  // Routing changes
+  if (m.match(/route|page|navigation|lien|menu/)) {
+    files.appJsx = true;
+  }
+  // If adding a feature, likely touches backend + new components
   if (m.match(/ajoute|ajout|crée|créer|intègre|implémente|nouveau|nouvelle/)) {
     files.serverJs = true;
-    files.indexHtml = true;
+    files.appJsx = true;
   }
-  // If nothing detected, assume frontend (most common)
-  if (!files.packageJson && !files.serverJs && !files.indexHtml) {
-    files.indexHtml = true;
+  // If nothing detected, assume component-level change
+  if (!files.packageJson && !files.serverJs && !files.indexCss && files.components.length === 0 && files.pages.length === 0 && !files.appJsx) {
+    files.appJsx = true;
   }
   return files;
 }
 
-// Parse generated code into individual files
+// Parse generated code into individual files (supports multi-file React structure)
 function parseCodeFiles(code) {
   if (!code) return {};
   const result = {};
@@ -763,7 +663,7 @@ function parseCodeFiles(code) {
   return result;
 }
 
-// ─── CONVERSATION CONTEXT BUILDER ───
+// ─── CONVERSATION CONTEXT BUILDER (React multi-file) ───
 function buildConversationContext(project, messages, userMessage, configuredKeys) {
   const context = [];
 
@@ -771,51 +671,72 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const files = parseCodeFiles(project.generated_code);
     const affected = detectAffectedFiles(userMessage);
 
-    // Build project structure overview (like Lovable's file tree)
-    let structure = 'PROJET CLIENT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
+    // Build project structure overview
+    let structure = 'PROJET REACT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
     if (configuredKeys && configuredKeys.length > 0) {
       structure += 'APIs: ' + configuredKeys.map(k => k.env_name).join(', ') + '\n';
     }
+
     // Extract structure from code
     const serverJs = files['server.js'] || '';
     const routes = (serverJs.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []).slice(0, 20);
     const tables = (serverJs.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
-    const htmlPages = ((files['public/index.html'] || '').match(/showPage\(['"]([^'"]+)['"]\)/g) || []);
-    structure += '\nSTRUCTURE:\n';
+
+    const appJsx = files['src/App.jsx'] || '';
+    const reactRoutes = (appJsx.match(/<Route\s+path="([^"]+)"/g) || []);
+    const components = Object.keys(files).filter(f => f.startsWith('src/components/'));
+    const pages = Object.keys(files).filter(f => f.startsWith('src/pages/'));
+
+    structure += '\nSTRUCTURE REACT:\n';
+    structure += '  Composants: ' + (components.length ? components.join(', ') : 'aucun') + '\n';
+    structure += '  Pages: ' + (pages.length ? pages.join(', ') : 'aucune') + '\n';
+    structure += '  Routes React: ' + (reactRoutes.length ? reactRoutes.join(', ') : 'aucune') + '\n';
     structure += '  Routes API: ' + (routes.length ? routes.join(', ') : 'aucune') + '\n';
     structure += '  Tables SQLite: ' + (tables.length ? tables.join(', ') : 'aucune') + '\n';
-    structure += '  Pages SPA: ' + (htmlPages.length ? htmlPages.join(', ') : 'aucune') + '\n';
-    structure += '\nTu modifies CE projet client. Applique UNIQUEMENT le changement demandé.';
+    structure += '\nTu modifies CE projet React. Retourne UNIQUEMENT les fichiers modifiés avec ### markers.';
 
     let projectContext = structure;
 
-    // Detect which files need modification
+    // Determine which files to send
     const filesToSend = [];
-    // For major features (backend, dashboard, etc.) always send all files
     const isMajor = /backend|dashboard|admin|complet|système|fonctionnalit/i.test(userMessage);
+
     if (isMajor) {
-      if (files['package.json']) filesToSend.push('package.json');
-      if (files['server.js']) filesToSend.push('server.js');
-      if (files['public/index.html']) filesToSend.push('public/index.html');
+      // Send all files for major changes
+      Object.keys(files).forEach(f => filesToSend.push(f));
     } else {
-      if (affected.indexHtml && files['public/index.html']) filesToSend.push('public/index.html');
+      // Send only affected files
+      if (affected.appJsx && files['src/App.jsx']) filesToSend.push('src/App.jsx');
       if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
       if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
+      if (affected.indexCss && files['src/index.css']) filesToSend.push('src/index.css');
+      if (affected.mainJsx && files['src/main.jsx']) filesToSend.push('src/main.jsx');
+      if (affected.viteConfig && files['vite.config.js']) filesToSend.push('vite.config.js');
+
+      // Send affected components
+      for (const comp of affected.components) {
+        const key = `src/components/${comp}.jsx`;
+        if (files[key]) filesToSend.push(key);
+      }
+      for (const page of affected.pages) {
+        const key = `src/pages/${page}.jsx`;
+        if (files[key]) filesToSend.push(key);
+      }
     }
 
     const allFileNames = Object.keys(files);
     const notSent = allFileNames.filter(f => !filesToSend.includes(f));
 
-    projectContext += `\n\nFICHIERS DU PROJET CLIENT (retourne SEULEMENT ceux modifiés avec ### markers):`;
+    projectContext += `\n\nFICHIERS DU PROJET REACT (retourne SEULEMENT ceux modifiés avec ### markers):`;
     for (const fn of filesToSend) {
       projectContext += `\n\n### ${fn}\n${files[fn]}`;
     }
     if (notSent.length > 0) {
-      projectContext += `\n\nFICHIERS NON MODIFIÉS (NE PAS les retourner sauf si nécessaire): ${notSent.join(', ')}`;
+      projectContext += `\n\nFICHIERS NON ENVOYÉS (NE PAS les retourner sauf si nécessaire): ${notSent.join(', ')}`;
     }
 
     context.push({ role: 'user', content: projectContext });
-    context.push({ role: 'assistant', content: `Compris. Je vais modifier uniquement ${filesToSend.join(' et ')}. Qu'est-ce que vous souhaitez ?` });
+    context.push({ role: 'assistant', content: `Compris. Je connais la structure React du projet. Qu'est-ce que vous souhaitez modifier ?` });
   } else if (project) {
     let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
     if (configuredKeys && configuredKeys.length > 0) {
@@ -825,7 +746,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     context.push({ role: 'assistant', content: `Je connais votre projet. Dites-moi ce que vous souhaitez.` });
   }
 
-  // Last 4 chat messages (skip code blocks, keep conversations)
+  // Last 4 chat messages
   if (messages && messages.length > 0) {
     const chatMessages = messages.filter(m => !m.content.startsWith('### ')).slice(-4);
     chatMessages.forEach(m => {
@@ -842,40 +763,22 @@ function analyzeBrief(brief) {
   const analysis = {
     projectType: 'web',
     complexity: 'medium',
-    suggestedStack: [],
+    suggestedStack: ['React', 'Vite', 'TailwindCSS'],
     questions: [],
     risks: []
   };
 
   const b = brief.toLowerCase();
 
-  // Detect type
-  if (b.includes('mobile') || b.includes('app ios') || b.includes('android')) analysis.projectType = 'mobile';
-  else if (b.includes('dashboard') || b.includes('analytics') || b.includes('statistiques')) analysis.projectType = 'dashboard';
-  else if (b.includes('api') || b.includes('backend') || b.includes('serveur')) analysis.projectType = 'backend';
-  else if (b.includes('e-commerce') || b.includes('boutique') || b.includes('vente en ligne')) analysis.projectType = 'ecommerce';
+  if (b.includes('dashboard') || b.includes('analytics')) analysis.projectType = 'dashboard';
+  else if (b.includes('e-commerce') || b.includes('boutique')) analysis.projectType = 'ecommerce';
   else if (b.includes('logiciel') || b.includes('erp') || b.includes('crm')) analysis.projectType = 'software';
 
-  // Suggest stack
-  if (analysis.projectType === 'mobile') analysis.suggestedStack = ['React Native', 'Expo', 'Firebase'];
-  else if (analysis.projectType === 'ecommerce') analysis.suggestedStack = ['Next.js', 'Stripe', 'Supabase'];
-  else if (analysis.projectType === 'dashboard') analysis.suggestedStack = ['React', 'Recharts', 'Tailwind'];
-  else analysis.suggestedStack = ['React', 'Vite', 'Tailwind CSS'];
-
-  // Detect complexity
   const complexityWords = ['paiement', 'authentification', 'base de données', 'temps réel', 'api', 'integration'];
   const count = complexityWords.filter(w => b.includes(w)).length;
   if (count >= 3) analysis.complexity = 'high';
   else if (count >= 1) analysis.complexity = 'medium';
   else analysis.complexity = 'low';
-
-  // Generate questions if needed
-  if (!b.includes('couleur') && !b.includes('style') && !b.includes('design')) {
-    analysis.questions.push('Quel style visuel souhaitez-vous ? (moderne, classique, minimaliste, coloré)');
-  }
-  if (!b.includes('langue') && !b.includes('francais') && !b.includes('anglais')) {
-    analysis.questions.push('Le site est-il en français, anglais, ou multilingue ?');
-  }
 
   return analysis;
 }
@@ -883,11 +786,9 @@ function analyzeBrief(brief) {
 // ─── BUILD PROFESSIONAL PROMPT ───
 function buildProfessionalPrompt(userMessage, project, availableApis) {
   let prompt = userMessage;
-
   if (availableApis && availableApis.length > 0) {
     prompt += `\n\n[APIs disponibles: ${availableApis.map(a => `${a.name} (${a.service})`).join(', ')}]`;
   }
-
   return prompt;
 }
 

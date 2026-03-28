@@ -145,20 +145,34 @@ const ERROR_TYPES = {
   UNKNOWN: 'unknown'
 };
 
-// ─── ABSOLUTE RULE FOR BROWSER-ONLY CODE ───
-const ABSOLUTE_BROWSER_RULE = `RÈGLE 1 ABSOLUE : Le fichier public/index.html doit contenir UNIQUEMENT du HTML/CSS/JavaScript vanilla compatible navigateur. STRICTEMENT INTERDIT dans public/index.html : require(), module.exports, exports, import from, process, __dirname, Buffer, fs, path. Le frontend appelle le backend via fetch('/api/...').
-
-RÈGLE 2 ABSOLUE : Le fichier package.json doit être du JSON strict et valide sans commentaires ni virgules trailing. Dépendances autorisées uniquement : express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet.
+// ─── ABSOLUTE RULE FOR REACT PROJECTS ───
+const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE : Les projets générés utilisent React + Vite + TailwindCSS.
+- Les fichiers .jsx contiennent des composants React fonctionnels
+- Le styling se fait via TailwindCSS classes dans className
+- Les icônes via lucide-react — JAMAIS de CDN
+- Navigation via react-router-dom <Link> — JAMAIS window.location
+- Le package.json doit être du JSON strict avec "type": "module"
+- server.js sert dist/ en production après npm run build
 
 `;
 
-// Default valid package.json for fallback
+// Default valid package.json for fallback (React + Vite)
 const DEFAULT_PACKAGE_JSON = JSON.stringify({
-  name: "project",
+  name: "prestige-project",
   version: "1.0.0",
-  main: "server.js",
-  scripts: { start: "node server.js" },
+  private: true,
+  type: "module",
+  scripts: {
+    dev: "vite --host 0.0.0.0 --port 5173",
+    build: "vite build",
+    start: "node server.js"
+  },
   dependencies: {
+    react: "19.1.0",
+    "react-dom": "19.1.0",
+    "react-router-dom": "7.6.1",
+    "lucide-react": "0.511.0",
+    clsx: "2.1.1",
     express: "4.18.2",
     "better-sqlite3": "9.4.3",
     bcryptjs: "2.4.3",
@@ -166,29 +180,48 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
     cors: "2.8.5",
     helmet: "7.1.0",
     compression: "1.7.4"
+  },
+  devDependencies: {
+    vite: "6.3.5",
+    "@vitejs/plugin-react": "4.5.2",
+    tailwindcss: "4.1.7",
+    "@tailwindcss/vite": "4.1.7"
   }
 }, null, 2);
 
-// Default valid server.js for fallback
+// Default valid server.js for fallback (serves Vite build output)
 const DEFAULT_SERVER_JS = `const express = require('express');
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const db = new Database('/data/database.db');
+
+const dbPath = process.env.DB_PATH || '/data/database.db';
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+const db = new Database(dbPath);
 
 app.use(cors());
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
 app.use(express.json());
-app.use(express.static('public'));
 
-db.exec(\`
+// Serve Vite build output
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
+
+db.exec(\\\`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -197,13 +230,13 @@ db.exec(\`
     role TEXT DEFAULT 'user',
     created_at TEXT DEFAULT (datetime('now'))
   );
-\`);
+\\\`);
 
 const adminExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@project.com');
 if (!adminExists) {
   db.prepare('INSERT INTO users (email, password, name, role) VALUES (?, ?, ?, ?)').run(
     'admin@project.com',
-    bcrypt.hashSync('Admin2024!', 10),
+    bcrypt.hashSync('Admin2024!', 12),
     'Administrateur',
     'admin'
   );
@@ -211,7 +244,7 @@ if (!adminExists) {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-app.post('/api/login', (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
   if (user && bcrypt.compareSync(password, user.password)) {
@@ -222,38 +255,85 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(\`Server running on port \${PORT}\`));
+// SPA fallback
+app.get(/.*/, (req, res) => {
+  const indexPath = path.join(distPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: 'Build not found' });
+  }
+});
+
+app.listen(PORT, () => console.log(\\\`Server running on port \\\${PORT}\\\`));
+
+// CREDENTIALS: email=admin@project.com password=Admin2024!
 `;
 
-// Default valid public/index.html for fallback
+// Default valid index.html for fallback (React entry point — at project root, NOT in public/)
 const DEFAULT_INDEX_HTML = `<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Application Prestige</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; }
-    .container { max-width: 500px; text-align: center; }
-    h1 { font-size: 2.5rem; margin-bottom: 1rem; color: #D4A820; }
-    p { font-size: 1.1rem; line-height: 1.6; color: #94a3b8; margin-bottom: 2rem; }
-    .btn { display: inline-block; padding: 12px 24px; background: #D4A820; color: #1a1a2e; text-decoration: none; border-radius: 8px; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
-    .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(212, 168, 32, 0.4); }
-    .footer { margin-top: 3rem; font-size: 0.875rem; color: #64748b; }
-  </style>
+  <title>Prestige App</title>
 </head>
 <body>
-  <div class="container">
-    <h1>Bienvenue</h1>
-    <p>Votre application est en cours de génération. Cette page de placeholder sera remplacée par votre projet personnalisé.</p>
-    <a href="/health" class="btn">Vérifier le statut</a>
-    <div class="footer">
-      <p>&copy; 2024 Prestige Technologie Compagnie</p>
-    </div>
-  </div>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
 </body>
 </html>
+`;
+
+// Default React source files for fallback
+const DEFAULT_VITE_CONFIG = `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:3000',
+      '/health': 'http://localhost:3000'
+    }
+  },
+  build: { outDir: 'dist' }
+});
+`;
+
+const DEFAULT_MAIN_JSX = `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+`;
+
+const DEFAULT_INDEX_CSS = `@import "tailwindcss";
+`;
+
+const DEFAULT_APP_JSX = `import React from 'react';
+
+export default function App() {
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center p-8">
+        <h1 className="text-4xl font-bold text-gray-900 mb-4">Bienvenue</h1>
+        <p className="text-lg text-gray-600 mb-8">Votre application React est en cours de construction.</p>
+        <a href="/health" className="inline-block px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors">
+          Vérifier le statut
+        </a>
+      </div>
+    </div>
+  );
+}
 `;
 
 // In-memory tracking of auto-correction attempts per project
@@ -332,6 +412,15 @@ function isPathSafe(basePath, targetPath) {
   return resolvedTarget.startsWith(resolvedBase + path.sep) || resolvedTarget === resolvedBase;
 }
 
+// ─── JSON VALIDATION HELPER ───
+function isValidJson(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    JSON.parse(content);
+    return true;
+  } catch { return false; }
+}
+
 // ─── CADDY CUSTOM DOMAIN HELPER ───
 async function addCustomDomainToCaddy(customDomain, siteDir) {
   // Custom domains are routed by server.js (not Caddy).
@@ -403,75 +492,229 @@ function streamClaudeWithImage(imageBase64, mediaType, prompt, res, onDone) {
   if (onDone) onDone('');
 }
 
-// ─── CLAUDE.MD TEMPLATE GENERATOR ───
+// ─── CLAUDE.MD TEMPLATE GENERATOR (React + Vite v2) ───
 function generateClaudeMdTemplate(brief, sectorProfile, savedApis) {
-  const apiSection = savedApis && savedApis.length > 0 
+  const apiSection = savedApis && savedApis.length > 0
     ? `\n## APIs disponibles\n${savedApis.map(a => `- ${a.name} (${a.service}): ${a.description || 'Disponible'}`).join('\n')}\n`
     : '';
-  
-  return `# Prestige AI — Instructions
 
-Tu es Prestige AI, le meilleur générateur d'applications web. Tu travailles dans le dossier courant uniquement.
+  return `# Prestige AI — Instructions (React + Vite)
+
+Tu es Prestige AI, le meilleur générateur d'applications React + Vite. Tu travailles dans le dossier courant uniquement.
 
 ## Brief
 ${brief}
 ${sectorProfile ? `\n## Profil détecté\n${sectorProfile}\n` : ''}${apiSection}
-## Fichiers à créer
+## Architecture du projet
 
-Crée exactement ces 3 fichiers dans le dossier courant :
+Crée un projet React + Vite + TailwindCSS professionnel avec cette structure :
 
-**package.json** — JSON valide, dépendances fixes :
-express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2.8.5, helmet 7.1.0, compression 1.7.4
+\`\`\`
+package.json          — "type": "module", dépendances React + Vite + backend
+vite.config.js        — plugins: react + tailwindcss, proxy /api → localhost:3000
+index.html            — point d'entrée avec <div id="root"> (à la RACINE, pas dans public/)
+server.js             — backend Express servant dist/ en production
+src/
+  main.jsx            — ReactDOM.createRoot
+  index.css           — @import "tailwindcss"
+  App.jsx             — BrowserRouter + Routes + Layout
+  components/
+    Header.jsx        — Navigation responsive avec menu mobile
+    Footer.jsx        — Pied de page
+    ...               — Composants réutilisables selon le secteur
+  pages/
+    Home.jsx          — Page d'accueil
+    ...               — Pages selon le secteur
+\`\`\`
 
-**server.js** — Backend Express 4.18.2 :
-- Port 3000, route /health, fichiers statiques depuis /public
-- SQLite avec tables selon le secteur
-- JWT auth, compte admin avec email basé sur le nom du projet (ex: admin@monrestaurant.com) et mot de passe fort
-- Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
-- À la TOUTE FIN du fichier, ajouter ce commentaire exact :
-  // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
-- ORDRE OBLIGATOIRE des middlewares :
-  1. app.use(express.static('public')) — AVANT tout middleware d'auth
-  2. Routes publiques : /health, /api/auth/login, /api/auth/register
-  3. Middleware JWT UNIQUEMENT sur /api/* (sauf auth)
-  4. Routes /api/* protégées
-  5. Catch-all qui sert index.html
-  La page index.html est PUBLIQUE. Seules les routes /api/* nécessitent JWT.
+## Stack technique (versions fixes)
 
-**public/index.html** — Frontend vanilla uniquement :
-- JAMAIS require(), exports, import
-- fetch RELATIF sans slash initial : fetch('api/menu') PAS fetch('/api/menu')
-- Design professionnel, responsive, animations CSS
+**Frontend :**
+- react 19.1.0, react-dom 19.1.0
+- react-router-dom 7.6.1
+- lucide-react 0.511.0 (icônes)
+- clsx 2.1.1 (classes conditionnelles)
+- vite 6.3.5, @vitejs/plugin-react 4.5.2
+- tailwindcss 4.1.7, @tailwindcss/vite 4.1.7
+
+**Backend :**
+- express 4.18.2, better-sqlite3 9.4.3
+- bcryptjs 2.4.3, jsonwebtoken 9.0.2
+- cors 2.8.5, helmet 7.1.0, compression 1.7.4
+
+## Règles React
+
+1. Un composant = un fichier .jsx avec export default function
+2. Composants dans src/components/, pages dans src/pages/
+3. TailwindCSS dans className="..." — JAMAIS de CSS inline
+4. Icônes : import { Icon } from 'lucide-react'
+5. Navigation : <Link to="/page"> de react-router-dom
+6. fetch('/api/...') pour le backend (avec slash — Vite proxy gère)
+7. useState, useEffect, useCallback pour state/effets
+8. Responsive mobile-first : sm:, md:, lg:, xl:
+
+## server.js — Backend Express
+
+- Port 3000, route /health
+- Sert dist/ : app.use(express.static(path.join(__dirname, 'dist')))
+- SQLite : tables selon le secteur avec données de démo
+- JWT auth, compte admin basé sur le nom du projet
+- Ordre : static → public routes → auth middleware → protected routes → SPA fallback
+- SPA fallback : app.get(/.*/, ...) qui sert dist/index.html
+- À la FIN : // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
+
+## vite.config.js
+
+\`\`\`js
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  server: { host: '0.0.0.0', port: 5173, proxy: { '/api': 'http://localhost:3000', '/health': 'http://localhost:3000' } },
+  build: { outDir: 'dist' }
+});
+\`\`\`
+
+## src/index.css
+
+\`\`\`css
+@import "tailwindcss";
+\`\`\`
+
+## Qualité
+
+- Design professionnel TailwindCSS, responsive mobile-first
 - Contenu réel adapté au secteur, zéro lorem ipsum
-- TOUT le contenu VISIBLE par défaut — INTERDIT opacity:0 ou visibility:hidden sur le contenu
-- Les animations CSS doivent démarrer directement avec @keyframes, PAS via IntersectionObserver
-- OBLIGATOIRE : un <script> tag en fin de body pour le menu hamburger, formulaires et fetch
-- Le site doit s'afficher complètement MÊME si JavaScript est désactivé
+- Animations Tailwind (transition, hover:, group-hover:)
+- Images via picsum.photos
+- Toutes les pages fonctionnelles
+- Données de démo réalistes dans SQLite
 
 ## Processus
 
-1. Recherche web pour trouver des inspirations visuelles
-2. Génère les 3 fichiers
-3. Teste : \`node --check server.js\`
+1. Génère tous les fichiers du projet React
+2. Teste : \`node --check server.js\`
+3. Installe et build : \`npm install && npm run build\`
 4. Lance : \`node server.js &\`
 5. Teste : \`curl http://localhost:3000/health\`
 6. Corrige si erreur, reteste
 7. Quand tout fonctionne, écris le fichier \`READY\`
 8. Si échec après 5 tentatives, écris \`ERROR\`
-
-## Profils sectoriels automatiques
-
-SANTÉ → patients/médecins/rendez-vous, design bleu médical
-RESTAURANT → menu/commandes/réservations, design chaleureux
-E-COMMERCE → produits/panier/checkout, catalogue avec filtres
-CORPORATE → services/équipe/témoignages, design professionnel
-SAAS → users/plans/dashboard, landing moderne
-ÉDUCATION → cours/étudiants/formateurs, espace étudiant
-IMMOBILIER → biens/agents/visites, recherche avec filtres
-HÔTELLERIE → chambres/réservations, galerie immersive
-FITNESS → cours/coachs/membres, planning interactif
-DASHBOARD → sidebar, Chart.js, CRUD complet, exports
 `;
+}
+
+// ─── REACT PROJECT FILE HELPERS ───
+
+// Read all valid project files recursively from a directory
+function readProjectFilesRecursive(projectDir) {
+  const files = {};
+  const validNames = [
+    'package.json', 'vite.config.js', 'index.html', 'server.js',
+  ];
+  const validDirs = ['src/components', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
+  const validSrcFiles = ['src/main.jsx', 'src/index.css', 'src/App.jsx'];
+
+  // Read root-level files
+  for (const name of validNames) {
+    const p = path.join(projectDir, name);
+    if (fs.existsSync(p)) {
+      files[name] = fs.readFileSync(p, 'utf8');
+    }
+  }
+
+  // Legacy: check public/index.html and map to index.html if it has React root div
+  if (!files['index.html']) {
+    const legacyIndex = path.join(projectDir, 'public', 'index.html');
+    if (fs.existsSync(legacyIndex)) {
+      const content = fs.readFileSync(legacyIndex, 'utf8');
+      if (content.includes('id="root"')) {
+        files['index.html'] = content;
+      }
+    }
+  }
+
+  // Read src/ files
+  for (const name of validSrcFiles) {
+    const p = path.join(projectDir, name);
+    if (fs.existsSync(p)) {
+      files[name] = fs.readFileSync(p, 'utf8');
+    }
+  }
+
+  // Read src/components/, src/pages/, etc.
+  for (const dir of validDirs) {
+    const dirPath = path.join(projectDir, dir);
+    if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+      const entries = fs.readdirSync(dirPath);
+      for (const entry of entries) {
+        if (entry.endsWith('.jsx') || entry.endsWith('.js') || entry.endsWith('.css')) {
+          const relativePath = `${dir}/${entry}`;
+          const fullPath = path.join(dirPath, entry);
+          if (fs.statSync(fullPath).isFile()) {
+            files[relativePath] = fs.readFileSync(fullPath, 'utf8');
+          }
+        }
+      }
+    }
+  }
+
+  return files;
+}
+
+// Format project files as ### marker code string for storage
+function formatProjectCode(files) {
+  const fileOrder = [
+    'package.json', 'vite.config.js', 'index.html', 'server.js',
+    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+  ];
+
+  let result = '';
+  const written = new Set();
+
+  for (const fn of fileOrder) {
+    if (files[fn]) {
+      result += (result ? '\n\n' : '') + `### ${fn}\n${files[fn]}`;
+      written.add(fn);
+    }
+  }
+
+  // Components, pages, others alphabetically
+  const remaining = Object.keys(files)
+    .filter(fn => !written.has(fn))
+    .sort((a, b) => {
+      const order = (f) => f.startsWith('src/components/') ? 0 : f.startsWith('src/pages/') ? 1 : 2;
+      return order(a) - order(b) || a.localeCompare(b);
+    });
+
+  for (const fn of remaining) {
+    result += (result ? '\n\n' : '') + `### ${fn}\n${files[fn]}`;
+  }
+
+  return result;
+}
+
+// Write default React project files as fallback
+function writeDefaultReactProject(projectDir) {
+  const defaults = {
+    'package.json': DEFAULT_PACKAGE_JSON,
+    'vite.config.js': DEFAULT_VITE_CONFIG,
+    'index.html': DEFAULT_INDEX_HTML,
+    'server.js': DEFAULT_SERVER_JS,
+    'src/main.jsx': DEFAULT_MAIN_JSX,
+    'src/index.css': DEFAULT_INDEX_CSS,
+    'src/App.jsx': DEFAULT_APP_JSX,
+  };
+
+  for (const [filename, content] of Object.entries(defaults)) {
+    const filePath = path.join(projectDir, filename);
+    const fileDir = path.dirname(filePath);
+    if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, content);
+      console.log(`[Defaults] Wrote default ${filename}`);
+    }
+  }
 }
 
 // ─── CLAUDE CODE PROCESS MANAGER ───
@@ -510,17 +753,15 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   
   const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
   
-  // Create project directory if it doesn't exist
+  // Create project directory with src/ structure
   if (!fs.existsSync(projectDir)) {
     fs.mkdirSync(projectDir, { recursive: true });
   }
-  
-  // Create public directory
-  const publicDir = path.join(projectDir, 'public');
-  if (!fs.existsSync(publicDir)) {
-    fs.mkdirSync(publicDir, { recursive: true });
+  const srcDir = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDir)) {
+    fs.mkdirSync(srcDir, { recursive: true });
   }
-  
+
   // Detect sector profile
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   
@@ -545,7 +786,7 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   console.log(`[Claude Code] Project directory: ${projectDir}`);
   
   // Build the prompt for Claude Code
-  const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application web complète basée sur le brief. Génère les 3 fichiers (package.json, server.js, public/index.html), teste-les, et crée le fichier READY quand tout fonctionne.`;
+  const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application React + Vite + TailwindCSS complète basée sur le brief. Génère tous les fichiers du projet (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css, src/App.jsx, src/components/*.jsx, src/pages/*.jsx), teste-les avec npm run build, et crée le fichier READY quand tout fonctionne.`;
   
   // Spawn Claude Code process
   // NOTE: --dangerously-skip-permissions is required for non-interactive server-side execution.
@@ -624,17 +865,9 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
       return;
     }
 
-    // Check if files were created successfully
-    const packageJsonPath = path.join(projectDir, 'package.json');
-    const serverJsPath = path.join(projectDir, 'server.js');
-    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
+    // Check if files were created successfully (React multi-file project)
     const readyPath = path.join(projectDir, 'READY');
     const errorPath = path.join(projectDir, 'ERROR');
-
-    const packageExists = fs.existsSync(packageJsonPath);
-    const serverExists = fs.existsSync(serverJsPath);
-    const indexExists = fs.existsSync(indexHtmlPath);
-    const readyExists = fs.existsSync(readyPath);
     const errorExists = fs.existsSync(errorPath);
 
     if (errorExists) {
@@ -646,7 +879,12 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
       return;
     }
 
-    if (code !== 0 && !packageExists && !serverExists && !indexExists) {
+    // Check if ANY project files exist (package.json, server.js, index.html, or src/)
+    const hasAnyFile = fs.existsSync(path.join(projectDir, 'package.json'))
+      || fs.existsSync(path.join(projectDir, 'server.js'))
+      || fs.existsSync(path.join(projectDir, 'index.html'))
+      || fs.existsSync(path.join(projectDir, 'src', 'App.jsx'));
+    if (code !== 0 && !hasAnyFile) {
       // Process crashed without producing files — fall back to API
       console.warn(`[Claude Code] Process failed (code ${code}) with no files, falling back to API`);
       job.progressMessage = 'Claude Code indisponible — basculement vers API...';
@@ -654,62 +892,28 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
       return;
     }
 
-    if (packageExists && serverExists && indexExists) {
-      // Read the generated files and format as code for storage
-      try {
-        const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
-        const serverJs = fs.readFileSync(serverJsPath, 'utf8');
-        const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-
-        // Format as the expected code output with markers
-        job.code = `### package.json
-${packageJson}
-
-### server.js
-${serverJs}
-
-### public/index.html
-${indexHtml}`;
-
+    // Read all generated files from the React project directory
+    try {
+      const allFiles = readProjectFilesRecursive(projectDir);
+      if (Object.keys(allFiles).length >= 3) {
+        // Format all files as ### markers for storage
+        job.code = formatProjectCode(allFiles);
         job.status = 'done';
-        job.progressMessage = 'Projet généré avec succès !';
-        console.log(`[Claude Code] Generation successful for project ${projectId}`);
-      } catch (readErr) {
-        job.status = 'error';
-        job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
-        console.error(`[Claude Code] Error reading files: ${readErr.message}`);
+        job.progressMessage = 'Projet React généré avec succès !';
+        console.log(`[Claude Code] Generation successful for project ${projectId} — ${Object.keys(allFiles).length} files`);
+      } else {
+        // Not enough files — write defaults and read again
+        console.warn(`[Claude Code] Only ${Object.keys(allFiles).length} files found, writing defaults`);
+        writeDefaultReactProject(projectDir);
+        const filesWithDefaults = readProjectFilesRecursive(projectDir);
+        job.code = formatProjectCode(filesWithDefaults);
+        job.status = 'done';
+        job.progressMessage = 'Projet généré avec fichiers par défaut.';
       }
-    } else {
-      // Files missing - use default files as fallback
-      console.warn(`[Claude Code] Some files missing, using defaults. Package: ${packageExists}, Server: ${serverExists}, Index: ${indexExists}`);
-
-      // Write default files
-      if (!packageExists) {
-        fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
-      }
-      if (!serverExists) {
-        fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
-      }
-      if (!indexExists) {
-        fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
-      }
-
-      // Read the files (now including defaults)
-      const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
-      const serverJs = fs.readFileSync(serverJsPath, 'utf8');
-      const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-
-      job.code = `### package.json
-${packageJson}
-
-### server.js
-${serverJs}
-
-### public/index.html
-${indexHtml}`;
-
-      job.status = 'done';
-      job.progressMessage = 'Projet généré avec fichiers par défaut.';
+    } catch (readErr) {
+      job.status = 'error';
+      job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
+      console.error(`[Claude Code] Error reading files: ${readErr.message}`);
     }
   });
 
@@ -753,7 +957,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   console.log(`[Claude Code Chat] Starting modification for project ${projectId}: ${message.substring(0, 100)}...`);
   
   // Build the prompt for modification
-  const prompt = `Modifie les fichiers existants dans ce dossier selon cette instruction: "${message}". Teste les modifications avec node --check server.js, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
+  const prompt = `Modifie les fichiers React existants dans ce dossier selon cette instruction: "${message}". Le projet utilise React + Vite + TailwindCSS. Tu peux modifier src/App.jsx, src/components/*.jsx, src/pages/*.jsx, server.js, src/index.css, etc. Teste avec npm run build, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
   
   // Spawn Claude Code process (see generateClaudeCode for security notes)
   const claudeProcess = spawn('claude', [
@@ -819,10 +1023,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
       return;
     }
 
-    // Read the modified files
-    const packageJsonPath = path.join(projectDir, 'package.json');
-    const serverJsPath = path.join(projectDir, 'server.js');
-    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
+    // Check for errors, then read all React project files
     const errorPath = path.join(projectDir, 'ERROR');
 
     if (fs.existsSync(errorPath)) {
@@ -833,22 +1034,12 @@ function generateClaudeCodeChat(projectId, message, jobId) {
     }
 
     try {
-      const packageJson = fs.existsSync(packageJsonPath) ? fs.readFileSync(packageJsonPath, 'utf8') : DEFAULT_PACKAGE_JSON;
-      const serverJs = fs.existsSync(serverJsPath) ? fs.readFileSync(serverJsPath, 'utf8') : DEFAULT_SERVER_JS;
-      const indexHtml = fs.existsSync(indexHtmlPath) ? fs.readFileSync(indexHtmlPath, 'utf8') : DEFAULT_INDEX_HTML;
-
-      job.code = `### package.json
-${packageJson}
-
-### server.js
-${serverJs}
-
-### public/index.html
-${indexHtml}`;
-
+      // Read all React project files
+      const allFiles = readProjectFilesRecursive(projectDir);
+      job.code = formatProjectCode(allFiles);
       job.status = 'done';
       job.progressMessage = 'Modifications appliquées avec succès !';
-      console.log(`[Claude Code Chat] Modification successful for project ${projectId}`);
+      console.log(`[Claude Code Chat] Modification successful for project ${projectId} — ${Object.keys(allFiles).length} files`);
 
       const readyPath = path.join(projectDir, 'READY');
       try { if (fs.existsSync(readyPath)) fs.unlinkSync(readyPath); } catch (e) { console.warn('Could not remove READY file:', e.message); }
@@ -884,8 +1075,8 @@ function generateViaAPI(projectId, brief, jobId) {
 
   const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
   if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
-  const publicDir = path.join(projectDir, 'public');
-  if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+  const srcDirApi = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDirApi)) fs.mkdirSync(srcDirApi, { recursive: true });
 
   job.status = 'running';
   job.progressMessage = 'Génération via API Anthropic...';
@@ -898,7 +1089,7 @@ function generateViaAPI(projectId, brief, jobId) {
   const model = 'claude-sonnet-4-20250514';
   console.log(`[API Fallback] model: ${model}, max_tokens: ${maxTokens}`);
 
-  const userPrompt = `Génère une application web complète basée sur ce brief:\n\n${brief}\n\nGénère les 3 fichiers obligatoires: package.json, server.js, public/index.html. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
+  const userPrompt = `Génère une application React + Vite + TailwindCSS complète basée sur ce brief:\n\n${brief}\n\nGénère tous les fichiers du projet React: package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css, src/App.jsx, src/components/*.jsx, src/pages/*.jsx. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
 
   // Web search always available
   const apiPayload = {
@@ -974,6 +1165,7 @@ function generateViaAPI(projectId, brief, jobId) {
 // Write ### marked code sections to files in the project directory
 // Merge modified files with existing code — keeps files Claude didn't return
 // Validate generated server.js syntax and auto-fix with Claude (like Lovable)
+// Validate React project: server.js syntax + essential JSX files exist + vite.config.js parseable
 async function validateAndFixCode(projectId, code, maxAttempts = 3) {
   const projDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
   const serverJsPath = path.join(projDir, 'server.js');
@@ -982,63 +1174,114 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
     // Write files to disk
     writeGeneratedFiles(projDir, code);
 
-    // Check if server.js exists and validate syntax
-    if (!fs.existsSync(serverJsPath)) break;
-    try {
+    // 1) Validate server.js syntax (CommonJS — node --check works)
+    let serverOk = true;
+    if (fs.existsSync(serverJsPath)) {
       const { spawnSync } = require('child_process');
       const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
-      if (result.status === 0) {
-        console.log(`[Validate] server.js syntax OK (attempt ${attempt})`);
-        return code; // Valid — return as-is
-      }
-      const error = (result.stderr || result.stdout || '').substring(0, 500);
-      console.log(`[Validate] Syntax error (attempt ${attempt}/${maxAttempts}): ${error.substring(0, 100)}`);
+      if (result.status !== 0) {
+        serverOk = false;
+        const error = (result.stderr || result.stdout || '').substring(0, 500);
+        console.log(`[Validate] server.js syntax error (attempt ${attempt}/${maxAttempts}): ${error.substring(0, 100)}`);
 
-      if (attempt >= maxAttempts) break;
+        if (attempt >= maxAttempts) break;
 
-      // Send error back to Claude to fix
-      const fixPrompt = `Le server.js du projet a cette erreur de syntaxe:\n${error}\n\nCorrige UNIQUEMENT l'erreur. Retourne le server.js complet corrigé avec ### server.js`;
-      const fixPayload = JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 32000,
-        messages: [
-          { role: 'user', content: `### server.js\n${fs.readFileSync(serverJsPath, 'utf8')}` },
-          { role: 'user', content: fixPrompt }
-        ]
-      });
-      const fixOpts = { hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(fixPayload) }
-      };
-
-      const fixedCode = await new Promise((resolve, reject) => {
-        const req = https.request(fixOpts, res => {
-          let d = ''; res.on('data', c => d += c);
-          res.on('end', () => {
-            try {
-              const r = JSON.parse(d);
-              const text = r.content?.[0]?.text || '';
-              if (text.includes('### server.js')) {
-                // Merge the fixed server.js with existing code
-                resolve(mergeModifiedCode(code, text));
-              } else { resolve(code); }
-            } catch { resolve(code); }
-          });
+        // Ask Claude to fix
+        const fixPrompt = `Le server.js du projet React a cette erreur de syntaxe:\n${error}\n\nCorrige UNIQUEMENT l'erreur. Le server.js sert dist/ via express.static. Retourne le server.js complet corrigé avec ### server.js`;
+        const fixPayload = JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 32000,
+          messages: [
+            { role: 'user', content: `### server.js\n${fs.readFileSync(serverJsPath, 'utf8')}` },
+            { role: 'user', content: fixPrompt }
+          ]
         });
-        req.on('error', () => resolve(code));
-        req.setTimeout(60000, () => { req.destroy(); resolve(code); });
-        req.write(fixPayload); req.end();
-      });
-      code = fixedCode;
-      console.log(`[Validate] Fix received from Claude, retrying...`);
-    } catch (e) {
-      console.error(`[Validate] Error: ${e.message}`);
-      break;
+        const fixOpts = { hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(fixPayload) }
+        };
+
+        code = await new Promise((resolve) => {
+          const req = https.request(fixOpts, res => {
+            let d = ''; res.on('data', c => d += c);
+            res.on('end', () => {
+              try {
+                const r = JSON.parse(d);
+                const text = r.content?.[0]?.text || '';
+                if (text.includes('### ')) {
+                  resolve(mergeModifiedCode(code, text));
+                } else { resolve(code); }
+              } catch { resolve(code); }
+            });
+          });
+          req.on('error', () => resolve(code));
+          req.setTimeout(60000, () => { req.destroy(); resolve(code); });
+          req.write(fixPayload); req.end();
+        });
+        console.log(`[Validate] Fix received from Claude, retrying...`);
+        continue; // retry the loop
+      }
+    }
+
+    // 2) Validate essential React files exist
+    const essentialFiles = ['index.html', 'src/main.jsx', 'src/App.jsx', 'vite.config.js'];
+    let missingFiles = [];
+    for (const f of essentialFiles) {
+      if (!fs.existsSync(path.join(projDir, f))) missingFiles.push(f);
+    }
+    if (missingFiles.length > 0) {
+      console.log(`[Validate] Missing React files: ${missingFiles.join(', ')} — writing defaults`);
+      writeDefaultReactProject(projDir);
+    }
+
+    // 3) Quick JSX sanity check: src/App.jsx should contain valid-looking JSX
+    const appJsxPath = path.join(projDir, 'src', 'App.jsx');
+    if (fs.existsSync(appJsxPath)) {
+      const appContent = fs.readFileSync(appJsxPath, 'utf8');
+      const hasExport = /export\s+default/.test(appContent);
+      const hasJsx = /<\w/.test(appContent);
+      const hasImport = /import\s+/.test(appContent);
+      if (!hasExport || !hasJsx || !hasImport) {
+        console.warn(`[Validate] src/App.jsx looks malformed (export:${hasExport} jsx:${hasJsx} import:${hasImport})`);
+        if (attempt < maxAttempts) {
+          // Ask Claude to fix App.jsx
+          const fixPrompt = `Le fichier src/App.jsx du projet React est malformé. Il doit contenir un composant React valide avec import React, export default function, et du JSX. Corrige-le.\n\nContenu actuel:\n${appContent.substring(0, 3000)}\n\nRetourne le fichier corrigé avec ### src/App.jsx`;
+          const fixPayload = JSON.stringify({
+            model: 'claude-sonnet-4-20250514', max_tokens: 16000,
+            messages: [{ role: 'user', content: fixPrompt }]
+          });
+          const fixOpts = { hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Length': Buffer.byteLength(fixPayload) }
+          };
+          code = await new Promise((resolve) => {
+            const req = https.request(fixOpts, res => {
+              let d = ''; res.on('data', c => d += c);
+              res.on('end', () => {
+                try {
+                  const r = JSON.parse(d);
+                  const text = r.content?.[0]?.text || '';
+                  if (text.includes('### ')) resolve(mergeModifiedCode(code, text));
+                  else resolve(code);
+                } catch { resolve(code); }
+              });
+            });
+            req.on('error', () => resolve(code));
+            req.setTimeout(60000, () => { req.destroy(); resolve(code); });
+            req.write(fixPayload); req.end();
+          });
+          continue;
+        }
+      }
+    }
+
+    if (serverOk) {
+      console.log(`[Validate] React project validated OK (attempt ${attempt})`);
+      return code;
     }
   }
   return code;
 }
 
-// Build a project structure summary for Claude (like Lovable showing the file tree)
+// Build a project structure summary for Claude (React multi-file)
 function buildProjectStructure(code) {
   const files = {};
   code.split(/### /).filter(s => s.trim()).forEach(s => {
@@ -1049,28 +1292,29 @@ function buildProjectStructure(code) {
     if (fn) files[fn] = content;
   });
 
-  let structure = 'STRUCTURE DU PROJET:\n';
+  let structure = 'STRUCTURE DU PROJET REACT:\n';
   for (const [fn, content] of Object.entries(files)) {
     if (fn === 'server.js') {
-      // Extract routes and tables
       const routes = (content.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []);
       const tables = (content.match(/CREATE TABLE[^(]+/g) || []);
-      structure += `\n📄 server.js (${content.length} chars)\n`;
-      structure += `  Routes: ${routes.slice(0, 15).join(', ')}\n`;
-      structure += `  Tables: ${tables.join(', ')}\n`;
-    } else if (fn === 'public/index.html') {
-      const pages = (content.match(/showPage\(['"][^'"]+['"]\)/g) || []);
-      const sections = (content.match(/id="[^"]*page[^"]*"/gi) || []);
-      structure += `\n📄 public/index.html (${content.length} chars)\n`;
-      structure += `  Pages SPA: ${pages.join(', ')}\n`;
-      structure += `  Sections: ${sections.join(', ')}\n`;
+      structure += `\n  server.js (${content.length} chars)\n`;
+      structure += `    Routes: ${routes.slice(0, 15).join(', ')}\n`;
+      structure += `    Tables: ${tables.join(', ')}\n`;
+    } else if (fn === 'src/App.jsx') {
+      const reactRoutes = (content.match(/<Route\s+path="([^"]+)"/g) || []);
+      const imports = (content.match(/import\s+\w+\s+from\s+'([^']+)'/g) || []);
+      structure += `\n  src/App.jsx (${content.length} chars)\n`;
+      structure += `    Routes: ${reactRoutes.join(', ')}\n`;
+      structure += `    Imports: ${imports.length}\n`;
     } else if (fn === 'package.json') {
       try {
         const pkg = JSON.parse(content);
         const deps = Object.keys(pkg.dependencies || {});
-        structure += `\n📄 package.json — ${pkg.name}\n`;
-        structure += `  Dependencies: ${deps.join(', ')}\n`;
-      } catch { structure += `\n📄 package.json\n`; }
+        structure += `\n  package.json — ${pkg.name}\n`;
+        structure += `    Dependencies: ${deps.join(', ')}\n`;
+      } catch { structure += `\n  package.json\n`; }
+    } else if (fn.startsWith('src/components/') || fn.startsWith('src/pages/')) {
+      structure += `\n  ${fn} (${content.length} chars)\n`;
     }
   }
   return structure;
@@ -1097,38 +1341,95 @@ function mergeModifiedCode(existingCode, newCode) {
   }
   // Merge: new files override existing, existing files kept if not in new
   const merged = { ...existingFiles, ...newFiles };
-  // Rebuild code string
-  const order = ['package.json', 'server.js', 'public/index.html'];
+
+  // Rebuild code string with React project file ordering
+  const fileOrder = [
+    'package.json', 'vite.config.js', 'index.html', 'server.js',
+    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+  ];
+
   let result = '';
-  for (const fn of order) {
+  const written = new Set();
+
+  // Write ordered files first
+  for (const fn of fileOrder) {
     if (merged[fn]) {
       result += (result ? '\n\n' : '') + `### ${fn}\n${merged[fn]}`;
+      written.add(fn);
     }
   }
+  // Then components, pages, and other src/ files (alphabetically)
+  const remaining = Object.keys(merged)
+    .filter(fn => !written.has(fn))
+    .sort((a, b) => {
+      // components before pages before others
+      const order = (f) => f.startsWith('src/components/') ? 0 : f.startsWith('src/pages/') ? 1 : 2;
+      return order(a) - order(b) || a.localeCompare(b);
+    });
+
+  for (const fn of remaining) {
+    result += (result ? '\n\n' : '') + `### ${fn}\n${merged[fn]}`;
+  }
+
   const modifiedCount = Object.keys(newFiles).length;
   const totalCount = Object.keys(merged).length;
   console.log(`[Merge] ${modifiedCount} file(s) modified, ${totalCount} total`);
   return result;
 }
 
+// Valid file paths for React + Vite projects (multi-file)
+const VALID_FILE_PATTERNS = [
+  /^package\.json$/,
+  /^vite\.config\.js$/,
+  /^index\.html$/,
+  /^server\.js$/,
+  /^src\/main\.jsx$/,
+  /^src\/index\.css$/,
+  /^src\/App\.jsx$/,
+  /^src\/components\/[A-Za-z0-9_-]+\.jsx$/,
+  /^src\/pages\/[A-Za-z0-9_-]+\.jsx$/,
+  /^src\/styles\/[A-Za-z0-9_-]+\.css$/,
+  /^src\/lib\/[A-Za-z0-9_-]+\.(js|jsx)$/,
+  /^src\/hooks\/[A-Za-z0-9_-]+\.(js|jsx)$/,
+  /^src\/context\/[A-Za-z0-9_-]+\.(js|jsx)$/,
+  // Legacy support for public/index.html (map to index.html at root)
+  /^public\/index\.html$/,
+];
+
+function isValidProjectFile(filename) {
+  return VALID_FILE_PATTERNS.some(pattern => pattern.test(filename));
+}
+
 function writeGeneratedFiles(projectDir, code) {
   const sections = code.split(/^### /m).filter(s => s.trim());
+  let filesWritten = 0;
   for (const section of sections) {
     const newlineIdx = section.indexOf('\n');
     if (newlineIdx === -1) continue;
-    const filename = section.substring(0, newlineIdx).trim();
+    let filename = section.substring(0, newlineIdx).trim();
     const content = section.substring(newlineIdx + 1).trim();
 
     if (!filename || !content) continue;
-    // Only write expected files
-    if (!['package.json', 'server.js', 'public/index.html'].includes(filename)) continue;
+
+    // Map public/index.html → index.html (React projects have index.html at root)
+    if (filename === 'public/index.html' && content.includes('id="root"')) {
+      filename = 'index.html';
+    }
+
+    // Only write valid project files
+    if (!isValidProjectFile(filename)) {
+      console.log(`[WriteFiles] Skipping invalid file: ${filename}`);
+      continue;
+    }
 
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
     fs.writeFileSync(filePath, content);
-    console.log(`[API Fallback] Wrote ${filename} (${content.length} bytes)`);
+    filesWritten++;
+    console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
+  console.log(`[WriteFiles] Total: ${filesWritten} files written`);
 }
 
 // ─── LEGACY GENERATE CLAUDE (KEPT FOR SMALL OPERATIONS) ───
@@ -1309,12 +1610,12 @@ function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
     fs.mkdirSync(projectDir, { recursive: true });
   }
   
-  // Create public directory
-  const publicDir = path.join(projectDir, 'public');
-  if (!fs.existsSync(publicDir)) {
-    fs.mkdirSync(publicDir, { recursive: true });
+  // Create src directory for React project
+  const srcDirImg = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDirImg)) {
+    fs.mkdirSync(srcDirImg, { recursive: true });
   }
-  
+
   // Save the image to the project directory for Claude Code to analyze
   const imagePath = path.join(projectDir, 'design-reference.png');
   const imageBuffer = Buffer.from(imageBase64, 'base64');
@@ -1330,52 +1631,49 @@ ${prompt || 'Reproduire fidèlement ce design en HTML/CSS/JS moderne, responsive
 `;
   fs.writeFileSync(path.join(projectDir, 'BRIEF.md'), briefContent);
   
-  // Write CLAUDE.md with image-specific instructions
-  const claudeMdContent = `# Prestige AI — Instructions (Design Image)
+  // Write CLAUDE.md with image-specific instructions (React + Vite)
+  const claudeMdContent = `# Prestige AI — Instructions (Design Image → React)
 
-Tu es Prestige AI, le meilleur générateur d'applications web. Tu travailles dans le dossier courant uniquement.
+Tu es Prestige AI, le meilleur générateur d'applications React. Tu travailles dans le dossier courant uniquement.
 
 ## Brief
-Analyse l'image design-reference.png et reproduis FIDÈLEMENT ce design.
+Analyse l'image design-reference.png et reproduis FIDÈLEMENT ce design en React + TailwindCSS.
 
 ## Instructions de reproduction
 1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
-2. Identifie la palette de couleurs exacte utilisée
-3. Note la typographie et les tailles de police
+2. Identifie la palette de couleurs et les traduis en classes Tailwind
+3. Reproduis la typographie avec les utilities Tailwind
 4. Reproduis les espacements et marges
-5. Adapte pour le responsive (mobile-first)
+5. Adapte pour le responsive (mobile-first avec sm:, md:, lg:)
 
-## Fichiers à créer
+## Architecture React + Vite
 
-Crée exactement ces 3 fichiers dans le dossier courant :
+Crée un projet React complet :
+- package.json — "type": "module", dépendances React + Vite + TailwindCSS + Express
+- vite.config.js — plugins: react + tailwindcss, proxy /api
+- index.html — <div id="root"> + <script type="module" src="/src/main.jsx">
+- server.js — Express servant dist/, SQLite, JWT auth
+- src/main.jsx — point d'entrée React
+- src/index.css — @import "tailwindcss" + custom CSS
+- src/App.jsx — BrowserRouter + Routes + Layout
+- src/components/*.jsx — Header, Footer, etc.
+- src/pages/*.jsx — Home, etc.
 
-**package.json** — JSON valide, dépendances fixes :
-express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2.8.5, helmet 7.1.0, compression 1.7.4
-
-**server.js** — Backend Express 4.18.2 :
-- Port 3000, route /health, fichiers statiques depuis /public
-- SQLite basique
-- JWT auth, compte admin par défaut admin@project.com / Admin2024!
-- Wildcard : app.get(/.*/, ...) JAMAIS app.get('*')
-
-**public/index.html** — Frontend vanilla uniquement :
-- REPRODUIS FIDÈLEMENT le design de l'image
-- JAMAIS require(), exports, import
-- fetch('/api/...') pour le backend
-- CSS moderne (Flexbox/Grid, variables CSS)
-- Images via https://picsum.photos avec dimensions appropriées
-- Contenu réaliste et professionnel (jamais de Lorem ipsum)
+## Qualité
+- REPRODUIS FIDÈLEMENT le design de l'image en composants React + TailwindCSS
+- Lucide React pour les icônes
+- Images via https://picsum.photos
+- Contenu réaliste et professionnel
 
 ## Processus
-
 1. Analyse l'image design-reference.png
-2. Génère les 3 fichiers reproduisant le design
-3. Teste : \`node --check server.js\`
-4. Lance : \`node server.js &\`
-5. Teste : \`curl http://localhost:3000/health\`
+2. Génère les fichiers React reproduisant le design
+3. Installe et build : npm install && npm run build
+4. Lance : node server.js &
+5. Teste : curl http://localhost:3000/health
 6. Corrige si erreur, reteste
-7. Quand tout fonctionne, écris le fichier \`READY\`
-8. Si échec après 5 tentatives, écris \`ERROR\`
+7. Quand tout fonctionne, écris le fichier READY
+8. Si échec après 5 tentatives, écris ERROR
 `;
   fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), claudeMdContent);
   
@@ -1388,7 +1686,7 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
   console.log(`[Claude Code Image] Project directory: ${projectDir}`);
   
   // Build the prompt for Claude Code
-  const claudePrompt = `Lis le fichier CLAUDE.md et analyse l'image design-reference.png dans ce dossier. Reproduis fidèlement ce design en créant les 3 fichiers requis (package.json, server.js, public/index.html). Teste-les et crée le fichier READY quand tout fonctionne.`;
+  const claudePrompt = `Lis le fichier CLAUDE.md et analyse l'image design-reference.png dans ce dossier. Reproduis fidèlement ce design en créant un projet React + Vite + TailwindCSS complet (package.json, vite.config.js, index.html, server.js, src/*.jsx). Teste avec npm run build et crée le fichier READY quand tout fonctionne.`;
   
   // Spawn Claude Code process (see generateClaudeCode for security notes)
   const claudeProcess = spawn('claude', [
@@ -1459,67 +1757,34 @@ express 4.18.2, better-sqlite3 9.4.3, bcryptjs 2.4.3, jsonwebtoken 9.0.2, cors 2
       return;
     }
 
-    const packageJsonPath = path.join(projectDir, 'package.json');
-    const serverJsPath = path.join(projectDir, 'server.js');
-    const indexHtmlPath = path.join(projectDir, 'public', 'index.html');
     const errorPath = path.join(projectDir, 'ERROR');
 
-    const packageExists = fs.existsSync(packageJsonPath);
-    const serverExists = fs.existsSync(serverJsPath);
-    const indexExists = fs.existsSync(indexHtmlPath);
-    const errorExists = fs.existsSync(errorPath);
-
-    if (errorExists) {
+    if (fs.existsSync(errorPath)) {
       job.status = 'error';
       job.error = 'Claude Code a rencontré des erreurs lors de la reproduction du design.';
       try { fs.unlinkSync(errorPath); } catch {}
       return;
     }
 
-    if (packageExists && serverExists && indexExists) {
-      try {
-        const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
-        const serverJs = fs.readFileSync(serverJsPath, 'utf8');
-        const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-
-        job.code = `### package.json
-${packageJson}
-
-### server.js
-${serverJs}
-
-### public/index.html
-${indexHtml}`;
-
+    // Read all generated React project files
+    try {
+      const allFiles = readProjectFilesRecursive(projectDir);
+      if (Object.keys(allFiles).length >= 3) {
+        job.code = formatProjectCode(allFiles);
         job.status = 'done';
         job.progressMessage = 'Design reproduit avec succès !';
-        console.log(`[Claude Code Image] Generation successful for project ${projectId}`);
-      } catch (readErr) {
-        job.status = 'error';
-        job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
+        console.log(`[Claude Code Image] Generation successful for project ${projectId} — ${Object.keys(allFiles).length} files`);
+      } else {
+        console.warn(`[Claude Code Image] Only ${Object.keys(allFiles).length} files found, writing defaults`);
+        writeDefaultReactProject(projectDir);
+        const filesWithDefaults = readProjectFilesRecursive(projectDir);
+        job.code = formatProjectCode(filesWithDefaults);
+        job.status = 'done';
+        job.progressMessage = 'Projet généré avec fichiers par défaut.';
       }
-    } else {
-      console.warn(`[Claude Code Image] Some files missing, using defaults.`);
-
-      if (!packageExists) fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
-      if (!serverExists) fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
-      if (!indexExists) fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
-
-      const packageJson = fs.readFileSync(packageJsonPath, 'utf8');
-      const serverJs = fs.readFileSync(serverJsPath, 'utf8');
-      const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-
-      job.code = `### package.json
-${packageJson}
-
-### server.js
-${serverJs}
-
-### public/index.html
-${indexHtml}`;
-
-      job.status = 'done';
-      job.progressMessage = 'Projet généré avec fichiers par défaut.';
+    } catch (readErr) {
+      job.status = 'error';
+      job.error = `Erreur de lecture des fichiers: ${readErr.message}`;
     }
   });
 
@@ -2280,72 +2545,48 @@ function cleanGeneratedContent(content) {
   return cleaned;
 }
 
-// Sanitize public/index.html: strip Node.js patterns that crash in browsers.
-// Claude sometimes generates require(), module.exports, etc. despite the prompt.
-// Strategy: remove entire <script> blocks containing Node.js code rather than
-// patching individual lines (which just changes the error type).
-function sanitizeClientHtml(filePath) {
-  if (!fs.existsSync(filePath)) return false;
-  let html = fs.readFileSync(filePath, 'utf8');
-  const original = html;
-
-  // 1) If the file has NO HTML structure at all (pure Node.js code), it's unsalvageable
-  if (!html.includes('<') && html.includes('require(')) {
-    console.warn(`[Sanitize] ${filePath} is pure Node.js code, not HTML — skipping`);
-    return false;
-  }
-
-  // 2) Remove entire <script> blocks that contain require() — they are server-side code
-  html = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gi, (match, scriptContent) => {
-    if (/\brequire\s*\(/.test(scriptContent) ||
-        /\bmodule\.exports\b/.test(scriptContent) ||
-        /\bexports\.\w+\s*=/.test(scriptContent)) {
-      console.log(`[Sanitize] Removed <script> block containing Node.js code (${scriptContent.length} bytes)`);
-      return '<!-- server-side script removed -->';
-    }
-    return match; // keep browser-safe scripts
-  });
-
-  // 3) Remove any stray Node.js lines outside script tags
-  html = html.replace(/^\s*(const|let|var)\s+.*\brequire\s*\(.*$/gm, '');
-  html = html.replace(/^\s*module\.exports\s*=.*$/gm, '');
-  html = html.replace(/^\s*exports\.\w+\s*=.*$/gm, '');
-
-  // 4) Replace process.env / __dirname / __filename if they survive
-  html = html.replace(/\bprocess\.env\.\w+/g, "''");
-  html = html.replace(/\b__dirname\b/g, "'.'");
-  html = html.replace(/\b__filename\b/g, "''");
-
-  // 5) Fix CSS that hides content: opacity:0 in inline styles or @keyframes from{}
-  //    These are meant for IntersectionObserver animations but without JS, content stays hidden
-  html = html.replace(/(\{[^}]*?)opacity\s*:\s*0\s*;/g, (match, prefix) => {
-    // Only fix in element styles, not in @keyframes "to" blocks
-    if (prefix.includes('@keyframes') || prefix.includes('to {') || prefix.includes('to{')) return match;
-    return prefix + 'opacity: 1;';
-  });
-
-  // 6) If no <script> tag exists, inject a minimal one for hamburger menu and scroll
-  if (!/<script\b/i.test(html) && html.includes('</body>')) {
-    const minScript = `<script>
-document.addEventListener('DOMContentLoaded',function(){
-  var tog=document.querySelector('.hamburger,.menu-toggle,.nav-toggle,[data-toggle]');
-  var nav=document.querySelector('.nav-links,.nav-menu,.mobile-menu');
-  if(tog&&nav)tog.addEventListener('click',function(){nav.classList.toggle('active');tog.classList.toggle('active');});
-  var top=document.querySelector('.scroll-top,.back-to-top,#scrollTop');
-  if(top)top.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
-  document.querySelectorAll('a[href^="#"]').forEach(function(a){a.addEventListener('click',function(e){var t=document.querySelector(a.getAttribute('href'));if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth'});}});});
-});
-</script>`;
-    html = html.replace('</body>', minScript + '\n</body>');
-    console.log(`[Docker Build] ✓ Injected minimal JS (no script tags found in generated HTML)`);
-  }
-
-  if (html !== original) {
-    fs.writeFileSync(filePath, html);
-    console.log(`[Docker Build] ✓ Sanitized public/index.html`);
+// Validate React project index.html: must have <div id="root"> and module script entry point
+function validateReactIndexHtml(projectDir) {
+  const indexPath = path.join(projectDir, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    console.log(`[Validate] index.html missing — writing default`);
+    fs.writeFileSync(indexPath, DEFAULT_INDEX_HTML);
     return true;
   }
-  return false;
+  let html = fs.readFileSync(indexPath, 'utf8');
+  let changed = false;
+
+  // Must have <div id="root">
+  if (!html.includes('id="root"')) {
+    console.warn(`[Validate] index.html missing <div id="root"> — fixing`);
+    if (html.includes('<body>')) {
+      html = html.replace('<body>', '<body>\n  <div id="root"></div>');
+      changed = true;
+    } else {
+      fs.writeFileSync(indexPath, DEFAULT_INDEX_HTML);
+      return true;
+    }
+  }
+
+  // Must have module script entry point
+  if (!html.includes('src="/src/main.jsx"') && !html.includes("src='/src/main.jsx'")) {
+    console.warn(`[Validate] index.html missing main.jsx entry — fixing`);
+    if (html.includes('</body>')) {
+      html = html.replace('</body>', '  <script type="module" src="/src/main.jsx"></script>\n</body>');
+      changed = true;
+    }
+  }
+
+  if (!html.includes('</html>')) {
+    html += '\n</html>';
+    changed = true;
+  }
+
+  if (changed) {
+    fs.writeFileSync(indexPath, html);
+    console.log(`[Validate] index.html repaired`);
+  }
+  return true;
 }
 
 // Parse generated code into files (looking for ### markers)
@@ -2355,21 +2596,27 @@ function parseDockerProjectCode(code) {
 
   // Pattern: ### filename.ext followed by content until next ### or end
   const sections = code.split(/###\s+/);
-  
+
   for (const section of sections) {
     if (!section.trim()) continue;
-    
+
     // First line is the filename
     const lines = section.split('\n');
     const firstLine = lines[0].trim();
-    
-    // Check if it looks like a filename
-    if (firstLine.includes('.') && !firstLine.includes(' ')) {
-      const filename = firstLine.replace(/[`*]/g, '').trim();
+
+    // Check if it looks like a filename (may include paths like src/components/Header.jsx)
+    if (firstLine.includes('.') && !firstLine.includes('  ')) {
+      let filename = firstLine.replace(/[`*]/g, '').trim();
       // Get content, skipping markdown code block markers and clean it
       let content = lines.slice(1).join('\n');
       content = cleanGeneratedContent(content);
-      if (content) {
+
+      // Map public/index.html to index.html if it's a React project (has <div id="root">)
+      if (filename === 'public/index.html' && content.includes('id="root"')) {
+        filename = 'index.html';
+      }
+
+      if (content && isValidProjectFile(filename)) {
         files[filename] = content;
       }
     }
@@ -2381,7 +2628,7 @@ function parseDockerProjectCode(code) {
 // Build and run Docker container for a project
 async function buildDockerProject(projectId, code, onProgress) {
   const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
-  const publicDir = path.join(projectDir, 'public');
+  const srcDir = path.join(projectDir, 'src');
   const dataDir = path.join(projectDir, 'data');
   const containerName = getContainerName(projectId);
   const imageName = `pbp-project-${projectId}:latest`;
@@ -2437,7 +2684,7 @@ async function buildDockerProject(projectId, code, onProgress) {
       }
       fs.rmSync(projectDir, { recursive: true, force: true });
       fs.mkdirSync(projectDir, { recursive: true });
-      fs.mkdirSync(publicDir, { recursive: true });
+      fs.mkdirSync(srcDir, { recursive: true });
       fs.mkdirSync(dataDir, { recursive: true });
       // Restore data directory
       if (fs.existsSync(tmpData)) {
@@ -2450,14 +2697,14 @@ async function buildDockerProject(projectId, code, onProgress) {
     } else {
       console.log(`[Docker Build] Creating new project directory structure`);
       fs.mkdirSync(projectDir, { recursive: true });
-      fs.mkdirSync(publicDir, { recursive: true });
+      fs.mkdirSync(srcDir, { recursive: true });
       fs.mkdirSync(dataDir, { recursive: true });
     }
 
-    // Step 2: Write all files (30%)
+    // Step 2: Write all files (30%) — React multi-file project
     console.log(`[Docker Build] Step 2: Writing project files...`);
     onProgress({ step: 2, progress: 30, message: 'Écriture des fichiers du projet...' });
-    
+
     for (const [filename, content] of Object.entries(files)) {
       const filePath = path.join(projectDir, filename);
       const dir = path.dirname(filePath);
@@ -2468,24 +2715,21 @@ async function buildDockerProject(projectId, code, onProgress) {
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
-    // Sanitize public/index.html — strip any Node.js code that would crash in browsers
-    sanitizeClientHtml(path.join(projectDir, 'public', 'index.html'));
-
-    // Fix package.json to use pinned versions
+    // Fix package.json to use pinned versions and ensure "type": "module"
     const packageJsonPathForScan = path.join(projectDir, 'package.json');
     if (fs.existsSync(packageJsonPathForScan)) {
       let packageContent = fs.readFileSync(packageJsonPathForScan, 'utf8');
       let packageCorrected = false;
-      
+
       // Fix Express 5.x references
       if (packageContent.includes('"express": "^5') || packageContent.includes('"express": "5')) {
         packageContent = packageContent.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
-        console.log(`[Docker Build] ✓ Fixed Express 5.x to 4.18.2 in package.json`);
+        console.log(`[Docker Build] Fixed Express 5.x to 4.18.2`);
         packageCorrected = true;
       }
-      
+
       // Remove ^ prefix from critical dependencies
-      const criticalDeps = ['express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression'];
+      const criticalDeps = ['express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression', 'react', 'react-dom', 'react-router-dom', 'vite'];
       for (const dep of criticalDeps) {
         const regex = new RegExp(`"${dep}"\\s*:\\s*"\\^`, 'g');
         if (packageContent.match(regex)) {
@@ -2493,147 +2737,86 @@ async function buildDockerProject(projectId, code, onProgress) {
           packageCorrected = true;
         }
       }
-      
+
       if (packageCorrected) {
         fs.writeFileSync(packageJsonPathForScan, packageContent);
-        console.log(`[Docker Build] ✓ package.json versions pinned and saved`);
+        console.log(`[Docker Build] package.json versions pinned`);
       }
     }
 
-    // Step 2.25: STRICT VALIDATION of all three mandatory files
-    console.log(`[Docker Build] Step 2.25: Strict validation of mandatory files...`);
-    onProgress({ step: 2, progress: 32, message: 'Validation stricte des fichiers...' });
+    // Step 2.25: Validate mandatory React project files
+    console.log(`[Docker Build] Step 2.25: Validating React project files...`);
+    onProgress({ step: 2, progress: 32, message: 'Validation des fichiers React...' });
 
     // VALIDATION 1: package.json must be valid JSON
     const packageJsonPath = path.join(projectDir, 'package.json');
-    let packageJsonValid = false;
-    
-    if (fs.existsSync(packageJsonPath)) {
-      try {
-        const packageContent = fs.readFileSync(packageJsonPath, 'utf8');
-        JSON.parse(packageContent);
-        packageJsonValid = true;
-        console.log(`[Docker Build] ✓ package.json is valid JSON`);
-      } catch (parseError) {
-        console.warn(`[Docker Build] ✗ package.json is invalid JSON: ${parseError.message}`);
-      }
-    } else {
-      console.warn(`[Docker Build] ✗ package.json is missing`);
-    }
-    
-    if (!packageJsonValid) {
-      console.log(`[Docker Build] → Replacing with default valid package.json`);
+    if (!fs.existsSync(packageJsonPath) || !isValidJson(packageJsonPath)) {
+      console.log(`[Docker Build] Writing default package.json`);
       fs.writeFileSync(packageJsonPath, DEFAULT_PACKAGE_JSON);
-      console.log(`[Docker Build] ✓ Default package.json written successfully`);
     }
 
-    // VALIDATION 2: server.js must have no syntax errors
+    // VALIDATION 2: server.js syntax check
     const serverJsPath = path.join(projectDir, 'server.js');
-    let serverJsValid = false;
-
-    if (fs.existsSync(serverJsPath)) {
-      try {
-        // Use spawnSync for safer command execution (avoid shell injection)
-        const { spawnSync } = require('child_process');
-        const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
-        if (result.status === 0) {
-          serverJsValid = true;
-          console.log(`[Docker Build] ✓ server.js has no syntax errors`);
-        } else {
-          console.warn(`[Docker Build] ✗ server.js has syntax errors: ${result.stderr || result.stdout}`);
-        }
-      } catch (syntaxError) {
-        console.warn(`[Docker Build] ✗ server.js syntax check failed: ${syntaxError.message}`);
-      }
-    } else {
-      console.warn(`[Docker Build] ✗ server.js is missing`);
-    }
-
-    if (!serverJsValid) {
-      console.log(`[Docker Build] → Replacing with default valid server.js`);
+    if (!fs.existsSync(serverJsPath)) {
+      console.log(`[Docker Build] Writing default server.js`);
       fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
-      console.log(`[Docker Build] ✓ Default server.js written successfully`);
-    }
-
-    // VALIDATION 3: public/index.html must contain <!DOCTYPE html>
-    const indexHtmlPath = path.join(publicDir, 'index.html');
-    let indexHtmlValid = false;
-
-    if (fs.existsSync(indexHtmlPath)) {
-      try {
-        const htmlContent = fs.readFileSync(indexHtmlPath, 'utf8');
-        const hasDoctype = htmlContent.includes('<!DOCTYPE') || htmlContent.includes('<!doctype') || htmlContent.includes('<html');
-        const hasBody = htmlContent.includes('<body');
-        const hasClosingHtml = htmlContent.includes('</html>');
-        const hasNodeCode = /\brequire\s*\(/.test(htmlContent) && !htmlContent.includes('<!-- server-side script removed -->');
-        const isTruncated = hasDoctype && (!hasBody || !hasClosingHtml);
-
-        if (isTruncated && hasBody) {
-          // HTML has content but is truncated — repair it instead of replacing with default
-          let repaired = htmlContent;
-          if (!repaired.includes('</body>')) repaired += '\n</body>';
-          if (!repaired.includes('</html>')) repaired += '\n</html>';
-          fs.writeFileSync(indexHtmlPath, repaired);
-          indexHtmlValid = true;
-          console.log(`[Docker Build] ✓ public/index.html was truncated — repaired (${repaired.length} bytes)`);
-        } else if (isTruncated) {
-          console.warn(`[Docker Build] ✗ public/index.html is TRUNCATED (missing <body>)`);
-        } else if (hasNodeCode) {
-          console.warn(`[Docker Build] ✗ public/index.html still contains require() after sanitization`);
-        } else if (hasDoctype && hasBody && hasClosingHtml) {
-          indexHtmlValid = true;
-          console.log(`[Docker Build] ✓ public/index.html is complete HTML (${htmlContent.length} bytes)`);
-        } else {
-          console.warn(`[Docker Build] ✗ public/index.html missing HTML structure`);
-        }
-      } catch (readError) {
-        console.warn(`[Docker Build] ✗ Error reading public/index.html: ${readError.message}`);
+    } else {
+      const syntaxResult = checkSyntax(projectDir);
+      if (!syntaxResult.valid) {
+        console.warn(`[Docker Build] server.js syntax error, using default: ${syntaxResult.error}`);
+        fs.writeFileSync(serverJsPath, DEFAULT_SERVER_JS);
       }
-    } else {
-      console.warn(`[Docker Build] ✗ public/index.html is missing`);
     }
 
-    if (!indexHtmlValid) {
-      console.log(`[Docker Build] → Replacing with default valid index.html`);
-      fs.writeFileSync(indexHtmlPath, DEFAULT_INDEX_HTML);
-      console.log(`[Docker Build] ✓ Default index.html written successfully`);
+    // VALIDATION 3: Ensure essential React files exist
+    const essentialFiles = {
+      'vite.config.js': DEFAULT_VITE_CONFIG,
+      'index.html': DEFAULT_INDEX_HTML,
+      'src/main.jsx': DEFAULT_MAIN_JSX,
+      'src/index.css': DEFAULT_INDEX_CSS,
+      'src/App.jsx': DEFAULT_APP_JSX,
+    };
+    for (const [fn, defaultContent] of Object.entries(essentialFiles)) {
+      const fp = path.join(projectDir, fn);
+      const fpDir = path.dirname(fp);
+      if (!fs.existsSync(fpDir)) fs.mkdirSync(fpDir, { recursive: true });
+      if (!fs.existsSync(fp)) {
+        console.log(`[Docker Build] Writing default ${fn}`);
+        fs.writeFileSync(fp, defaultContent);
+      }
     }
 
-    console.log(`[Docker Build] Strict validation completed`);
+    // VALIDATION 4: index.html must have <div id="root"> and module script
+    validateReactIndexHtml(projectDir);
 
-    // Step 2.5: Final syntax check before building (35%)
-    console.log(`[Docker Build] Step 2.5: Final syntax verification...`);
-    onProgress({ step: 2, progress: 35, message: 'Vérification finale de la syntaxe...' });
-    const syntaxResult = checkSyntax(projectDir);
-    if (!syntaxResult.valid) {
-      // Syntax still invalid after validation - use default server.js as last resort
-      console.warn(`[Docker Build] Final syntax check failed, using default server.js: ${syntaxResult.error}`);
-      fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
-    } else {
-      console.log(`[Docker Build] ✓ Final syntax check passed`);
-    }
+    console.log(`[Docker Build] React project validation completed`);
 
-    // Create Dockerfile for the project
-    // Use 32 bytes (256 bits) for JWT secret as recommended for HMAC-SHA256
-    console.log(`[Docker Build] Creating Dockerfile...`);
+    // Step 2.5: Create Dockerfile for React + Vite project
+    console.log(`[Docker Build] Step 2.5: Creating Dockerfile...`);
+    onProgress({ step: 2, progress: 35, message: 'Création du Dockerfile React...' });
     const jwtSecret = crypto.randomBytes(32).toString('hex');
-    // CORRECTION 5: Add --max-old-space-size=256 for memory limit, healthcheck every 30s
+
+    // React + Vite Dockerfile: build frontend then serve with Express
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
+COPY vite.config.js ./
+COPY index.html ./
 COPY server.js ./
-COPY public/ ./public/
+COPY src/ ./src/
 RUN mkdir -p /app/data
+# Build React frontend with Vite
+RUN npx vite build 2>&1 || echo "Vite build failed, will retry at startup"
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
 ENV NODE_OPTIONS="--max-old-space-size=256"
-EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
+EXPOSE 3000 5173
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
 CMD ["node", "server.js"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
-    console.log(`[Docker Build] Dockerfile created with memory limit and 30s healthcheck`);
+    console.log(`[Docker Build] React Dockerfile created`);
 
     // Step 3: Stop old container and build new image (50%)
     console.log(`[Docker Build] Step 3: Stopping old container and building new image...`);
@@ -2642,9 +2825,23 @@ CMD ["node", "server.js"]
     console.log(`[Docker Build] Old container stopped (if existed)`);
     
     // Build image using dockerode
-    // Get all files in project directory to include in build context
-    const projectFiles = fs.readdirSync(projectDir);
-    console.log(`[Docker Build] Building image with files: ${projectFiles.join(', ')}`);
+    // Get all files in project directory recursively for build context
+    function listFilesRecursive(dir, base = '') {
+      let result = [];
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const rel = base ? `${base}/${entry.name}` : entry.name;
+        if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'data') continue;
+        if (entry.isDirectory()) {
+          result = result.concat(listFilesRecursive(path.join(dir, entry.name), rel));
+        } else {
+          result.push(rel);
+        }
+      }
+      return result;
+    }
+    const projectFiles = listFilesRecursive(projectDir);
+    console.log(`[Docker Build] Building image with ${projectFiles.length} files: ${projectFiles.slice(0, 10).join(', ')}${projectFiles.length > 10 ? '...' : ''}`);
     const buildStream = await docker.buildImage(
       { context: projectDir, src: projectFiles },
       { t: imageName }
@@ -2787,32 +2984,49 @@ function translateErrorType(errorType) {
   return translations[errorType] || translations[ERROR_TYPES.UNKNOWN];
 }
 
-// Check syntax before container build using node --check
+// Check syntax before container build — server.js via node --check, React files via structure check
 function checkSyntax(projectDir) {
+  const { spawnSync } = require('child_process');
+
+  // 1) Validate server.js (CommonJS — node --check works)
   const serverJsPath = path.join(projectDir, 'server.js');
-  if (!fs.existsSync(serverJsPath)) {
-    return { valid: true };
-  }
-  
-  try {
-    // Use spawnSync for safer command execution (avoid shell injection)
-    const { spawnSync } = require('child_process');
-    const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
-    if (result.status === 0) {
-      return { valid: true };
+  if (fs.existsSync(serverJsPath)) {
+    try {
+      const result = spawnSync('node', ['--check', serverJsPath], { encoding: 'utf8', timeout: 10000 });
+      if (result.status !== 0) {
+        return {
+          valid: false,
+          error: result.stderr || result.stdout || 'Syntax error in server.js',
+          type: ERROR_TYPES.SYNTAX
+        };
+      }
+    } catch (e) {
+      return { valid: false, error: e.message, type: ERROR_TYPES.SYNTAX };
     }
-    return { 
-      valid: false, 
-      error: result.stderr || result.stdout || 'Syntax error',
-      type: ERROR_TYPES.SYNTAX
-    };
-  } catch (e) {
-    return { 
-      valid: false, 
-      error: e.message,
-      type: ERROR_TYPES.SYNTAX
-    };
   }
+
+  // 2) Validate essential React project structure
+  const requiredFiles = ['index.html', 'vite.config.js', 'src/main.jsx', 'src/App.jsx'];
+  const missing = requiredFiles.filter(f => !fs.existsSync(path.join(projectDir, f)));
+  if (missing.length > 0) {
+    console.warn(`[checkSyntax] Missing React files: ${missing.join(', ')}`);
+    // Not a hard failure — writeDefaultReactProject will fill in gaps
+  }
+
+  // 3) Quick JSX sanity: App.jsx should have export default and JSX
+  const appJsx = path.join(projectDir, 'src', 'App.jsx');
+  if (fs.existsSync(appJsx)) {
+    const content = fs.readFileSync(appJsx, 'utf8');
+    if (!content.includes('export') || !/<\w/.test(content)) {
+      return {
+        valid: false,
+        error: 'src/App.jsx is not a valid React component (missing export or JSX)',
+        type: ERROR_TYPES.SYNTAX
+      };
+    }
+  }
+
+  return { valid: true };
 }
 
 // Extract missing module name from error logs
@@ -2892,11 +3106,11 @@ ${originalCode}
 Génère une version corrigée et simplifiée qui fonctionnera à coup sûr.
 
 RÈGLES DE CORRECTION:
-1. Utilise le format ### pour chaque fichier (### package.json, ### server.js, ### public/index.html)
+1. Utilise le format ### pour chaque fichier (### package.json, ### vite.config.js, ### index.html, ### server.js, ### src/App.jsx, etc.)
 2. JAMAIS de backticks markdown
-3. package.json: JSON valide avec express, better-sqlite3, bcryptjs, jsonwebtoken, cors, helmet
-4. server.js: Port 3000, route /health, express.static('public')
-5. public/index.html: HTML/CSS/JS vanilla uniquement
+3. package.json: JSON valide avec "type": "module", React, Vite, TailwindCSS, Express
+4. server.js: Port 3000, route /health, express.static('dist')
+5. Les composants React dans src/components/*.jsx, pages dans src/pages/*.jsx
 
 Retourne UNIQUEMENT le code corrigé, sans explications.`;
 
@@ -2993,13 +3207,8 @@ Réécris complètement server.js en corrigeant l'erreur. Assure-toi que app est
             const correctedServerJs = response.content[0].text
               .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '').trim();
 
-            // Rebuild the full code with corrected server.js
-            const packageMatch = originalCode.match(/### package\.json\n([\s\S]*?)(?=\n### )/);
-            const indexMatch = originalCode.match(/### public\/index\.html\n([\s\S]*?)$/);
-            const packageJson = packageMatch ? packageMatch[1].trim() : '';
-            const indexHtml = indexMatch ? indexMatch[1].trim() : '';
-
-            const fullCode = `### package.json\n${packageJson}\n\n### server.js\n${correctedServerJs}\n\n### public/index.html\n${indexHtml}`;
+            // Rebuild the full code with corrected server.js merged into existing files
+            const fullCode = mergeModifiedCode(originalCode, `### server.js\n${correctedServerJs}`);
             console.log(`[Final Correction] server.js rewritten (${correctedServerJs.length} bytes)`);
             resolve(fullCode);
           } else if (response.error) {
@@ -3464,10 +3673,19 @@ async function ensureBaseImage() {
     const dockerfileContent = `FROM node:20-alpine
 RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
 WORKDIR /app
-RUN npm install express@4.18.2 better-sqlite3@9.4.3 bcryptjs@2.4.3 jsonwebtoken@9.0.2 cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0 pdfkit@0.15.0 nodemailer@6.9.8 stripe@14.14.0 socket.io@4.7.4 multer@1.4.5-lts.1 sharp@0.33.2 qrcode@1.5.3 exceljs@4.4.0 csv-parse@5.5.3 marked@11.1.1 axios@1.6.7
+RUN npm install \
+  express@4.18.2 better-sqlite3@9.4.3 bcryptjs@2.4.3 jsonwebtoken@9.0.2 \
+  cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0 \
+  pdfkit@0.15.0 nodemailer@6.9.8 stripe@14.14.0 socket.io@4.7.4 \
+  multer@1.4.5-lts.1 sharp@0.33.2 qrcode@1.5.3 exceljs@4.4.0 \
+  csv-parse@5.5.3 marked@11.1.1 axios@1.6.7 \
+  vite@6.3.5 @vitejs/plugin-react@4.5.2 \
+  react@19.1.0 react-dom@19.1.0 react-router-dom@7.6.1 \
+  lucide-react@0.511.0 clsx@2.1.1 \
+  tailwindcss@4.1.7 @tailwindcss/vite@4.1.7
 ENV NODE_PATH=/app/node_modules
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-EXPOSE 3000
+EXPOSE 3000 5173
 `;
     const tmpDir = '/tmp/pbp-base-build';
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
@@ -3918,33 +4136,52 @@ const server = http.createServer(async (req, res) => {
     const running = await isContainerRunningAsync(project_id);
 
     if (!running) {
-      // Container not running — need full build
       json(res, 200, { hot: false, reason: 'container_not_running' }); return;
     }
 
     try {
-      console.log(`[Hot Reload] Updating files in ${containerName}`);
+      console.log(`[Hot Reload] Updating React project files in ${containerName}`);
       const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
       const container = docker.getContainer(containerName);
-
-      // Copy updated files into the running container
       const { execSync } = require('child_process');
-      execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-      execSync(`docker cp ${projDir}/public/index.html ${containerName}:/app/public/index.html`, { timeout: 10000 });
 
-      // Restart the Node process inside the container
+      // Copy all project files into the running container
+      // Backend
+      if (fs.existsSync(path.join(projDir, 'server.js'))) {
+        execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+      }
+      // React source files
+      if (fs.existsSync(path.join(projDir, 'src'))) {
+        execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+      }
+      // Root HTML and config
+      if (fs.existsSync(path.join(projDir, 'index.html'))) {
+        execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+      }
+      if (fs.existsSync(path.join(projDir, 'vite.config.js'))) {
+        execSync(`docker cp ${projDir}/vite.config.js ${containerName}:/app/vite.config.js`, { timeout: 10000 });
+      }
+
+      // Rebuild Vite dist inside the container, then restart Express
+      try {
+        execSync(`docker exec ${containerName} npx vite build`, { timeout: 30000, encoding: 'utf8' });
+        console.log(`[Hot Reload] Vite build completed in container`);
+      } catch (buildErr) {
+        console.warn(`[Hot Reload] Vite build failed, restarting container: ${buildErr.message}`);
+      }
+
+      // Restart Express to pick up new dist/ and server.js changes
       await container.restart({ t: 2 });
 
       // Wait for health
       await new Promise(r => setTimeout(r, 2000));
-      const healthy = await waitForContainerHealth(project_id, 8000);
+      const healthy = await waitForContainerHealth(project_id, 10000);
 
       if (healthy) {
         db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${project_id}/`, project_id);
-        console.log(`[Hot Reload] ${containerName} updated in ~3s`);
+        console.log(`[Hot Reload] ${containerName} React hot-reloaded successfully`);
         json(res, 200, { hot: true, url: `/run/${project_id}/` });
       } else {
-        // Hot reload failed — container unhealthy after restart
         console.warn(`[Hot Reload] ${containerName} unhealthy after restart — need full build`);
         json(res, 200, { hot: false, reason: 'unhealthy_after_restart' });
       }
