@@ -1081,16 +1081,23 @@ async function sendChatMessage(message) {
           html = html.replace(/\n/g, '<br>');
           assistantDiv.innerHTML = html;
         } else {
-          assistantDiv.textContent = 'C\'est prêt ! Votre projet a été généré.';
+          // Detect if this was a modification or a new generation
+          const isModification = currentProject && currentProject.build_status === 'done';
+          assistantDiv.textContent = isModification
+            ? 'Modification appliquée ! Recompilation en cours...'
+            : 'Projet généré ! Compilation en cours...';
         }
         if (job.credentials) {
           projectCredentials = job.credentials;
           addChatMessage('assistant', '\u2705 Connectez-vous avec : **' + job.credentials.email + '** / **' + job.credentials.password + '**');
         }
         if (job.suggestions) addSuggestions(job.suggestions);
-        // Auto-compile silently
-        addChatMessage('assistant', 'Compilation en cours, votre site sera prêt dans quelques secondes...');
+        // Update local state for future modifications
+        if (currentProject) {
+          currentProject.generated_code = job.code;
+        }
         await autoCompile();
+        if (currentProject) currentProject.build_status = 'done';
         break;
       }
 
@@ -1099,7 +1106,6 @@ async function sendChatMessage(message) {
         break;
       }
     }
-    // If loop ended without break (timeout), inform user
     if (Date.now() >= pollDeadline) {
       assistantDiv.textContent = 'La génération a pris trop de temps. Réessayez avec un brief plus simple.';
     }
