@@ -4215,6 +4215,12 @@ const server = http.createServer(async (req, res) => {
         execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
       }
       if (fs.existsSync(path.join(projDir, 'vite.config.js'))) {
+        // Patch allowedHosts if missing before copying
+        let vc = fs.readFileSync(path.join(projDir, 'vite.config.js'), 'utf8');
+        if (!vc.includes('allowedHosts')) {
+          vc = vc.replace(/(port:\s*5173\s*,?)/, '$1\n    allowedHosts: true,');
+          fs.writeFileSync(path.join(projDir, 'vite.config.js'), vc);
+        }
         execSync(`docker cp ${projDir}/vite.config.js ${containerName}:/app/vite.config.js`, { timeout: 10000 });
       }
       // Backend — only restart Express if server.js actually changed
