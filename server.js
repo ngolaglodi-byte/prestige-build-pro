@@ -2797,6 +2797,8 @@ async function buildDockerProject(projectId, code, onProgress) {
     const jwtSecret = crypto.randomBytes(32).toString('hex');
 
     // React + Vite Dockerfile: run Vite dev server + Express API backend
+    // NODE_PATH makes pre-installed packages available to require(),
+    // but Vite/npx needs a local node_modules symlink to resolve them
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
@@ -2818,14 +2820,18 @@ CMD ["sh", "start-dev.sh"]
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
 
     // Write start-dev.sh: launches Express backend + Vite dev server in parallel
+    // Use node_modules/.bin/vite directly — npx would try to download a different version
     const startDevSh = [
       '#!/bin/sh',
+      '# Ensure node_modules symlink exists (packages pre-installed in base image)',
+      'ln -sf /app/node_modules ./node_modules 2>/dev/null',
+      '',
       '# Start Express API backend (port 3000)',
       'node server.js &',
       'echo $! > /tmp/express.pid',
       '',
       '# Start Vite dev server with HMR (port 5173)',
-      'npx vite --host 0.0.0.0 --port 5173 &',
+      './node_modules/.bin/vite --host 0.0.0.0 --port 5173 &',
       'echo $! > /tmp/vite.pid',
       '',
       '# If either process dies, kill both and exit',
@@ -4478,7 +4484,7 @@ const server = http.createServer(async (req, res) => {
         try {
           const { execSync } = require('child_process');
           console.log(`[Publish] Building production dist/ in ${containerName}...`);
-          execSync(`docker exec ${containerName} npx vite build`, { timeout: 60000, encoding: 'utf8' });
+          execSync(`docker exec ${containerName} ./node_modules/.bin/vite build`, { timeout: 60000, encoding: 'utf8' });
           // Copy dist/ out of the container to the project dir
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           sourceDir = distDir;
