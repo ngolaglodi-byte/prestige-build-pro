@@ -3693,11 +3693,26 @@ async function rebuildContainerMapping() {
 // Ensure pbp-base image exists (pre-installs all project dependencies)
 async function ensureBaseImage() {
   if (!docker) return;
+  let needsBuild = false;
   try {
     const image = docker.getImage(DOCKER_BASE_IMAGE);
-    await image.inspect();
-    console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' exists`);
+    const info = await image.inspect();
+    // Check if image has React/Vite by looking at Env for NODE_PATH
+    // If image was built with old Dockerfile (no vite), force rebuild
+    const envVars = info.Config?.Env || [];
+    const exposedPorts = Object.keys(info.Config?.ExposedPorts || {});
+    const hasVitePort = exposedPorts.some(p => p.includes('5173'));
+    if (!hasVitePort) {
+      console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' is outdated (no Vite) — rebuilding...`);
+      needsBuild = true;
+      try { await image.remove({ force: true }); } catch(e) { console.warn('[Docker] Could not remove old image:', e.message); }
+    } else {
+      console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' exists (React+Vite)`);
+    }
   } catch {
+    needsBuild = true;
+  }
+  if (needsBuild) {
     console.log(`[Docker] Base image '${DOCKER_BASE_IMAGE}' not found — building...`);
     const dockerfileContent = `FROM node:20-alpine
 RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
