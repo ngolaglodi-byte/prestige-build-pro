@@ -2796,7 +2796,7 @@ async function buildDockerProject(projectId, code, onProgress) {
     onProgress({ step: 2, progress: 35, message: 'Création du Dockerfile React...' });
     const jwtSecret = crypto.randomBytes(32).toString('hex');
 
-    // React + Vite Dockerfile: build frontend then serve with Express
+    // React + Vite Dockerfile: run Vite dev server + Express API backend
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
@@ -2804,19 +2804,38 @@ COPY vite.config.js ./
 COPY index.html ./
 COPY server.js ./
 COPY src/ ./src/
+COPY start-dev.sh ./
+RUN chmod +x start-dev.sh
 RUN mkdir -p /app/data
-# Build React frontend with Vite
-RUN npx vite build 2>&1 || echo "Vite build failed, will retry at startup"
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
 ENV NODE_OPTIONS="--max-old-space-size=256"
 EXPOSE 3000 5173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \\
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
-CMD ["node", "server.js"]
+CMD ["sh", "start-dev.sh"]
 `;
     fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
-    console.log(`[Docker Build] React Dockerfile created`);
+
+    // Write start-dev.sh: launches Express backend + Vite dev server in parallel
+    const startDevSh = [
+      '#!/bin/sh',
+      '# Start Express API backend (port 3000)',
+      'node server.js &',
+      'echo $! > /tmp/express.pid',
+      '',
+      '# Start Vite dev server with HMR (port 5173)',
+      'npx vite --host 0.0.0.0 --port 5173 &',
+      'echo $! > /tmp/vite.pid',
+      '',
+      '# If either process dies, kill both and exit',
+      'trap "kill $(cat /tmp/express.pid) $(cat /tmp/vite.pid) 2>/dev/null; exit" SIGTERM SIGINT',
+      'wait -n',
+      'kill $(cat /tmp/express.pid) $(cat /tmp/vite.pid) 2>/dev/null',
+      ''
+    ].join('\n');
+    fs.writeFileSync(path.join(projectDir, 'start-dev.sh'), startDevSh);
+    console.log(`[Docker Build] React Dockerfile + start-dev.sh created (Vite HMR mode)`);
 
     // Step 3: Stop old container and build new image (50%)
     console.log(`[Docker Build] Step 3: Stopping old container and building new image...`);
@@ -3497,15 +3516,19 @@ const restartLocks = new Map();
 async function proxyToContainer(req, res, projectId, targetPath) {
   const containerHost = getContainerHostname(projectId);
 
+  // Route through Vite dev server (5173) for preview — Vite proxies /api/* to Express (3000)
+  // For published sites, the publish flow builds dist/ separately
+  const proxyPort = 5173;
+
   // Proxy the request via Docker DNS
   // Strip headers that would confuse the container or break response processing
-  const forwardHeaders = { ...req.headers, host: `${containerHost}:3000` };
+  const forwardHeaders = { ...req.headers, host: `${containerHost}:${proxyPort}` };
   delete forwardHeaders['authorization'];   // Prestige JWT, not container's
   delete forwardHeaders['accept-encoding']; // Prevent gzip — we may modify HTML responses
 
   const options = {
     hostname: containerHost,
-    port: 3000,
+    port: proxyPort,
     path: targetPath || '/',
     method: req.method,
     headers: forwardHeaders,
@@ -4125,7 +4148,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ─── COMPILE (DOCKER ISOLATED PREVIEW) ───
-  // ─── HOT RELOAD: update files in running container without full rebuild (~3s) ───
+  // ─── HOT RELOAD: copy files into running container — Vite HMR picks up changes instantly ───
   if (url === '/api/hot-reload' && req.method === 'POST') {
     const { project_id } = await getBody(req);
     const project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
@@ -4140,53 +4163,50 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      console.log(`[Hot Reload] Updating React project files in ${containerName}`);
+      const startTime = Date.now();
+      console.log(`[HMR] Copying files into ${containerName}...`);
       const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
-      const container = docker.getContainer(containerName);
       const { execSync } = require('child_process');
+      let serverChanged = false;
 
-      // Copy all project files into the running container
-      // Backend
-      if (fs.existsSync(path.join(projDir, 'server.js'))) {
-        execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-      }
-      // React source files
+      // Copy React source files — Vite HMR detects changes automatically
       if (fs.existsSync(path.join(projDir, 'src'))) {
         execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
       }
-      // Root HTML and config
+      // Root HTML and config (triggers full page reload via Vite if changed)
       if (fs.existsSync(path.join(projDir, 'index.html'))) {
         execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
       }
       if (fs.existsSync(path.join(projDir, 'vite.config.js'))) {
         execSync(`docker cp ${projDir}/vite.config.js ${containerName}:/app/vite.config.js`, { timeout: 10000 });
       }
-
-      // Rebuild Vite dist inside the container, then restart Express
-      try {
-        execSync(`docker exec ${containerName} npx vite build`, { timeout: 30000, encoding: 'utf8' });
-        console.log(`[Hot Reload] Vite build completed in container`);
-      } catch (buildErr) {
-        console.warn(`[Hot Reload] Vite build failed, restarting container: ${buildErr.message}`);
+      // Backend — only restart Express if server.js actually changed
+      if (fs.existsSync(path.join(projDir, 'server.js'))) {
+        execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+        serverChanged = true;
       }
 
-      // Restart Express to pick up new dist/ and server.js changes
-      await container.restart({ t: 2 });
-
-      // Wait for health
-      await new Promise(r => setTimeout(r, 2000));
-      const healthy = await waitForContainerHealth(project_id, 10000);
-
-      if (healthy) {
-        db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${project_id}/`, project_id);
-        console.log(`[Hot Reload] ${containerName} React hot-reloaded successfully`);
-        json(res, 200, { hot: true, url: `/run/${project_id}/` });
-      } else {
-        console.warn(`[Hot Reload] ${containerName} unhealthy after restart — need full build`);
-        json(res, 200, { hot: false, reason: 'unhealthy_after_restart' });
+      // Only restart if server.js changed (API routes/DB schema changes)
+      // Frontend changes are picked up by Vite HMR instantly — no restart needed
+      if (serverChanged) {
+        console.log(`[HMR] server.js changed — restarting Express...`);
+        const container = docker.getContainer(containerName);
+        // Kill and restart only the Express process, not Vite
+        try {
+          execSync(`docker exec ${containerName} sh -c "kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid"`, { timeout: 10000 });
+        } catch {
+          // Fallback: full container restart
+          await container.restart({ t: 2 });
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
+
+      const elapsed = Date.now() - startTime;
+      db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${project_id}/`, project_id);
+      console.log(`[HMR] ${containerName} updated in ${elapsed}ms — Vite HMR handles the rest`);
+      json(res, 200, { hot: true, url: `/run/${project_id}/`, elapsed });
     } catch (e) {
-      console.error(`[Hot Reload] Error: ${e.message}`);
+      console.error(`[HMR] Error: ${e.message}`);
       json(res, 200, { hot: false, reason: e.message });
     }
     return;
@@ -4447,10 +4467,33 @@ const server = http.createServer(async (req, res) => {
 
     // Copy project files to sites directory
     try {
-      // Use Docker project files first (they have the real running site)
-      let sourceDir = path.join(DOCKER_PROJECTS_DIR, String(id), 'public');
-      if (!fs.existsSync(sourceDir)) {
-        // Fallback to preview dir
+      // For React projects: build dist/ in the container, then copy it out
+      const containerName = getContainerName(id);
+      const containerRunning = await isContainerRunningAsync(id);
+      const distDir = path.join(DOCKER_PROJECTS_DIR, String(id), 'dist');
+      let sourceDir = null;
+
+      if (containerRunning) {
+        // Build production dist/ inside the running container
+        try {
+          const { execSync } = require('child_process');
+          console.log(`[Publish] Building production dist/ in ${containerName}...`);
+          execSync(`docker exec ${containerName} npx vite build`, { timeout: 60000, encoding: 'utf8' });
+          // Copy dist/ out of the container to the project dir
+          execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
+          sourceDir = distDir;
+          console.log(`[Publish] Production build completed`);
+        } catch (buildErr) {
+          console.warn(`[Publish] Vite build failed: ${buildErr.message}`);
+        }
+      }
+
+      // Fallback: use existing dist/ from project dir
+      if (!sourceDir && fs.existsSync(distDir)) {
+        sourceDir = distDir;
+      }
+      // Fallback: preview dir
+      if (!sourceDir) {
         sourceDir = path.join(PREVIEWS_DIR, String(id));
       }
       if (!fs.existsSync(sourceDir)) {
@@ -5131,13 +5174,51 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(404); res.end('Not found');
 });
 
+// ─── WEBSOCKET UPGRADE HANDLER (Vite HMR through /run/:id/ proxy) ───
+server.on('upgrade', (req, socket, head) => {
+  const url = req.url || '';
+  const match = url.match(/^\/run\/(\d+)\//);
+  if (!match) { socket.destroy(); return; }
+
+  const projectId = match[1];
+  const containerHost = getContainerHostname(projectId);
+  const targetPath = url.replace(`/run/${projectId}`, '') || '/';
+
+  const proxyReq = http.request({
+    hostname: containerHost,
+    port: 5173,
+    path: targetPath,
+    method: 'GET',
+    headers: {
+      ...req.headers,
+      host: `${containerHost}:5173`
+    }
+  });
+
+  proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\n` +
+      Object.entries(proxyRes.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
+      '\r\n\r\n'
+    );
+    if (proxyHead.length) socket.write(proxyHead);
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+    proxySocket.on('error', () => socket.destroy());
+    socket.on('error', () => proxySocket.destroy());
+  });
+
+  proxyReq.on('error', () => socket.destroy());
+  proxyReq.end();
+});
+
 server.listen(PORT, ()=>{
   console.log(`Prestige Build Pro on port ${PORT}`);
   console.log(`API: ${ANTHROPIC_API_KEY?'OK':'MISSING'} | Compiler: ${compiler?'OK':'N/A'}`);
-  
+
   // Initialize Docker preview system
   initializeDockerSystem();
-  
+
   // Start container monitoring (every 30 seconds)
   if (isDockerAvailable()) {
     console.log('Starting container monitoring (30s interval)...');
