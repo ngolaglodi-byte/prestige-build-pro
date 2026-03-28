@@ -2850,10 +2850,10 @@ CMD ["sh", "start-dev.sh"]
       './node_modules/.bin/vite --host 0.0.0.0 --port 5173 &',
       'echo $! > /tmp/vite.pid',
       '',
-      '# If either process dies, kill both and exit',
-      'trap "kill $(cat /tmp/express.pid) $(cat /tmp/vite.pid) 2>/dev/null; exit" SIGTERM SIGINT',
-      'wait -n',
-      'kill $(cat /tmp/express.pid) $(cat /tmp/vite.pid) 2>/dev/null',
+      '# Keep running — if container receives SIGTERM, forward to children',
+      'trap "kill $(cat /tmp/express.pid 2>/dev/null) $(cat /tmp/vite.pid 2>/dev/null) 2>/dev/null; exit 0" SIGTERM SIGINT',
+      '# Wait forever (both processes run in background)',
+      'while true; do sleep 3600; done',
       ''
     ].join('\n');
     fs.writeFileSync(path.join(projectDir, 'start-dev.sh'), startDevSh);
@@ -4214,15 +4214,9 @@ const server = http.createServer(async (req, res) => {
       if (fs.existsSync(path.join(projDir, 'index.html'))) {
         execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
       }
-      if (fs.existsSync(path.join(projDir, 'vite.config.js'))) {
-        // Patch allowedHosts if missing before copying
-        let vc = fs.readFileSync(path.join(projDir, 'vite.config.js'), 'utf8');
-        if (!vc.includes('allowedHosts')) {
-          vc = vc.replace(/(port:\s*5173\s*,?)/, '$1\n    allowedHosts: true,');
-          fs.writeFileSync(path.join(projDir, 'vite.config.js'), vc);
-        }
-        execSync(`docker cp ${projDir}/vite.config.js ${containerName}:/app/vite.config.js`, { timeout: 10000 });
-      }
+      // NOTE: Do NOT copy vite.config.js during hot reload — it causes Vite to restart
+      // and kill the container (wait -n in start-dev.sh). Config changes require full rebuild.
+
       // Backend — only restart Express if server.js actually changed
       if (fs.existsSync(path.join(projDir, 'server.js'))) {
         execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
