@@ -4028,11 +4028,19 @@ async function proxyToContainer(req, res, projectId, targetPath) {
     res.writeHead(proxyRes.statusCode, headers);
 
     if (isHtml) {
-      // Collect HTML body, inject <base> + fetch patch so all URLs route through proxy
+      // Check if this is a React/Vite project (has @vite/client or react-refresh)
       let body = '';
       proxyRes.on('data', chunk => body += chunk.toString());
       proxyRes.on('end', () => {
         try {
+          // React/Vite projects: serve HTML as-is — Vite handles all routing
+          const isViteProject = body.includes('@vite/client') || body.includes('@react-refresh') || body.includes('type="module" src="/src/');
+          if (isViteProject) {
+            res.end(body);
+            return;
+          }
+
+          // Vanilla HTML projects: inject <base> + fetch patch
           const pid = Number(projectId);
           const baseTag = `<base href="/run/${pid}/">`;
           const proxyScript = `<script>(function(){var B='/run/${pid}/';` +
