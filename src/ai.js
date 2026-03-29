@@ -778,31 +778,72 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const components = Object.keys(files).filter(f => f.startsWith('src/components/'));
     const pages = Object.keys(files).filter(f => f.startsWith('src/pages/'));
 
-    structure += '\nSTRUCTURE REACT:\n';
-    structure += '  Composants: ' + (components.length ? components.join(', ') : 'aucun') + '\n';
-    structure += '  Pages: ' + (pages.length ? pages.join(', ') : 'aucune') + '\n';
-    structure += '  Routes React: ' + (reactRoutes.length ? reactRoutes.join(', ') : 'aucune') + '\n';
-    structure += '  Routes API: ' + (routes.length ? routes.join(', ') : 'aucune') + '\n';
-    structure += '  Tables SQLite: ' + (tables.length ? tables.join(', ') : 'aucune') + '\n';
+    // Build detailed file map with imports and exports for each file
+    structure += '\nSTRUCTURE REACT COMPLÈTE:\n';
+    const allFileNames = Object.keys(files);
+    for (const fn of allFileNames) {
+      const content = files[fn] || '';
+      const size = content.length;
+      if (fn === 'server.js') {
+        structure += `\n  ${fn} (${size} chars)\n`;
+        structure += `    Routes API: ${routes.slice(0, 15).join(', ') || 'aucune'}\n`;
+        structure += `    Tables: ${tables.join(', ') || 'aucune'}\n`;
+      } else if (fn === 'src/App.jsx') {
+        const imports = (content.match(/import\s+(\w+)/g) || []).map(i => i.replace('import ', ''));
+        structure += `\n  ${fn} (${size} chars)\n`;
+        structure += `    Routes: ${reactRoutes.join(', ') || 'aucune'}\n`;
+        structure += `    Imports: ${imports.join(', ')}\n`;
+      } else if (fn.startsWith('src/components/') || fn.startsWith('src/pages/')) {
+        // Show imports and exports for each component so AI understands relationships
+        const imports = (content.match(/import\s+.*from\s+['"]([^'"]+)['"]/g) || [])
+          .map(i => i.match(/from\s+['"]([^'"]+)['"]/)?.[1] || '').filter(Boolean);
+        const hasState = content.includes('useState');
+        const hasEffect = content.includes('useEffect');
+        const hasFetch = content.includes('fetch(');
+        const props = content.match(/export default function \w+\((\{[^}]+\}|\w+)\)/)?.[1] || 'none';
+        structure += `\n  ${fn} (${size} chars)`;
+        if (imports.length) structure += ` — imports: ${imports.join(', ')}`;
+        if (hasState || hasEffect || hasFetch) {
+          const hooks = [];
+          if (hasState) hooks.push('useState');
+          if (hasEffect) hooks.push('useEffect');
+          if (hasFetch) hooks.push('fetch');
+          structure += ` — hooks: ${hooks.join(', ')}`;
+        }
+        structure += '\n';
+      } else if (fn === 'package.json') {
+        try {
+          const pkg = JSON.parse(content);
+          structure += `\n  ${fn} — ${pkg.name || 'project'}\n`;
+          structure += `    Deps: ${Object.keys(pkg.dependencies || {}).join(', ')}\n`;
+        } catch { structure += `\n  ${fn}\n`; }
+      } else {
+        structure += `\n  ${fn} (${size} chars)\n`;
+      }
+    }
     structure += '\nTu modifies CE projet React. Retourne UNIQUEMENT les fichiers modifiés avec ### markers.';
+    structure += '\nSi tu crées un NOUVEAU composant/page, retourne aussi src/App.jsx avec la nouvelle route.';
 
     let projectContext = structure;
 
-    // Determine which files to send
+    // Determine which files to send (full content)
     const filesToSend = [];
-    const isMajor = /redesign complet|refonte|tout changer|full rewrite|ajoute.*dashboard|système complet|erp|multi.?rôle/i.test(userMessage);
+    const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle/i.test(userMessage);
 
     if (isMajor) {
       // Send all files for major changes
-      Object.keys(files).forEach(f => filesToSend.push(f));
+      allFileNames.forEach(f => filesToSend.push(f));
     } else {
-      // Send only affected files
-      if (affected.appJsx && files['src/App.jsx']) filesToSend.push('src/App.jsx');
+      // ALWAYS send App.jsx (routing context) and index.css (styling context)
+      if (files['src/App.jsx']) filesToSend.push('src/App.jsx');
+      if (files['src/index.css']) filesToSend.push('src/index.css');
+
+      // Send specifically affected files
       if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
       if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
-      if (affected.indexCss && files['src/index.css']) filesToSend.push('src/index.css');
       if (affected.mainJsx && files['src/main.jsx']) filesToSend.push('src/main.jsx');
       if (affected.viteConfig && files['vite.config.js']) filesToSend.push('vite.config.js');
+      if (affected.indexHtml && files['index.html']) filesToSend.push('index.html');
 
       // Send affected components
       for (const comp of affected.components) {
@@ -813,17 +854,25 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
         const key = `src/pages/${page}.jsx`;
         if (files[key]) filesToSend.push(key);
       }
+
+      // If adding a feature, also send the main page to understand context
+      if (affected.serverJs && affected.appJsx) {
+        // Feature addition — send Home page too for layout understanding
+        const homePage = allFileNames.find(f => f.includes('Home.jsx'));
+        if (homePage && !filesToSend.includes(homePage)) filesToSend.push(homePage);
+      }
     }
 
-    const allFileNames = Object.keys(files);
-    const notSent = allFileNames.filter(f => !filesToSend.includes(f));
+    // Deduplicate
+    const uniqueFiles = [...new Set(filesToSend)];
+    const notSent = allFileNames.filter(f => !uniqueFiles.includes(f));
 
-    projectContext += `\n\nFICHIERS DU PROJET REACT (retourne SEULEMENT ceux modifiés avec ### markers):`;
-    for (const fn of filesToSend) {
+    projectContext += `\n\nFICHIERS DU PROJET (contenu complet — retourne SEULEMENT ceux que tu MODIFIES):`;
+    for (const fn of uniqueFiles) {
       projectContext += `\n\n### ${fn}\n${files[fn]}`;
     }
     if (notSent.length > 0) {
-      projectContext += `\n\nFICHIERS NON ENVOYÉS (NE PAS les retourner sauf si nécessaire): ${notSent.join(', ')}`;
+      projectContext += `\n\nFICHIERS NON ENVOYÉS (tu connais leur structure ci-dessus — demande-les si besoin): ${notSent.join(', ')}`;
     }
 
     context.push({ role: 'user', content: projectContext });

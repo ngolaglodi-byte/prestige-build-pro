@@ -3179,23 +3179,40 @@ async function callClaudeForCorrection(originalCode, errorLogs, errorType) {
     throw new Error('Clé API Claude non configurée');
   }
   
-  // Simplified correction prompt as per CORRECTION 4
-  const correctionPrompt = `Ce code a généré cette erreur de compilation : ${translateErrorType(errorType)}
+  // Build a focused correction prompt with full project context
+  // Extract file list from code so AI understands the project structure
+  const fileList = (originalCode.match(/### ([^\n]+)/g) || []).map(m => m.replace('### ', ''));
 
-Logs d'erreur:
-${errorLogs.substring(0, 2000)}
+  // Identify which file likely caused the error
+  const errorFileHints = [];
+  if (errorLogs.includes('server.js')) errorFileHints.push('server.js');
+  if (errorLogs.includes('App.jsx') || errorLogs.includes('src/')) errorFileHints.push('src/App.jsx');
+  if (errorLogs.match(/components\/\w+/)) errorFileHints.push(errorLogs.match(/components\/(\w+\.jsx)/)?.[0] || '');
+  if (errorLogs.match(/pages\/\w+/)) errorFileHints.push(errorLogs.match(/pages\/(\w+\.jsx)/)?.[0] || '');
+  if (errorLogs.includes('vite') || errorLogs.includes('build')) errorFileHints.push('vite.config.js');
+  if (errorLogs.includes('package.json') || errorLogs.includes('Cannot find module')) errorFileHints.push('package.json');
 
-Code original:
+  const correctionPrompt = `Ce projet React+Vite a cette erreur : ${translateErrorType(errorType)}
+
+STRUCTURE DU PROJET (${fileList.length} fichiers):
+${fileList.map(f => `  - ${f}`).join('\n')}
+
+${errorFileHints.length ? `FICHIER(S) PROBABLEMENT EN CAUSE: ${errorFileHints.filter(Boolean).join(', ')}` : ''}
+
+LOGS D'ERREUR:
+${errorLogs.substring(0, 3000)}
+
+CODE COMPLET DU PROJET:
 ${originalCode}
 
-Génère une version corrigée et simplifiée qui fonctionnera à coup sûr.
+CORRIGE l'erreur. Retourne TOUS les fichiers modifiés avec ### markers.
 
-RÈGLES DE CORRECTION:
-1. Utilise le format ### pour chaque fichier (### package.json, ### vite.config.js, ### index.html, ### server.js, ### src/App.jsx, etc.)
-2. JAMAIS de backticks markdown
-3. package.json: JSON valide avec "type": "module", React, Vite, TailwindCSS, Express
-4. server.js: Port 3000, route /health, express.static('dist')
-5. Les composants React dans src/components/*.jsx, pages dans src/pages/*.jsx
+RÈGLES:
+1. Format ### pour chaque fichier (### package.json, ### server.js, ### src/App.jsx, etc.)
+2. JAMAIS de backticks markdown autour du code
+3. Retourne SEULEMENT les fichiers que tu modifies
+4. server.js: Port 3000, route /health, express.static(path.join(__dirname,'dist'))
+5. Composants React: export default function, imports corrects, hooks valides
 
 Retourne UNIQUEMENT le code corrigé, sans explications.`;
 
