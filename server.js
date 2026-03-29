@@ -4268,6 +4268,33 @@ async function buildDockerProject(projectId, code, onProgress) {
         fs.writeFileSync(packageJsonPathForScan, packageContent);
         console.log(`[Docker Build] package.json versions pinned`);
       }
+
+      // FORCE inject required stack packages (Radix, sonner, cmdk, tailwind-merge)
+      // The AI-generated package.json often misses these — they are NON-NEGOTIABLE
+      try {
+        const pkg = JSON.parse(fs.readFileSync(packageJsonPathForScan, 'utf8'));
+        if (!pkg.dependencies) pkg.dependencies = {};
+        const requiredDeps = {
+          "clsx": "2.1.1", "tailwind-merge": "3.3.0", "sonner": "2.0.3", "cmdk": "1.1.1",
+          "@radix-ui/react-dialog": "1.1.14", "@radix-ui/react-dropdown-menu": "2.1.15",
+          "@radix-ui/react-tabs": "1.1.12", "@radix-ui/react-accordion": "1.2.11",
+          "@radix-ui/react-tooltip": "1.1.18", "@radix-ui/react-popover": "1.1.14",
+          "@radix-ui/react-checkbox": "1.1.8", "@radix-ui/react-switch": "1.1.7",
+          "@radix-ui/react-radio-group": "1.2.7", "@radix-ui/react-slider": "1.2.7",
+          "@radix-ui/react-progress": "1.1.7", "@radix-ui/react-collapsible": "1.1.7",
+          "@radix-ui/react-scroll-area": "1.2.8", "@radix-ui/react-separator": "1.1.7",
+          "@radix-ui/react-label": "2.1.7", "@radix-ui/react-avatar": "1.1.7",
+          "@radix-ui/react-alert-dialog": "1.1.14", "@radix-ui/react-select": "2.1.14"
+        };
+        let injected = 0;
+        for (const [name, version] of Object.entries(requiredDeps)) {
+          if (!pkg.dependencies[name]) { pkg.dependencies[name] = version; injected++; }
+        }
+        if (injected > 0) {
+          fs.writeFileSync(packageJsonPathForScan, JSON.stringify(pkg, null, 2));
+          console.log(`[Docker Build] Injected ${injected} required packages (Radix, sonner, cmdk)`);
+        }
+      } catch (e) { console.warn('[Docker Build] Package injection error:', e.message); }
     }
 
     // Step 2.25: Validate mandatory React project files
