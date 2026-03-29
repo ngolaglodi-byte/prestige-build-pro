@@ -279,6 +279,7 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
     "react-router-dom": "7.6.1",
     "lucide-react": "0.511.0",
     clsx: "2.1.1",
+    "tailwind-merge": "3.3.0",
     express: "4.18.2",
     "better-sqlite3": "9.4.3",
     bcryptjs: "2.4.3",
@@ -4596,8 +4597,18 @@ RUN npm install \
   csv-parse@5.5.3 marked@11.1.1 axios@1.6.7 \
   vite@6.3.5 @vitejs/plugin-react@4.5.2 \
   react@19.1.0 react-dom@19.1.0 react-router-dom@7.6.1 \
-  lucide-react@0.511.0 clsx@2.1.1 \
-  tailwindcss@4.1.7 @tailwindcss/vite@4.1.7
+  lucide-react@0.511.0 clsx@2.1.1 tailwind-merge@3.3.0 \
+  tailwindcss@4.1.7 @tailwindcss/vite@4.1.7 \
+  @radix-ui/react-dialog@1.1.14 @radix-ui/react-dropdown-menu@2.1.15 \
+  @radix-ui/react-tabs@1.1.12 @radix-ui/react-accordion@1.2.11 \
+  @radix-ui/react-tooltip@1.1.18 @radix-ui/react-popover@1.1.14 \
+  @radix-ui/react-checkbox@1.1.8 @radix-ui/react-switch@1.1.7 \
+  @radix-ui/react-radio-group@1.2.7 @radix-ui/react-slider@1.2.7 \
+  @radix-ui/react-progress@1.1.7 @radix-ui/react-collapsible@1.1.7 \
+  @radix-ui/react-scroll-area@1.2.8 @radix-ui/react-separator@1.1.7 \
+  @radix-ui/react-label@2.1.7 @radix-ui/react-avatar@1.1.7 \
+  @radix-ui/react-alert-dialog@1.1.14 @radix-ui/react-select@2.1.14 \
+  cmdk@1.1.1
 ENV NODE_PATH=/app/node_modules
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 EXPOSE 3000 5173

@@ -1,48 +1,19 @@
-import React, { useState } from "react";
+import React from "react";
+import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "../../lib/utils";
 
-function Tabs({ defaultValue, children, className, onValueChange }) {
-  const [active, setActive] = useState(defaultValue);
-  const handleChange = (val) => { setActive(val); onValueChange?.(val); };
+const Tabs = TabsPrimitive.Root;
 
-  return (
-    <div className={className} data-active-tab={active}>
-      {React.Children.map(children, (child) =>
-        child ? React.cloneElement(child, { activeTab: active, onTabChange: handleChange }) : null
-      )}
-    </div>
-  );
-}
+const TabsList = React.forwardRef(({ className, ...props }, ref) => (
+  <TabsPrimitive.List ref={ref} className={cn("inline-flex h-10 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-surface)] p-1 text-[var(--color-text-muted)]", className)} {...props} />
+));
 
-function TabsList({ className, children, activeTab, onTabChange }) {
-  return (
-    <div className={cn("inline-flex h-10 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-surface)] p-1 gap-1", className)}>
-      {React.Children.map(children, (child) =>
-        child ? React.cloneElement(child, { activeTab, onTabChange }) : null
-      )}
-    </div>
-  );
-}
+const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
+  <TabsPrimitive.Trigger ref={ref} className={cn("inline-flex items-center justify-center whitespace-nowrap rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium ring-offset-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-white data-[state=active]:text-[var(--color-text)] data-[state=active]:shadow-[var(--shadow-sm)]", className)} {...props} />
+));
 
-function TabsTrigger({ value, children, className, activeTab, onTabChange }) {
-  const isActive = activeTab === value;
-  return (
-    <button
-      className={cn(
-        "inline-flex items-center justify-center whitespace-nowrap rounded-[var(--radius-sm)] px-3 py-1.5 text-sm font-medium transition-all",
-        isActive ? "bg-white text-[var(--color-text)] shadow-[var(--shadow-sm)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]",
-        className
-      )}
-      onClick={() => onTabChange?.(value)}
-    >
-      {children}
-    </button>
-  );
-}
-
-function TabsContent({ value, children, className, activeTab }) {
-  if (activeTab !== value) return null;
-  return <div className={cn("mt-2 animate-in", className)}>{children}</div>;
-}
+const TabsContent = React.forwardRef(({ className, ...props }, ref) => (
+  <TabsPrimitive.Content ref={ref} className={cn("mt-2 ring-offset-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] focus-visible:ring-offset-2", className)} {...props} />
+));
 
 export { Tabs, TabsList, TabsTrigger, TabsContent };
