@@ -1309,6 +1309,30 @@ const CODE_TOOLS = [
       },
       required: ['project_id']
     }
+  },
+  {
+    name: 'parse_document',
+    description: 'Parse a document (PDF or Word/DOCX) uploaded as base64 and extract its text content. Use when user provides a document to use as content or reference.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        base64_content: { type: 'string', description: 'The document content encoded in base64' },
+        filename: { type: 'string', description: 'Original filename to detect type (e.g. brief.pdf, content.docx)' }
+      },
+      required: ['base64_content', 'filename']
+    }
+  },
+  {
+    name: 'generate_mermaid',
+    description: 'Generate a Mermaid diagram to explain architecture, workflows, or data flows. Returns the Mermaid syntax that will be rendered in the chat.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        diagram: { type: 'string', description: 'The Mermaid diagram syntax (e.g. graph TD; A-->B)' },
+        title: { type: 'string', description: 'A short title for the diagram' }
+      },
+      required: ['diagram']
+    }
   }
 ];
 
@@ -1360,6 +1384,46 @@ function executeServerTool(toolName, toolInput) {
     return Promise.resolve('Problèmes détectés:\n' + issues.map((s, i) => `${i + 1}. ${s}`).join('\n'));
   }
 
+  if (toolName === 'parse_document' && toolInput.base64_content && toolInput.filename) {
+    return (async () => {
+      try {
+        const buffer = Buffer.from(toolInput.base64_content, 'base64');
+        const ext = (toolInput.filename || '').toLowerCase();
+
+        if (ext.endsWith('.pdf')) {
+          try {
+            const pdfParse = require('pdf-parse');
+            const data = await pdfParse(buffer);
+            return `Document PDF (${data.numpages} pages):\n\n${(data.text || '').substring(0, 8000)}`;
+          } catch (e) {
+            return `Erreur parsing PDF: ${e.message}`;
+          }
+        }
+
+        if (ext.endsWith('.docx') || ext.endsWith('.doc')) {
+          try {
+            const mammoth = require('mammoth');
+            const result = await mammoth.extractRawText({ buffer });
+            return `Document Word:\n\n${(result.value || '').substring(0, 8000)}`;
+          } catch (e) {
+            return `Erreur parsing Word: ${e.message}`;
+          }
+        }
+
+        // Plain text fallback
+        return `Document texte:\n\n${buffer.toString('utf8').substring(0, 8000)}`;
+      } catch (e) {
+        return `Erreur parsing document: ${e.message}`;
+      }
+    })();
+  }
+
+  if (toolName === 'generate_mermaid' && toolInput.diagram) {
+    // Return the Mermaid syntax as-is — the frontend will render it
+    const title = toolInput.title ? `**${toolInput.title}**\n\n` : '';
+    return Promise.resolve(`${title}\`\`\`mermaid\n${toolInput.diagram}\n\`\`\``);
+  }
+
   return Promise.resolve(null);
 }
 
@@ -1406,7 +1470,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -4747,7 +4811,7 @@ RUN npm install \
   @radix-ui/react-scroll-area@1.2.8 @radix-ui/react-separator@1.1.7 \
   @radix-ui/react-label@2.1.7 @radix-ui/react-avatar@1.1.7 \
   @radix-ui/react-alert-dialog@1.1.14 @radix-ui/react-select@2.1.14 \
-  cmdk@1.1.1 sonner@2.0.3
+  cmdk@1.1.1 sonner@2.0.3 pdf-parse@1.1.1 mammoth@1.8.0
 ENV NODE_PATH=/app/node_modules
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 EXPOSE 3000 5173

@@ -477,6 +477,15 @@ run_security_check({ project_id }) — Scan le code du projet pour :
   secrets en dur, injection SQL, XSS, routes sans auth, clés API exposées.
   Utilise avant de publier ou quand l'utilisateur demande un audit.
 
+parse_document({ base64_content, filename }) — Parse un PDF ou Word/DOCX.
+  Extrait le texte brut du document. Utilise quand l'utilisateur fournit un document
+  comme brief, contenu, ou référence. Supporte .pdf et .docx.
+
+generate_mermaid({ diagram, title }) — Génère un diagramme Mermaid pour expliquer
+  l'architecture, les workflows, ou les flux de données.
+  Exemple : generate_mermaid({ diagram: "graph TD; A[User]-->B[Frontend]; B-->C[API]; C-->D[Database]", title: "Architecture" })
+  Utilise pour expliquer visuellement une architecture ou un processus complexe.
+
 ═══════════════════════════════════════════════
  PROTOCOLE DE DEBUGGING
 ═══════════════════════════════════════════════
@@ -537,6 +546,8 @@ OUTILS SERVEUR :
 - fetch_website({ url }) — récupère un site en texte ("fais comme stripe.com")
 - read_console_logs({ project_id }) — logs frontend (erreurs, network)
 - run_security_check({ project_id }) — scan sécurité (secrets, SQL injection, XSS)
+- parse_document({ base64_content, filename }) — extrait texte de PDF/Word
+- generate_mermaid({ diagram, title }) — diagramme architecture/workflow
 
 DEBUGGING — quand tu corriges une erreur :
 1. Appelle read_console_logs({ project_id }) EN PREMIER
