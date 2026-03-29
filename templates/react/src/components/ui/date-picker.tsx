@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 
 function DatePicker({ value, onChange, placeholder = "Sélectionner une date", className }) {

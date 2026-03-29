@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 function ContextMenu({ children }: { children: React.ReactNode }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);

@@ -482,9 +482,15 @@ const DEFAULT_INDEX_HTML = `<!DOCTYPE html>
 const DEFAULT_VITE_CONFIG = `import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import path from 'path';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,
@@ -2227,31 +2233,42 @@ function findMissingImports(projectDir) {
   const srcDir = path.join(projectDir, 'src');
   if (!fs.existsSync(srcDir)) return missing;
 
-  // Collect all .jsx files to scan
+  // Collect all .tsx/.jsx files to scan
   const filesToScan = [];
-  const appJsx = path.join(srcDir, 'App.tsx');
-  if (fs.existsSync(appJsx)) filesToScan.push(appJsx);
+  for (const name of ['App.tsx', 'App.jsx']) {
+    const p = path.join(srcDir, name);
+    if (fs.existsSync(p)) { filesToScan.push(p); break; }
+  }
   for (const sub of ['components', 'pages']) {
     const dir = path.join(srcDir, sub);
     if (fs.existsSync(dir)) {
-      fs.readdirSync(dir).filter(f => f.endsWith('.jsx')).forEach(f => filesToScan.push(path.join(dir, f)));
+      fs.readdirSync(dir).filter(f => f.endsWith('.tsx') || f.endsWith('.jsx')).forEach(f => filesToScan.push(path.join(dir, f)));
     }
   }
 
-  // Extract relative imports and check if target exists
+  // Extract imports and check if target exists
   const checked = new Set();
   for (const file of filesToScan) {
     const content = fs.readFileSync(file, 'utf8');
     const fileDir = path.dirname(file);
-    // Match: import X from './path' or import X from '../path'
-    const importRegex = /import\s+\w+\s+from\s+['"](\.[^'"]+)['"]/g;
+    // Match: import X from './path', '../path', or '@/path'
+    const importRegex = /import\s+(?:\{[^}]+\}|\w+)\s+from\s+['"]((?:\.|@\/)[^'"]+)['"]/g;
     let match;
     while ((match = importRegex.exec(content)) !== null) {
       const importPath = match[1];
-      // Resolve to absolute path, try .jsx extension
-      let resolved = path.resolve(fileDir, importPath);
-      if (!resolved.endsWith('.jsx') && !resolved.endsWith('.js') && !resolved.endsWith('.css')) {
-        resolved += '.tsx';
+      let resolved;
+      // Handle @/ alias → resolve to src/
+      if (importPath.startsWith('@/')) {
+        resolved = path.join(srcDir, importPath.substring(2));
+      } else {
+        resolved = path.resolve(fileDir, importPath);
+      }
+      // Try extensions
+      if (!resolved.endsWith('.tsx') && !resolved.endsWith('.ts') && !resolved.endsWith('.jsx') && !resolved.endsWith('.js') && !resolved.endsWith('.css')) {
+        if (fs.existsSync(resolved + '.tsx')) resolved += '.tsx';
+        else if (fs.existsSync(resolved + '.ts')) resolved += '.ts';
+        else if (fs.existsSync(resolved + '.jsx')) resolved += '.jsx';
+        else resolved += '.tsx'; // default to .tsx
       }
       if (!checked.has(resolved)) {
         checked.add(resolved);

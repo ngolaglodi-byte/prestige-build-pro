@@ -1,5 +1,5 @@
 import React, { useState, useRef } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 function HoverCard({ children, className }: { children: React.ReactNode; className?: string }) {
   const [open, setOpen] = useState(false);

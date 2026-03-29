@@ -1,5 +1,5 @@
 import React from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 const variants = {
   default: "bg-white border-[var(--color-border)] text-[var(--color-text)]",

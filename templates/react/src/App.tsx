@@ -1,7 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import Header from './components/Header';
-import Dashboard from './pages/Dashboard';
+import Header from '@/components/Header';
+import Dashboard from '@/pages/Dashboard';
 
 export default function App() {
   return (

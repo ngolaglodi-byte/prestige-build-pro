@@ -1,5 +1,5 @@
 import React from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 interface ToggleProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   pressed?: boolean;

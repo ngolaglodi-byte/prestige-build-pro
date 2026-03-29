@@ -392,43 +392,55 @@ TOKENS CSS (définis dans src/index.css :root) :
 - TOUJOURS utiliser les tokens : bg-[var(--color-primary)], text-[var(--color-text)]
 - Pour changer le thème → modifier UNIQUEMENT :root dans index.css
 
-COMPOSANTS UI (src/components/ui/ — noms de fichiers en MINUSCULE) :
+COMPOSANTS UI — Utilise le PATH ALIAS @/ pour TOUS les imports :
 
-IMPORTS EXACTS (copie tel quel — les fichiers sont en lowercase !) :
-import { Button } from '../components/ui/button'
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '../components/ui/card'
-import { Input } from '../components/ui/input'
-import { Textarea } from '../components/ui/textarea'
-import { Label } from '../components/ui/label'
-import { Badge } from '../components/ui/badge'
-import { Select } from '../components/ui/select'
-import { Separator } from '../components/ui/separator'
-import { Skeleton } from '../components/ui/skeleton'
-import { Alert, AlertTitle, AlertDescription } from '../components/ui/alert'
-import { Progress } from '../components/ui/progress'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog'
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
-import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '../components/ui/accordion'
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/table'
-import { Avatar, AvatarImage, AvatarFallback } from '../components/ui/avatar'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
-import { Tooltip, TooltipTrigger, TooltipContent } from '../components/ui/tooltip'
-import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover'
-import { Switch } from '../components/ui/switch'
-import { Checkbox } from '../components/ui/checkbox'
-import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group'
-import { Slider } from '../components/ui/slider'
-import { DatePicker } from '../components/ui/date-picker'
-import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage } from '../components/ui/breadcrumb'
-import { ScrollArea } from '../components/ui/scroll-area'
-import { Command, CommandInput, CommandList, CommandItem } from '../components/ui/command'
-import { cn } from '../lib/utils'
+Le projet a un alias @/ → src/ configuré dans vite.config.js et tsconfig.json.
+TOUJOURS utiliser @/ — JAMAIS de chemins relatifs (../ ou ./) pour les composants.
+
+IMPORTS EXACTS (copie-colle tel quel) :
+import { Button } from '@/components/ui/button'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Select } from '@/components/ui/select'
+import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Progress } from '@/components/ui/progress'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '@/components/ui/accordion'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
+import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Slider } from '@/components/ui/slider'
+import { DatePicker } from '@/components/ui/date-picker'
+import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage } from '@/components/ui/breadcrumb'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { Command, CommandInput, CommandList, CommandItem } from '@/components/ui/command'
+import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
-RÈGLE CRITIQUE : les fichiers UI sont en MINUSCULE (button.tsx, card.tsx, dialog.tsx).
-JAMAIS import from '../components/ui/Button' — TOUJOURS from '../components/ui/button'
-JAMAIS import from '../components/ui/Card' — TOUJOURS from '../components/ui/card'
+ENTRE COMPOSANTS ET PAGES — aussi @/ :
+import Header from '@/components/Header'
+import Footer from '@/components/Footer'
+import Home from '@/pages/Home'
+
+RÈGLE ABSOLUE IMPORTS :
+- TOUJOURS @/components/ui/button — JAMAIS ../components/ui/button
+- TOUJOURS @/lib/utils — JAMAIS ../lib/utils
+- TOUJOURS @/pages/Home — JAMAIS ../pages/Home ou ./pages/Home
+- Les fichiers UI sont en MINUSCULE : button.tsx, card.tsx, dialog.tsx
+- JAMAIS de lettre majuscule dans le nom de fichier UI
 
 JAMAIS de <button className="..."> → TOUJOURS <Button>
 JAMAIS de <input className="..."> → TOUJOURS <Input />
@@ -561,9 +573,9 @@ OUTILS :
 - JAMAIS de code dans le texte — TOUJOURS dans les outils
 - NE CRÉE PAS un fichier qui existe déjà
 
-COMPOSANTS UI — fichiers en MINUSCULE dans src/components/ui/ :
-Imports : from '../components/ui/button', from '../components/ui/card', from '../components/ui/input', etc.
-JAMAIS from '../components/ui/Button' (B majuscule) — TOUJOURS from '../components/ui/button' (b minuscule)
+COMPOSANTS UI — TOUJOURS importer avec @/ alias :
+Imports : from '@/components/ui/button', from '@/components/ui/card', from '@/components/ui/input', etc.
+JAMAIS de chemin relatif (../) — TOUJOURS @/components/ui/xxx (fichiers en lowercase)
 Utils : cn() from '../lib/utils', toast from 'sonner', useIsMobile from '../hooks/useIsMobile'
 JAMAIS de <button>/<input>/<table> HTML brut → TOUJOURS les composants UI.
 Customiser via VARIANTS, pas d'overrides.

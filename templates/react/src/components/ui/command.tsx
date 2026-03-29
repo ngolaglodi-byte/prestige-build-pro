@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 import { Search } from "lucide-react";
 
 function Command({ children, className }) {

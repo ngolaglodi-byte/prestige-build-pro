@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 const ToggleGroupContext = createContext<{ value: string; onChange: (v: string) => void }>({ value: "", onChange: () => {} });
 

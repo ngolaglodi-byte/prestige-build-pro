@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
 function Menubar({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
