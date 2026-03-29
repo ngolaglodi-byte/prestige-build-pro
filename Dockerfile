@@ -20,7 +20,7 @@ ENV SITES_DIR=/data/sites
 # ANTHROPIC_API_KEY is injected at runtime via Coolify environment variables
 # Claude Code reads it automatically from the environment
 # Memory limit for the main server process (Claude Code spawns as separate process)
-ENV NODE_OPTIONS="--max-old-space-size=512"
+ENV NODE_OPTIONS="--max-old-space-size=1024"
 EXPOSE 3000
 # Health check every 30 seconds
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

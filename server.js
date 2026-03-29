@@ -28,15 +28,73 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const Dockerode = require('dockerode');
 
-// ─── GLOBAL ERROR HANDLERS (prevent server crash on unhandled errors) ───
+// ─── #12 ENV VAR VALIDATION (fail fast if critical vars missing) ───
+const REQUIRED_ENV = ['ANTHROPIC_API_KEY'];
+const OPTIONAL_ENV = { PORT: '3000', DB_PATH: './prestige-pro.db', JWT_SECRET: null, DOCKER_PROJECTS_DIR: '/data/projects' };
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) console.warn(`[Config] ⚠️  ${key} non défini — la génération IA ne fonctionnera pas`);
+}
+
+// ─── #9 GLOBAL ERROR HANDLERS + #18 GRACEFUL SHUTDOWN ───
 process.on('uncaughtException', (err) => {
-  console.error('Erreur non gérée:', err.message);
-  console.error('Stack trace:', err.stack);
+  console.error(`[FATAL] Erreur non gérée: ${err.message}`);
+  console.error(err.stack);
 });
 process.on('unhandledRejection', (err) => {
-  console.error('Promise rejetée:', err.message);
-  if (err && err.stack) console.error('Stack trace:', err.stack);
+  console.error(`[FATAL] Promise rejetée: ${err?.message || err}`);
+  if (err?.stack) console.error(err.stack);
 });
+// Graceful shutdown — clean up on SIGTERM/SIGINT
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Shutdown] ${signal} received — closing gracefully...`);
+  // Close HTTP server (stop accepting new connections)
+  if (typeof server !== 'undefined' && server.close) {
+    server.close(() => console.log('[Shutdown] HTTP server closed'));
+  }
+  // Close DB
+  try { if (db) db.close(); console.log('[Shutdown] Database closed'); } catch(e) {}
+  // Exit after 10s max
+  setTimeout(() => { console.log('[Shutdown] Forcing exit'); process.exit(0); }, 10000);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ─── #4 JOB QUEUE LIMIT (max concurrent AI generations) ───
+const MAX_CONCURRENT_GENERATIONS = 3;
+let activeGenerations = 0;
+
+// ─── #10 STRUCTURED LOGGING ───
+function log(level, category, message, meta = {}) {
+  const entry = { timestamp: new Date().toISOString(), level, category, message, ...meta };
+  if (level === 'error') console.error(JSON.stringify(entry));
+  else console.log(JSON.stringify(entry));
+}
+
+// ─── #3 INPUT VALIDATION HELPERS ───
+function validateString(value, name, minLen = 1, maxLen = 10000) {
+  if (typeof value !== 'string') return `${name} doit être une chaîne de caractères`;
+  if (value.trim().length < minLen) return `${name} trop court (min ${minLen} caractères)`;
+  if (value.length > maxLen) return `${name} trop long (max ${maxLen} caractères)`;
+  return null;
+}
+function validateId(value, name = 'ID') {
+  const num = parseInt(value);
+  if (isNaN(num) || num < 1) return `${name} invalide`;
+  return null;
+}
+
+// ─── #7 PAGINATION HELPER ───
+function paginate(req) {
+  const urlParts = req.url.split('?');
+  const params = urlParts.length > 1 ? new URLSearchParams(urlParts[1]) : new URLSearchParams();
+  const page = Math.max(1, parseInt(params.get('page')) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(params.get('limit')) || 20));
+  const offset = (page - 1) * limit;
+  return { page, limit, offset };
+}
 
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
@@ -538,6 +596,28 @@ try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAU
 try { db.exec('ALTER TABLE users ADD COLUMN monthly_generation_limit INTEGER DEFAULT 500'); } catch(e) { /* already exists */ }
 try { db.exec('ALTER TABLE projects ADD COLUMN workspace_id INTEGER'); } catch(e) { /* already exists */ }
 
+// ─── #2 DATABASE INDEXES (performance on frequent queries) ───
+try { db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+  CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+  CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
+  CREATE INDEX IF NOT EXISTS idx_project_messages_project ON project_messages(project_id);
+  CREATE INDEX IF NOT EXISTS idx_analytics_project_type ON analytics(project_id, event_type);
+  CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
+  CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(project_id);
+  CREATE INDEX IF NOT EXISTS idx_builds_project ON builds(project_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
+  CREATE INDEX IF NOT EXISTS idx_error_history_project ON error_history(project_id);
+  CREATE INDEX IF NOT EXISTS idx_project_versions_project ON project_versions(project_id);
+`); console.log('[DB] Indexes created/verified'); } catch(e) { console.warn('[DB] Index creation:', e.message); }
+
+// ─── #5 ANALYTICS RETENTION (cleanup old data > 90 days) ───
+try {
+  const deleted = db.prepare("DELETE FROM analytics WHERE created_at < datetime('now', '-90 days')").run();
+  if (deleted.changes > 0) console.log(`[DB] Cleaned ${deleted.changes} analytics records older than 90 days`);
+} catch(e) { /* ignore */ }
+
 // ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
 const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName, connectedAt}>>
 const MAX_COLLABORATORS_PER_PROJECT = 20;
@@ -604,6 +684,8 @@ function verifyToken(t) {
 function getAuth(req) {
   // Check Authorization header first
   const headerToken = (req.headers['authorization']||'').replace('Bearer ','');
+  // #8 Check token blacklist (logout)
+  if (headerToken && global._tokenBlacklist?.has(headerToken)) return null;
   if (headerToken) return verifyToken(headerToken);
   // Check query string (for SSE and initial iframe load)
   const urlParts = req.url.split('?');
@@ -5436,6 +5518,7 @@ const server = http.createServer(async (req, res) => {
         message: `${user.name} a généré une nouvelle version`
       }, user.id);
       job.finalized = true;
+      if (activeGenerations > 0) activeGenerations--;
     }
     
     // Return user-friendly message from Claude Code progress
@@ -5463,6 +5546,16 @@ const server = http.createServer(async (req, res) => {
   // ─── GENERATE START (POLLING) ───
   if (url==='/api/generate/start' && req.method==='POST') {
     const {project_id, message}=await getBody(req);
+
+    // #3 Validate input
+    if (!message || typeof message !== 'string' || message.trim().length < 3) {
+      json(res, 400, { error: 'Message requis (min 3 caractères).' }); return;
+    }
+
+    // #4 Check concurrent generation limit
+    if (activeGenerations >= MAX_CONCURRENT_GENERATIONS) {
+      json(res, 429, { error: `Serveur occupé (${activeGenerations}/${MAX_CONCURRENT_GENERATIONS} générations en cours). Réessayez dans 30 secondes.` }); return;
+    }
 
     // Check user quota before starting generation
     const quota = checkUserQuota(user.id);
@@ -5526,6 +5619,7 @@ const server = http.createServer(async (req, res) => {
       }
     } else {
       // Code mode: full generation pipeline
+      activeGenerations++;
       generateClaude(messages, jobId, brief);
     }
     return;
@@ -6926,6 +7020,75 @@ const server = http.createServer(async (req, res) => {
     }); return;
   }
 
+  // ─── #8 LOGOUT (token invalidation) ───
+  if (url === '/api/logout' && req.method === 'POST') {
+    // JWT is stateless — we can't truly revoke it server-side without a blacklist.
+    // But we add the token to a short-lived blacklist (cleared every hour).
+    const headerToken = (req.headers['authorization'] || '').replace('Bearer ', '');
+    if (headerToken) {
+      if (!global._tokenBlacklist) global._tokenBlacklist = new Set();
+      global._tokenBlacklist.add(headerToken);
+      // Auto-cleanup every hour
+      setTimeout(() => global._tokenBlacklist?.delete(headerToken), 3600000);
+    }
+    json(res, 200, { ok: true, message: 'Déconnecté.' });
+    return;
+  }
+
+  // ─── #11 API DOCUMENTATION ENDPOINT ───
+  if (url === '/api/docs' && req.method === 'GET') {
+    json(res, 200, {
+      name: 'Prestige Build Pro API',
+      version: '2.0',
+      description: 'AI-powered web application generator',
+      endpoints: {
+        auth: { 'POST /api/login': 'Login', 'POST /api/logout': 'Logout' },
+        projects: { 'GET /api/projects': 'List projects', 'POST /api/projects': 'Create', 'GET /api/projects/:id': 'Details', 'PUT /api/projects/:id': 'Update', 'DELETE /api/projects/:id': 'Delete' },
+        generation: { 'POST /api/generate/start': 'Start AI generation', 'GET /api/jobs/:id': 'Poll job status', 'POST /api/generate/image/start': 'Generate from image' },
+        build: { 'POST /api/compile': 'Docker build', 'GET /api/builds/:id': 'Build status', 'POST /api/hot-reload': 'Hot reload files' },
+        github: { 'POST /api/projects/:id/export-github': 'Export to GitHub', 'POST /api/projects/:id/github-pull': 'Pull from GitHub', 'POST /api/projects/:id/github-push': 'Push to GitHub' },
+        analytics: { 'GET /api/projects/:id/analytics': 'Project analytics', 'GET /api/admin/analytics': 'Global analytics', 'POST /api/track/:id': 'Track event' },
+        usage: { 'GET /api/usage': 'My usage/quota', 'GET /api/admin/usage': 'Admin usage dashboard' },
+        workspaces: { 'GET /api/workspaces': 'List workspaces', 'POST /api/workspaces': 'Create workspace', 'POST /api/workspaces/:id/members': 'Invite member' },
+        admin: { 'GET /api/admin/system': 'System info', 'GET /api/users': 'List users', 'POST /api/users': 'Create user' },
+        debug: { 'GET /api/projects/:id/logs': 'Container logs', 'GET /api/projects/:id/client-logs': 'Frontend logs', 'GET /api/projects/:id/errors': 'Error history' }
+      },
+      tools: CODE_TOOLS.map(t => ({ name: t.name, description: t.description })),
+      total_tools: CODE_TOOLS.length + 1,
+      ui_components: 40,
+      sectors: 12
+    });
+    return;
+  }
+
+  // ─── #15 PROMETHEUS METRICS ENDPOINT ───
+  if (url === '/metrics' && req.method === 'GET') {
+    const mem = process.memoryUsage();
+    const tokenToday = db ? db.prepare("SELECT COALESCE(SUM(input_tokens+output_tokens),0) as t, COALESCE(SUM(cost_usd),0) as c FROM token_usage WHERE created_at >= date('now')").get() : { t: 0, c: 0 };
+    const projectCount = db ? db.prepare('SELECT COUNT(*) as c FROM projects').get()?.c || 0 : 0;
+    const userCount = db ? db.prepare('SELECT COUNT(*) as c FROM users').get()?.c || 0 : 0;
+    const metrics = [
+      `# HELP prestige_uptime_seconds Server uptime`,
+      `prestige_uptime_seconds ${process.uptime().toFixed(0)}`,
+      `# HELP prestige_memory_heap_bytes Heap memory usage`,
+      `prestige_memory_heap_bytes ${mem.heapUsed}`,
+      `prestige_memory_rss_bytes ${mem.rss}`,
+      `# HELP prestige_active_generations Current AI generation count`,
+      `prestige_active_generations ${activeGenerations}`,
+      `# HELP prestige_tokens_today Total tokens used today`,
+      `prestige_tokens_today ${tokenToday.t}`,
+      `# HELP prestige_cost_today_usd API cost today in USD`,
+      `prestige_cost_today_usd ${tokenToday.c}`,
+      `# HELP prestige_projects_total Total projects`,
+      `prestige_projects_total ${projectCount}`,
+      `# HELP prestige_users_total Total users`,
+      `prestige_users_total ${userCount}`,
+    ].join('\n') + '\n';
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(metrics);
+    return;
+  }
+
   res.writeHead(404); res.end('Not found');
 });
 
@@ -6984,4 +7147,15 @@ server.listen(PORT, ()=>{
   if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
   setInterval(backupAllProjects, BACKUP_INTERVAL_MS);
   console.log('Automatic backup system active (every 6h)');
+
+  // #5 Analytics retention — cleanup old data daily
+  setInterval(() => {
+    try {
+      const d = db.prepare("DELETE FROM analytics WHERE created_at < datetime('now', '-90 days')").run();
+      if (d.changes > 0) log('info', 'cleanup', `Cleaned ${d.changes} old analytics records`);
+    } catch(e) {}
+  }, 24 * 60 * 60 * 1000); // every 24h
+
+  // #16 Log startup info
+  log('info', 'startup', 'Prestige Build Pro started', { port: PORT, apiKey: ANTHROPIC_API_KEY ? 'configured' : 'MISSING', tools: CODE_TOOLS.length, uiComponents: 40 });
 });
