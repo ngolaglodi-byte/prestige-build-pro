@@ -5094,11 +5094,12 @@ async function proxyToContainer(req, res, projectId, targetPath) {
         let jsBody = '';
         proxyRes.on('data', chunk => jsBody += chunk.toString());
         proxyRes.on('end', () => {
-          // Rewrite: from "/node_modules/..." → from "/run/59/node_modules/..."
-          // Rewrite: from "/@vite/..." → from "/run/59/@vite/..."
           const prefix = `/run/${projectId}`;
+          // Rewrite ALL absolute import paths: from "/..." → from "/run/59/..."
           jsBody = jsBody.replace(/(from\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
           jsBody = jsBody.replace(/(import\s*\(\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+          // Also rewrite bare import "/path" (CSS imports, side-effect imports)
+          jsBody = jsBody.replace(/(import\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
           res.end(jsBody);
         });
       } else {
