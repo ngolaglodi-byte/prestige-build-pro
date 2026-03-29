@@ -1735,6 +1735,9 @@ function executeServerTool(toolName, toolInput) {
   }
 
   if (toolName === 'delete_file' && toolInput.path && toolInput._projectDir) {
+    if (PROTECTED_FILES.has(toolInput.path) || toolInput.path.startsWith('src/components/ui/') || toolInput.path.startsWith('src/lib/') || toolInput.path.startsWith('src/hooks/')) {
+      return Promise.resolve(`Impossible de supprimer un fichier système: ${toolInput.path}`);
+    }
     const fp = path.join(toolInput._projectDir, toolInput.path);
     if (!fs.existsSync(fp)) return Promise.resolve(`Fichier introuvable: ${toolInput.path}`);
     fs.unlinkSync(fp);
@@ -1742,6 +1745,9 @@ function executeServerTool(toolName, toolInput) {
   }
 
   if (toolName === 'rename_file' && toolInput.old_path && toolInput.new_path && toolInput._projectDir) {
+    if (PROTECTED_FILES.has(toolInput.old_path) || PROTECTED_FILES.has(toolInput.new_path)) {
+      return Promise.resolve(`Impossible de renommer un fichier système: ${toolInput.old_path}`);
+    }
     const oldFp = path.join(toolInput._projectDir, toolInput.old_path);
     const newFp = path.join(toolInput._projectDir, toolInput.new_path);
     if (!fs.existsSync(oldFp)) return Promise.resolve(`Fichier introuvable: ${toolInput.old_path}`);
@@ -1914,9 +1920,12 @@ function parseToolResponse(response) {
       result.text += block.text;
     } else if (block.type === 'tool_use') {
       if (block.name === 'write_file' && block.input?.path && block.input?.content) {
-        const cleanContent = cleanGeneratedContent(block.input.content);
-        if (cleanContent) {
-          result.files[block.input.path] = cleanContent;
+        // Block writes to canonical files — server controls these
+        if (PROTECTED_FILES.has(block.input.path) || block.input.path.startsWith('src/components/ui/') || block.input.path.startsWith('src/lib/') || block.input.path.startsWith('src/hooks/')) {
+          console.log(`[Tool] Blocked write to canonical file: ${block.input.path}`);
+        } else {
+          const cleanContent = cleanGeneratedContent(block.input.content);
+          if (cleanContent) { result.files[block.input.path] = cleanContent; }
         }
       } else if (block.name === 'edit_file' && block.input?.path && block.input?.search) {
         result.edits.push({
@@ -2823,6 +2832,11 @@ function mergeFullFiles(existingCode, newCode) {
 }
 
 // Valid file paths for React + Vite projects (multi-file)
+// Files the AI is NOT allowed to write (canonical — server controls these)
+const PROTECTED_FILES = new Set([
+  'package.json', 'vite.config.js', 'tsconfig.json', 'index.html', 'src/main.tsx'
+]);
+
 const VALID_FILE_PATTERNS = [
   /^package\.json$/,
   /^tsconfig\.json$/,
@@ -2867,6 +2881,16 @@ function writeGeneratedFiles(projectDir, code) {
       filename = 'index.html';
     }
 
+    // Skip canonical files — server controls these, not the AI
+    if (PROTECTED_FILES.has(filename)) {
+      console.log(`[WriteFiles] Skipping canonical file: ${filename}`);
+      continue;
+    }
+    // Skip UI component templates — our canonical versions are always used
+    if (filename.startsWith('src/components/ui/') || filename.startsWith('src/lib/') || filename.startsWith('src/hooks/')) {
+      console.log(`[WriteFiles] Skipping UI template: ${filename}`);
+      continue;
+    }
     // Only write valid project files
     if (!isValidProjectFile(filename)) {
       console.log(`[WriteFiles] Skipping invalid file: ${filename}`);
@@ -5982,10 +6006,16 @@ const server = http.createServer(async (req, res) => {
       // NOTE: Do NOT copy vite.config.js during hot reload — it causes Vite to restart
       // and kill the container (wait -n in start-dev.sh). Config changes require full rebuild.
 
-      // Backend — only restart Express if server.js actually changed
+      // Backend — only restart Express if server.js changed AND has no syntax errors
       if (fs.existsSync(path.join(projDir, 'server.js'))) {
-        execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-        serverChanged = true;
+        const { spawnSync } = require('child_process');
+        const syntaxCheck = spawnSync('node', ['--check', path.join(projDir, 'server.js')], { encoding: 'utf8', timeout: 5000 });
+        if (syntaxCheck.status === 0) {
+          execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+          serverChanged = true;
+        } else {
+          console.warn(`[HMR] server.js has syntax errors — NOT copying to container`);
+        }
       }
 
       // Only restart if server.js changed (API routes/DB schema changes)
