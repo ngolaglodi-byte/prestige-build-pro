@@ -458,10 +458,16 @@ COMPOSANTS :
 - Un composant = un fichier .tsx avec export default function NomComposant()
 - Composants métier dans src/components/, UI dans src/components/ui/, pages dans src/pages/
 
-TYPESCRIPT :
-- TypeScript strict — zéro erreur de build
-- Typer les props des composants : interface NomProps { ... }
-- Pas de any implicite — toujours typer
+TYPESCRIPT — ZÉRO ERREUR DE BUILD :
+- TypeScript strict — le code DOIT compiler sans erreur
+- Typer les props : interface NomProps { ... }
+- Pas de any implicite
+- AVANT de retourner un fichier, VÉRIFIE mentalement :
+  1. Tous les imports existent (packages dans package.json, fichiers sur le disque)
+  2. Toutes les parenthèses/accolades sont fermées
+  3. Tous les tags JSX sont fermés (<div>...</div> ou <img />)
+  4. Pas de variable non définie
+  5. Pas d'import circulaire
 
 PATTERNS OBLIGATOIRES :
 - Loading : <Skeleton> pendant les fetch (pas de spinner brut)

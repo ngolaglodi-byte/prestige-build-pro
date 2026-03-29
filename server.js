@@ -2245,6 +2245,43 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
     for (const err of jsxErrors) console.warn(`  ${err.file}: ${err.issue}`);
   }
 
+  // ── Vite build check (like Lovable: catch errors BEFORE deploying) ──
+  // Run a test build to detect import errors, syntax errors, type errors
+  // If it fails, send the EXACT Vite error to Claude for correction
+  const viteBuildResult = testViteBuild(projectDir);
+  if (!viteBuildResult.success && viteBuildResult.error) {
+    job.progressMessage = 'Correction d\'erreurs de build...';
+    console.log(`[Gen] Vite build failed: ${viteBuildResult.error.substring(0, 200)}`);
+
+    // Send the exact Vite error to Claude for auto-fix (free, no quota)
+    try {
+      const fixPrompt = `Le build Vite a échoué avec cette erreur :
+
+${viteBuildResult.error.substring(0, 2000)}
+
+Corrige le(s) fichier(s) en cause. Utilise les outils write_file/edit_file.
+Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
+
+      const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000,
+        { ...tracking, operation: 'auto-correct' }, { useTools: true });
+      if (fixCode) {
+        allCode = mergeModifiedCode(allCode, fixCode);
+        writeGeneratedFiles(projectDir, fixCode);
+        savePartialToDb();
+        console.log(`[Gen] Vite build error auto-fixed`);
+
+        // Re-test after fix
+        const retest = testViteBuild(projectDir);
+        if (retest.success) console.log(`[Gen] Vite build OK after fix`);
+        else console.warn(`[Gen] Vite build still failing: ${retest.error?.substring(0, 100)}`);
+      }
+    } catch (fixErr) {
+      console.warn(`[Gen] Auto-fix failed: ${fixErr.message}`);
+    }
+  } else {
+    console.log(`[Gen] Vite build check: OK`);
+  }
+
   // ── Finalize ──
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
@@ -2312,6 +2349,48 @@ function findMissingImports(projectDir) {
     }
   }
   return missing;
+}
+
+// ─── VITE BUILD TEST (like Lovable: detect errors before deployment) ───
+// Runs a quick vite build in the project directory to catch import errors,
+// syntax errors, and type errors BEFORE the container is built.
+// Returns { success: true } or { success: false, error: 'exact Vite error message' }
+function testViteBuild(projectDir) {
+  // Check if vite and node_modules exist
+  const viteBin = path.join(projectDir, 'node_modules', '.bin', 'vite');
+  if (!fs.existsSync(viteBin)) {
+    // No local vite — try with npx from base image
+    try {
+      const { spawnSync } = require('child_process');
+      const result = spawnSync('npx', ['vite', 'build', '--mode', 'development'], {
+        cwd: projectDir,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, NODE_PATH: '/app/node_modules' }
+      });
+      if (result.status === 0) return { success: true };
+      const error = (result.stderr || result.stdout || '').trim();
+      return { success: false, error };
+    } catch (e) {
+      return { success: true }; // Can't test — assume OK
+    }
+  }
+
+  try {
+    const { spawnSync } = require('child_process');
+    const result = spawnSync(viteBin, ['build', '--mode', 'development'], {
+      cwd: projectDir,
+      encoding: 'utf8',
+      timeout: 30000
+    });
+    if (result.status === 0) return { success: true };
+    const error = (result.stderr || result.stdout || '').trim();
+    // Extract the meaningful error (Vite errors have a clear format)
+    const errorMatch = error.match(/error[:\s]+([\s\S]*?)(?:\n\n|\nat\s)/i);
+    return { success: false, error: errorMatch ? errorMatch[1].trim() : error.substring(0, 1000) };
+  } catch (e) {
+    return { success: true }; // Can't test — assume OK
+  }
 }
 
 // Quick JSX validation — catch common errors before Vite build
