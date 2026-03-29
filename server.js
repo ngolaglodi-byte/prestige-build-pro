@@ -1174,12 +1174,120 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 // Streams from the API, parses ### markers, writes files to project dir.
 // ─── MULTI-TURN API CALL HELPER ───
 // Makes a non-streaming API call and returns the text response
-function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo = null) {
+// ─── TOOL-BASED CODE GENERATION (like Lovable's lov-write / lov-line-replace) ───
+// Define tools for structured file operations — eliminates ### marker parsing bugs
+const CODE_TOOLS = [
+  {
+    name: 'write_file',
+    description: 'Create or overwrite a file in the project. Use for new files or when most of the file changes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to project root (e.g. src/components/Header.jsx)' },
+        content: { type: 'string', description: 'Complete file content' }
+      },
+      required: ['path', 'content']
+    }
+  },
+  {
+    name: 'edit_file',
+    description: 'Make a surgical edit to an existing file. Use for small changes (color, text, fix). More efficient than rewriting the whole file.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to project root' },
+        search: { type: 'string', description: 'Exact text to find (must match existing code exactly)' },
+        replace: { type: 'string', description: 'Text to replace it with' }
+      },
+      required: ['path', 'search', 'replace']
+    }
+  }
+];
+
+// Parse tool_use blocks from Claude API response into file operations
+// Returns { files: { path: content }, edits: [{ path, search, replace }], text: 'chat message' }
+function parseToolResponse(response) {
+  const result = { files: {}, edits: [], text: '' };
+  if (!response || !response.content) return result;
+
+  for (const block of response.content) {
+    if (block.type === 'text') {
+      result.text += block.text;
+    } else if (block.type === 'tool_use') {
+      if (block.name === 'write_file' && block.input?.path && block.input?.content) {
+        const cleanContent = cleanGeneratedContent(block.input.content);
+        if (cleanContent) {
+          result.files[block.input.path] = cleanContent;
+        }
+      } else if (block.name === 'edit_file' && block.input?.path && block.input?.search) {
+        result.edits.push({
+          path: block.input.path,
+          search: block.input.search,
+          replace: block.input.replace || ''
+        });
+      }
+    }
+  }
+  return result;
+}
+
+// Convert tool response files into ### marker format (for DB storage compatibility)
+function toolResponseToCode(parsed) {
+  let code = '';
+  const fileOrder = ['package.json', 'vite.config.js', 'index.html', 'server.js', 'src/main.jsx', 'src/index.css', 'src/App.jsx'];
+  const written = new Set();
+  for (const fn of fileOrder) {
+    if (parsed.files[fn]) { code += (code ? '\n\n' : '') + `### ${fn}\n${parsed.files[fn]}`; written.add(fn); }
+  }
+  Object.keys(parsed.files).filter(fn => !written.has(fn)).sort().forEach(fn => {
+    code += (code ? '\n\n' : '') + `### ${fn}\n${parsed.files[fn]}`;
+  });
+  return code;
+}
+
+// Apply edit_file operations to existing project files on disk
+function applyToolEdits(projectDir, edits) {
+  let applied = 0;
+  for (const edit of edits) {
+    const filePath = path.join(projectDir, edit.path);
+    if (!fs.existsSync(filePath)) {
+      console.warn(`[ToolEdit] File not found: ${edit.path}`);
+      continue;
+    }
+    let content = fs.readFileSync(filePath, 'utf8');
+    if (content.includes(edit.search)) {
+      content = content.replace(edit.search, edit.replace);
+      fs.writeFileSync(filePath, content);
+      applied++;
+      console.log(`[ToolEdit] Applied edit to ${edit.path}`);
+    } else {
+      // Fuzzy match: trim whitespace
+      const trimSearch = edit.search.trim();
+      if (trimSearch && content.includes(trimSearch)) {
+        content = content.replace(trimSearch, edit.replace.trim());
+        fs.writeFileSync(filePath, content);
+        applied++;
+        console.log(`[ToolEdit] Applied fuzzy edit to ${edit.path}`);
+      } else {
+        console.warn(`[ToolEdit] Search text not found in ${edit.path}: "${edit.search.substring(0, 50)}..."`);
+      }
+    }
+  }
+  return applied;
+}
+
+// opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
+// opts.rawResponse: if true, return the full API response object instead of text
+function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo = null, opts = {}) {
   return new Promise((resolve, reject) => {
     const model = 'claude-sonnet-4-20250514';
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
+    if (opts.useTools) {
+      apiPayload.tools = CODE_TOOLS;
+      apiPayload.tool_choice = { type: 'auto' }; // let Claude decide when to use tools
+    }
     const payload = JSON.stringify(apiPayload);
-    const opts = {
+    const reqOpts = {
       hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
       headers: {
         'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY,
@@ -1187,8 +1295,7 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
         'Content-Length': Buffer.byteLength(payload)
       }
     };
-    const timeoutMs = Math.max(maxTokens * 5, 120000); // ~5ms per token, min 2 min
-    anthropicRequest(payload, opts, (apiRes) => {
+    anthropicRequest(payload, reqOpts, (apiRes) => {
       if (apiRes.statusCode !== 200) {
         let errBody = '';
         apiRes.on('data', c => errBody += c);
@@ -1203,13 +1310,29 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
       apiRes.on('end', () => {
         try {
           const r = JSON.parse(data);
-          if (r.content?.[0]?.text) {
-            console.log(`[callClaudeAPI] OK: ${r.content[0].text.length} chars, usage: ${JSON.stringify(r.usage || {})}`);
-            // Track token usage if tracking info provided
-            if (trackingInfo && r.usage) {
-              trackTokenUsage(trackingInfo.userId, trackingInfo.projectId, trackingInfo.operation, model, r.usage);
-            }
-            resolve(r.content[0].text);
+          if (trackingInfo && r.usage) {
+            trackTokenUsage(trackingInfo.userId, trackingInfo.projectId, trackingInfo.operation, model, r.usage);
+          }
+
+          // If tools were used, parse tool_use blocks
+          const hasToolUse = r.content?.some(b => b.type === 'tool_use');
+          if (hasToolUse) {
+            const parsed = parseToolResponse(r);
+            const fileCount = Object.keys(parsed.files).length;
+            const editCount = parsed.edits.length;
+            console.log(`[callClaudeAPI] Tools: ${fileCount} write_file + ${editCount} edit_file, usage: ${JSON.stringify(r.usage || {})}`);
+            if (opts.rawResponse) { resolve(parsed); return; }
+            // Convert tool files to ### marker format for backward compat
+            const code = toolResponseToCode(parsed);
+            resolve(code || parsed.text || '');
+            return;
+          }
+
+          // Fallback: plain text response (### markers or conversation)
+          const text = r.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
+          if (text) {
+            console.log(`[callClaudeAPI] Text: ${text.length} chars, usage: ${JSON.stringify(r.usage || {})}`);
+            resolve(text);
           }
           else if (r.error) reject(new Error(r.error.message));
           else reject(new Error('Réponse API vide'));
@@ -1303,7 +1426,7 @@ Génère ces 6 fichiers avec ### markers :
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
   try {
-    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' });
+    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
     allCode = infraCode;
     writeGeneratedFiles(projectDir, infraCode);
     job.code = allCode;
@@ -1348,8 +1471,8 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
 
   // Launch BOTH in parallel — they don't depend on each other
   const [pagesResult, compsResult] = await Promise.allSettled([
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 24000, { ...tracking, operation: 'generate' }),
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 12000, { ...tracking, operation: 'generate' })
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true }),
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 12000, { ...tracking, operation: 'generate' }, { useTools: true })
   ]);
 
   // Merge pages result
@@ -1392,7 +1515,7 @@ ${missingFiles.map(f => `### ${f}`).join('\n')}
 
 Chaque fichier : export default function, TailwindCSS, lucide-react, contenu professionnel.`;
     try {
-      const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000, { ...tracking, operation: 'generate' });
+      const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000, { ...tracking, operation: 'generate' }, { useTools: true });
       allCode = mergeModifiedCode(allCode, fixCode);
       writeGeneratedFiles(projectDir, fixCode);
       console.log(`[Gen] Fixed ${missingFiles.length} missing imports`);
@@ -1942,40 +2065,77 @@ Règles d'intégration automatique :
   job.progressMessage = 'Prestige AI travaille sur votre demande...';
 
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
+    tools: [...CODE_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+    tool_choice: { type: 'auto' }
   };
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
   
   anthropicRequest(payload, opts, (apiRes) => {
     let buffer = '';
+    // Track tool_use blocks accumulated during streaming
+    const toolBlocks = []; // { name, id, input_json }
+    let currentToolId = null;
+    let currentToolName = null;
+    let currentToolJson = '';
+
     apiRes.on('data', chunk => {
       buffer += chunk.toString();
       const lines = buffer.split('\n');
-      buffer = lines.pop(); // keep incomplete last line
+      buffer = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6).trim();
         if (!data || data === '[DONE]') continue;
         try {
           const d = JSON.parse(data);
-          // Handle text deltas (regular content)
+
+          // Text deltas (regular content / fallback ### markers)
           if (d.type === 'content_block_delta' && d.delta?.type === 'text_delta' && d.delta?.text) {
             job.code += d.delta.text;
             job.progress = job.code.length;
           }
-          // Handle web search progress
+
+          // Tool use start — begin accumulating input JSON
+          if (d.type === 'content_block_start' && d.content_block?.type === 'tool_use') {
+            currentToolId = d.content_block.id;
+            currentToolName = d.content_block.name;
+            currentToolJson = '';
+            if (currentToolName === 'write_file') job.progressMessage = 'Écriture de fichier...';
+            else if (currentToolName === 'edit_file') job.progressMessage = 'Modification de fichier...';
+          }
+
+          // Tool use JSON delta — accumulate
+          if (d.type === 'content_block_delta' && d.delta?.type === 'input_json_delta' && d.delta?.partial_json) {
+            currentToolJson += d.delta.partial_json;
+          }
+
+          // Tool use end — parse and store
+          if (d.type === 'content_block_stop' && currentToolId) {
+            try {
+              const input = JSON.parse(currentToolJson);
+              toolBlocks.push({ name: currentToolName, id: currentToolId, input });
+              if (currentToolName === 'write_file' && input.path) {
+                job.progressMessage = `Fichier: ${input.path}`;
+              }
+            } catch (parseErr) {
+              console.warn(`[Stream] Failed to parse tool input: ${parseErr.message}`);
+            }
+            currentToolId = null;
+            currentToolName = null;
+            currentToolJson = '';
+          }
+
+          // Web search progress
           if (d.type === 'content_block_start' && d.content_block?.type === 'server_tool_use') {
             job.progressMessage = 'Recherche web en cours...';
           }
           if (d.type === 'content_block_start' && d.content_block?.type === 'text') {
             job.progressMessage = 'Prestige AI rédige le code...';
           }
-          // Handle completion — set flag, process in 'end' handler
           if (d.type === 'message_stop') {
             job._messageComplete = true;
           }
-          // Handle errors in stream
           if (d.type === 'error') {
             console.error('[Claude API] Stream error:', JSON.stringify(d.error));
             job.status = 'error';
@@ -1988,9 +2148,43 @@ Règles d'intégration automatique :
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
     apiRes.on('end', async () => {
+      // If tool_use blocks were received, process them into code
+      if (toolBlocks.length > 0) {
+        console.log(`[Stream] Processing ${toolBlocks.length} tool calls`);
+        const parsed = { files: {}, edits: [], text: job.code };
+        for (const tb of toolBlocks) {
+          if (tb.name === 'write_file' && tb.input?.path && tb.input?.content) {
+            parsed.files[tb.input.path] = cleanGeneratedContent(tb.input.content);
+          } else if (tb.name === 'edit_file' && tb.input?.path) {
+            parsed.edits.push(tb.input);
+          }
+        }
+        // Convert tool files to ### marker code for DB storage
+        const toolCode = toolResponseToCode(parsed);
+        if (toolCode) job.code = toolCode;
+        // Apply edits to existing project files on disk
+        if (parsed.edits.length > 0 && job.project_id) {
+          const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+          applyToolEdits(projDir, parsed.edits);
+          // Also update the code in memory with the edit results
+          if (job.project_id) {
+            const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+            if (existingCode?.generated_code) {
+              // Re-read files from disk after edits applied
+              const updatedFiles = readProjectFilesRecursive(projDir);
+              job.code = formatProjectCode(updatedFiles);
+            }
+          }
+        }
+        // Write tool files to disk
+        if (Object.keys(parsed.files).length > 0 && job.project_id) {
+          writeGeneratedFiles(path.join(DOCKER_PROJECTS_DIR, String(job.project_id)), toolCode);
+        }
+      }
+
       if (job.status === 'running' && job.code.length > 0) {
         try {
-          // Strip Claude artifacts (SUGGESTIONS, conversational text, backticks)
+          // Strip Claude artifacts (only needed for text/### fallback mode)
           job.code = stripCodeArtifacts(job.code);
 
           // Merge with existing code if modification
@@ -3650,6 +3844,10 @@ Retourne UNIQUEMENT le code corrigé, sans explications.`;
         try {
           const response = JSON.parse(data);
           if (response.content && response.content[0] && response.content[0].text) {
+            // Track auto-correction tokens (free — not counted in quota)
+            if (response.usage) {
+              trackTokenUsage(null, null, 'auto-correct', 'claude-sonnet-4-20250514', response.usage);
+            }
             resolve(response.content[0].text);
           } else if (response.error) {
             reject(new Error(response.error.message || 'Erreur API Claude'));
@@ -3713,6 +3911,8 @@ Réécris complètement server.js en corrigeant l'erreur. Assure-toi que app est
         try {
           const response = JSON.parse(data);
           if (response.content && response.content[0] && response.content[0].text) {
+            // Track (free — auto-correct not counted in quota)
+            if (response.usage) trackTokenUsage(null, null, 'auto-correct', 'claude-sonnet-4-20250514', response.usage);
             const correctedServerJs = response.content[0].text
               .replace(/^```[\w]*\n?/gm, '').replace(/```$/gm, '').trim();
 
@@ -4629,6 +4829,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Detect intent: discussion (question) vs code (action)
+    // Action words trigger code generation; questions get lightweight chat response
+    const msg = (message || '').toLowerCase();
+    const isQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg)
+      && !/\b(crée|ajoute|modifie|change|supprime|corrige|implémente|intègre|construis|fais|mets|retire)\b/.test(msg);
+
     const jobId = crypto.randomUUID();
 
     // Initialize job in Map
@@ -4659,8 +4865,27 @@ const server = http.createServer(async (req, res) => {
     const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys) : [{role:'user', content: userMsg}];
     if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', message);
     const brief = project?.brief || message;
-    
-    generateClaude(messages, jobId, brief);
+
+    if (isQuestion) {
+      // Discussion mode: lightweight chat, no code generation, no tools
+      // Responds fast, doesn't consume generation quota
+      console.log(`[Chat] Discussion mode for: "${message.substring(0, 60)}..."`);
+      const job = generationJobs.get(jobId);
+      try {
+        const chatSystemBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Réponds en français.' }];
+        const chatReply = await callClaudeAPI(chatSystemBlocks, messages, 2000, { userId: user.id, projectId: project_id, operation: 'chat' });
+        job.code = ''; // no code for discussion
+        job.chat_message = chatReply;
+        job.status = 'done';
+        job.progressMessage = 'Réponse prête';
+      } catch (e) {
+        job.status = 'error';
+        job.error = e.message;
+      }
+    } else {
+      // Code mode: full generation pipeline
+      generateClaude(messages, jobId, brief);
+    }
     return;
   }
 
