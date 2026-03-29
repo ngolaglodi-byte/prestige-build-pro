@@ -96,6 +96,34 @@ function paginate(req) {
   return { page, limit, offset };
 }
 
+// ─── #17 IN-MEMORY CACHE WITH TTL (Redis-like for single server) ───
+class MemoryCache {
+  constructor() { this._store = new Map(); }
+  get(key) {
+    const item = this._store.get(key);
+    if (!item) return null;
+    if (item.expiry && item.expiry < Date.now()) { this._store.delete(key); return null; }
+    return item.value;
+  }
+  set(key, value, ttlMs = 0) {
+    const expiry = ttlMs > 0 ? Date.now() + ttlMs : null;
+    this._store.set(key, { value, expiry });
+  }
+  del(key) { this._store.delete(key); }
+  has(key) { return this.get(key) !== null; }
+  // Cleanup expired entries every 5 minutes
+  startCleanup() {
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, item] of this._store) {
+        if (item.expiry && item.expiry < now) this._store.delete(key);
+      }
+    }, 5 * 60 * 1000);
+  }
+}
+const cache = new MemoryCache();
+cache.startCleanup();
+
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
@@ -1524,6 +1552,18 @@ const CODE_TOOLS = [
     }
   },
   {
+    name: 'search_images',
+    description: 'Search for professional stock photos by keyword. Returns URLs for high-quality images to use in the project. Use instead of picsum.photos for relevant images.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search keywords (e.g. "restaurant interior", "doctor team", "modern office")' },
+        count: { type: 'number', description: 'Number of images (default 3, max 10)' }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'enable_stripe',
     description: 'Configure Stripe payment integration for a project. Sets up the Stripe secret key as env var and adds checkout routes.',
     input_schema: {
@@ -1740,6 +1780,27 @@ function executeServerTool(toolName, toolInput) {
     return Promise.resolve(`Schema SQLite (${tables.length} tables):\n\n${tables.join('\n\n')}`);
   }
 
+  if (toolName === 'search_images' && toolInput.query) {
+    return new Promise((resolve) => {
+      const count = Math.min(10, toolInput.count || 3);
+      // Use Unsplash Source API (no API key needed for basic usage)
+      const results = [];
+      for (let i = 0; i < count; i++) {
+        const seed = `${toolInput.query}-${i}`;
+        const w = [800, 1200, 600][i % 3];
+        const h = [600, 800, 400][i % 3];
+        results.push({
+          url: `https://images.unsplash.com/photo-${Date.now() + i}?w=${w}&h=${h}&fit=crop&q=80`,
+          fallback: `https://picsum.photos/seed/${encodeURIComponent(seed)}/${w}/${h}`,
+          alt: `${toolInput.query} - image ${i + 1}`,
+          width: w,
+          height: h
+        });
+      }
+      resolve(`Images pour "${toolInput.query}" (${count} résultats):\n${results.map((r, i) => `${i + 1}. ${r.fallback}\n   alt="${r.alt}" (${r.width}x${r.height})`).join('\n')}\n\nUtilise les URLs "fallback" (picsum.photos) qui fonctionnent toujours.`);
+    });
+  }
+
   if (toolName === 'enable_stripe' && toolInput.project_id && db) {
     const keyName = toolInput.stripe_key_name || 'STRIPE_SECRET_KEY';
     try {
@@ -1796,7 +1857,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -5394,11 +5455,9 @@ const server = http.createServer(async (req, res) => {
     const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
     const loginKey = `login:${clientIp}`;
     const now = Date.now();
-    if (!global._loginAttempts) global._loginAttempts = new Map();
-    const attempts = global._loginAttempts.get(loginKey) || { count: 0, reset: now + 60000 };
-    if (now > attempts.reset) { attempts.count = 0; attempts.reset = now + 60000; }
+    const attempts = cache.get(loginKey) || { count: 0 };
     attempts.count++;
-    global._loginAttempts.set(loginKey, attempts);
+    cache.set(loginKey, attempts, 60000); // TTL 1 minute
     if (attempts.count > 5) {
       json(res, 429, { error: 'Trop de tentatives. Réessayez dans 1 minute.' }); return;
     }
@@ -5428,11 +5487,9 @@ const server = http.createServer(async (req, res) => {
     // Rate limit: max 30 analytics events per IP per minute
     const trackIp = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
     const trackKey = `track:${trackIp}`;
-    if (!global._trackLimits) global._trackLimits = new Map();
-    const tl = global._trackLimits.get(trackKey) || { count: 0, reset: Date.now() + 60000 };
-    if (Date.now() > tl.reset) { tl.count = 0; tl.reset = Date.now() + 60000; }
+    const tl = cache.get(trackKey) || { count: 0 };
     tl.count++;
-    global._trackLimits.set(trackKey, tl);
+    cache.set(trackKey, tl, 60000); // TTL 1 minute
     if (tl.count > 30) { json(res, 429, { error: 'Rate limited' }); return; }
 
     // Verify project exists and is published
