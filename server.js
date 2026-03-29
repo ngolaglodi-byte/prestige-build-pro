@@ -1276,12 +1276,119 @@ const CODE_TOOLS = [
       required: ['path', 'search', 'replace']
     }
   }
+  ,
+  {
+    name: 'fetch_website',
+    description: 'Fetch a website URL and get its content as clean text/markdown. Use when the user says "fais comme ce site" or references an external URL for design inspiration.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The full URL to fetch (e.g. https://stripe.com)' }
+      },
+      required: ['url']
+    }
+  },
+  {
+    name: 'read_console_logs',
+    description: 'Read the frontend console logs (errors, warnings, network failures) from the project preview. Use FIRST when debugging.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'The project ID to read logs from' }
+      },
+      required: ['project_id']
+    }
+  },
+  {
+    name: 'run_security_check',
+    description: 'Scan the project code for common security issues: exposed secrets, SQL injection risks, missing auth checks, XSS vulnerabilities.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'The project ID to scan' }
+      },
+      required: ['project_id']
+    }
+  }
 ];
 
+// ─── TOOL EXECUTION HANDLERS ───
+// Execute server-side tools that Claude calls (fetch_website, read_console_logs, run_security_check)
+function executeServerTool(toolName, toolInput) {
+  if (toolName === 'fetch_website' && toolInput.url) {
+    return new Promise((resolve) => {
+      const url = toolInput.url;
+      const proto = url.startsWith('https') ? https : http;
+      const req = proto.get(url, { timeout: 10000, headers: { 'User-Agent': 'PrestigeBuildBot/1.0' } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          // Follow one redirect
+          const rProto = res.headers.location.startsWith('https') ? https : http;
+          rProto.get(res.headers.location, { timeout: 10000 }, (r2) => {
+            let data = ''; r2.on('data', c => data += c); r2.on('end', () => resolve(htmlToText(data, url)));
+          }).on('error', () => resolve('Erreur: impossible de charger le site.'));
+          return;
+        }
+        let data = ''; res.on('data', c => data += c); res.on('end', () => resolve(htmlToText(data, url)));
+      });
+      req.on('error', () => resolve('Erreur: impossible de charger le site.'));
+      req.on('timeout', () => { req.destroy(); resolve('Timeout: le site ne répond pas.'); });
+    });
+  }
+
+  if (toolName === 'read_console_logs' && toolInput.project_id) {
+    const logs = clientLogs.get(String(toolInput.project_id)) || [];
+    if (logs.length === 0) return Promise.resolve('Aucun log frontend capturé.');
+    return Promise.resolve(logs.slice(-20).map(l => `[${l.level}] ${l.message}`).join('\n'));
+  }
+
+  if (toolName === 'run_security_check' && toolInput.project_id && db) {
+    const project = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(toolInput.project_id);
+    if (!project?.generated_code) return Promise.resolve('Projet sans code.');
+    const code = project.generated_code;
+    const issues = [];
+    // Check for hardcoded secrets
+    if (/['"][A-Za-z0-9]{20,}['"]/.test(code) && /api.key|secret|token|password/i.test(code)) issues.push('CRITIQUE: Possible clé API ou secret en dur dans le code');
+    // Check for SQL injection
+    if (/\$\{.*\}.*(?:SELECT|INSERT|UPDATE|DELETE)/i.test(code) || /`.*\$\{.*(?:SELECT|INSERT|UPDATE|DELETE)/i.test(code)) issues.push('CRITIQUE: Possible injection SQL (template literal dans une requête)');
+    // Check for missing auth
+    if (code.includes('/api/') && !code.includes('auth') && !code.includes('jwt') && !code.includes('token')) issues.push('ATTENTION: Routes API sans authentification visible');
+    // Check XSS
+    if (code.includes('dangerouslySetInnerHTML')) issues.push('ATTENTION: dangerouslySetInnerHTML détecté — risque XSS');
+    // Check env vars
+    if (/ANTHROPIC_API_KEY|STRIPE_SECRET|GOOGLE_API/.test(code) && !code.includes('process.env')) issues.push('ATTENTION: Clé API potentiellement en dur');
+    if (issues.length === 0) return Promise.resolve('Aucun problème de sécurité détecté.');
+    return Promise.resolve('Problèmes détectés:\n' + issues.map((s, i) => `${i + 1}. ${s}`).join('\n'));
+  }
+
+  return Promise.resolve(null);
+}
+
+// Convert HTML to clean text (basic — strips tags, keeps structure)
+function htmlToText(html, url) {
+  if (!html) return 'Page vide.';
+  let text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '[NAV]')
+    .replace(/<header[\s\S]*?<\/header>/gi, '[HEADER]')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '[FOOTER]')
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level, content) => `${'#'.repeat(parseInt(level))} ${content.replace(/<[^>]+>/g, '').trim()}\n`)
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1\n')
+    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return `Source: ${url}\n\n${text.substring(0, 5000)}`;
+}
+
 // Parse tool_use blocks from Claude API response into file operations
-// Returns { files: { path: content }, edits: [{ path, search, replace }], text: 'chat message' }
 function parseToolResponse(response) {
-  const result = { files: {}, edits: [], text: '' };
+  const result = { files: {}, edits: [], text: '', serverToolCalls: [] };
   if (!response || !response.content) return result;
 
   for (const block of response.content) {
@@ -1299,6 +1406,8 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check'].includes(block.name)) {
+        result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
   }
@@ -1394,9 +1503,37 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             const parsed = parseToolResponse(r);
             const fileCount = Object.keys(parsed.files).length;
             const editCount = parsed.edits.length;
-            console.log(`[callClaudeAPI] Tools: ${fileCount} write_file + ${editCount} edit_file, usage: ${JSON.stringify(r.usage || {})}`);
+            const serverCalls = parsed.serverToolCalls.length;
+            console.log(`[callClaudeAPI] Tools: ${fileCount} write + ${editCount} edit + ${serverCalls} server, usage: ${JSON.stringify(r.usage || {})}`);
+
+            // Execute server-side tools (fetch_website, read_console_logs, security_check)
+            // and return results to Claude in a follow-up call if needed
+            if (serverCalls > 0) {
+              (async () => {
+                try {
+                  const toolResults = [];
+                  for (const tc of parsed.serverToolCalls) {
+                    const result = await executeServerTool(tc.name, tc.input);
+                    toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
+                    console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
+                  }
+                  // Continue conversation with tool results
+                  const followUp = await callClaudeAPI(systemBlocks, [
+                    ...messages,
+                    { role: 'assistant', content: r.content },
+                    ...toolResults.map(tr => ({ role: 'user', content: [tr] }))
+                  ], maxTokens, trackingInfo, opts);
+                  resolve(followUp);
+                } catch (e) {
+                  // Server tool failed — still return what we have
+                  const code = toolResponseToCode(parsed);
+                  resolve(code || parsed.text || '');
+                }
+              })();
+              return;
+            }
+
             if (opts.rawResponse) { resolve(parsed); return; }
-            // Convert tool files to ### marker format for backward compat
             const code = toolResponseToCode(parsed);
             resolve(code || parsed.text || '');
             return;

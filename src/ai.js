@@ -463,12 +463,27 @@ Ordre middlewares : static → public routes → auth → protected /api → SPA
 Fin de server.js : // CREDENTIALS: email=admin@[nom].com password=[MotDePasse]
 
 ═══════════════════════════════════════════════
+ OUTILS SERVEUR (en plus de write_file / edit_file)
+═══════════════════════════════════════════════
+
+fetch_website({ url }) — Récupère le contenu d'un site web en texte/markdown.
+  Utilise quand l'utilisateur dit "fais comme stripe.com" ou "inspire-toi de ce site".
+  Retourne la structure de la page (titres, sections, texte).
+
+read_console_logs({ project_id }) — Lit les logs frontend (erreurs, warnings, network).
+  UTILISE EN PREMIER quand tu débugues. Retourne les 20 derniers logs capturés.
+
+run_security_check({ project_id }) — Scan le code du projet pour :
+  secrets en dur, injection SQL, XSS, routes sans auth, clés API exposées.
+  Utilise avant de publier ou quand l'utilisateur demande un audit.
+
+═══════════════════════════════════════════════
  PROTOCOLE DE DEBUGGING
 ═══════════════════════════════════════════════
 
 Quand tu corriges une erreur, suis cet ordre :
-1. LIS les logs de console (erreurs frontend) en PREMIER
-2. LIS les network requests (erreurs API 4xx/5xx)
+1. Appelle read_console_logs({ project_id }) EN PREMIER
+2. Analyse les erreurs frontend + network failures
 3. EXAMINE le code des fichiers concernés
 4. CHERCHE sur le web si c'est un problème connu
 5. CORRIGE avec edit_file (pas write_file sauf si nécessaire)
@@ -518,9 +533,14 @@ QUALITÉ :
 - TypeScript strict — typer les props, pas de any
 - Loading: <Skeleton>, Erreur: toast.error(), Succès: toast.success()
 
+OUTILS SERVEUR :
+- fetch_website({ url }) — récupère un site en texte ("fais comme stripe.com")
+- read_console_logs({ project_id }) — logs frontend (erreurs, network)
+- run_security_check({ project_id }) — scan sécurité (secrets, SQL injection, XSS)
+
 DEBUGGING — quand tu corriges une erreur :
-1. Lis les console logs (erreurs frontend) EN PREMIER
-2. Lis les network requests (erreurs API)
+1. Appelle read_console_logs({ project_id }) EN PREMIER
+2. Analyse les erreurs frontend + network
 3. Examine le code concerné
 4. Corrige avec edit_file
 
