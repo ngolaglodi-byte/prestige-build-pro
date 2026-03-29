@@ -428,31 +428,54 @@ STRUCTURE src/App.jsx OBLIGATOIRE :
 - BrowserRouter > Routes avec toutes les <Route>
 - Header et Footer inclus dans le layout
 
+COMPOSANTS UI PRÉ-INSTALLÉS (style shadcn/ui) — UTILISE-LES :
+Le projet inclut des composants professionnels dans src/components/ui/ :
+- import { Button } from '../components/ui/button' → <Button variant="default|outline|secondary|ghost|destructive" size="default|sm|lg|icon">
+- import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '../components/ui/card'
+- import { Input } from '../components/ui/input' → <Input type="text|email|password|number" placeholder="..." />
+- import { Textarea } from '../components/ui/textarea'
+- import { Label } from '../components/ui/label' → <Label htmlFor="email">Email</Label>
+- import { Badge } from '../components/ui/badge' → <Badge variant="default|secondary|destructive|outline|success">
+- import { Select } from '../components/ui/select'
+- import { Separator } from '../components/ui/separator'
+- import { Skeleton } from '../components/ui/skeleton' → loading placeholder
+- import { cn } from '../lib/utils' → cn("base-class", condition && "conditional-class")
+
+RÈGLE ABSOLUE : utilise TOUJOURS les composants UI pour les éléments interactifs.
+JAMAIS de <button className="px-4 py-2 bg-blue-600..."> → TOUJOURS <Button variant="default">
+JAMAIS de <input className="border rounded..."> → TOUJOURS <Input />
+JAMAIS de <div className="border rounded shadow..."> pour un conteneur → TOUJOURS <Card>
+
+HOOKS PRÉ-INSTALLÉS :
+- import { useToast } from '../hooks/useToast' → const { toast } = useToast(); toast({ title: "Succès!", variant: "success" })
+- import { useIsMobile } from '../hooks/useIsMobile' → const isMobile = useIsMobile()
+
 RÈGLES REACT :
 1. Un composant = un fichier .jsx avec export default function NomComposant()
-2. Les composants dans src/components/, les pages dans src/pages/
+2. Composants métier dans src/components/, UI dans src/components/ui/, pages dans src/pages/
 3. Hooks : useState, useEffect, useCallback, useMemo — JAMAIS de hooks conditionnels
-4. fetch('/api/...') pour les appels backend (avec slash initial — Vite proxy s'en charge)
-5. Icônes : import { Icon } from 'lucide-react' — JAMAIS de CDN icônes
-6. Classes CSS : TailwindCSS dans className="..." — JAMAIS de CSS inline
-7. Responsive : mobile-first (sm:, md:, lg:, xl:)
-8. Animations : transition-all duration-300, hover:, group-hover:, focus:ring-2
-9. Navigation : <Link to="/page"> de react-router-dom — JAMAIS window.location
-10. État global : props pour petits arbres | useContext + Provider pour auth, thème, panier
+4. fetch('/api/...') pour le backend (Vite proxy gère)
+5. Icônes : import { Icon } from 'lucide-react' — JAMAIS de CDN
+6. Styling : TailwindCSS + composants UI — JAMAIS de CSS inline
+7. Responsive : mobile-first (sm:, md:, lg:, xl:) + useIsMobile() si nécessaire
+8. Navigation : <Link to="/page"> de react-router-dom
+9. État global : props | useContext + Provider pour auth/thème/panier
+10. Helper cn() : cn("base", isActive && "active-class", className) pour merge conditionnel
 
 PATTERNS PROFESSIONNELS OBLIGATOIRES :
-- Loading states : const [loading, setLoading] = useState(false) + skeleton/spinner pendant fetch
-- Error states : const [error, setError] = useState(null) + try/catch sur CHAQUE fetch + message d'erreur UI
-- Formulaires : validation temps réel (onChange ou onBlur), messages d'erreur par champ, disable submit pendant envoi
-- Images : <img loading="lazy" alt="description pertinente" className="object-cover" />
-- Listes vides : toujours afficher un état vide ("Aucun résultat", illustration)
+- Loading : <Skeleton className="h-4 w-full" /> pendant les fetch (pas de spinner basique)
+- Erreurs : try/catch sur CHAQUE fetch + toast({ title: "Erreur", description: e.message, variant: "destructive" })
+- Succès : toast({ title: "Enregistré !", variant: "success" }) après chaque action réussie
+- Formulaires : <Label> + <Input> + message d'erreur par champ + <Button disabled={loading}>
+- Listes vides : message + illustration quand aucun résultat
+- Images : <img loading="lazy" alt="description" className="object-cover rounded-[var(--radius-lg)]" />
 
 ACCESSIBILITÉ (WCAG AA) :
-- HTML sémantique : <main>, <nav>, <section>, <article>, <button> (pas de <div onClick>)
-- ARIA : aria-label sur les boutons icônes, aria-labelledby sur les sections
-- Focus visible : focus:ring-2 focus:ring-offset-2 sur TOUS les éléments interactifs
-- Contraste : texte sombre sur fond clair (ratio 4.5:1 minimum)
-- Clavier : tous les éléments interactifs accessibles via Tab
+- HTML sémantique : <main>, <nav>, <section>, <article>
+- <Button> au lieu de <div onClick> (inclut focus, keyboard, ARIA)
+- aria-label sur les boutons icônes
+- Contraste 4.5:1 minimum (tokens CSS le garantissent)
+- Clavier : Tab navigation fonctionne nativement avec les composants UI
 
 STRUCTURE server.js OBLIGATOIRE :
 - Port 3000, route /health
@@ -565,20 +588,31 @@ RÈGLE CRITIQUE :
 - Tu PEUX créer de nouveaux fichiers via write_file
 - Pour une nouvelle page → write_file la page + edit_file App.jsx (ajouter import + Route)
 
-RÈGLES REACT :
-- Composants fonctionnels avec hooks (useState, useEffect, useCallback)
-- TailwindCSS pour le styling — classes dans className
-- Lucide React pour les icônes : import { Icon } from 'lucide-react'
-- React Router : <Link to="/..."> pour navigation, useNavigate() pour programmatique
-- fetch('/api/...') avec try/catch + loading state + error handling
-- Un composant = un fichier .jsx avec export default
+COMPOSANTS UI DISPONIBLES (utilise-les pour un résultat professionnel) :
+- import { Button } from '../components/ui/button' → <Button variant="default|outline|ghost">
+- import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card'
+- import { Input } from '../components/ui/input'
+- import { Textarea } from '../components/ui/textarea'
+- import { Label } from '../components/ui/label'
+- import { Badge } from '../components/ui/badge'
+- import { Skeleton } from '../components/ui/skeleton' → loading state
+- import { cn } from '../lib/utils' → merge classes conditionnellement
+- import { useToast } from '../hooks/useToast' → toast({ title, variant })
 
-PATTERNS À RESPECTER DANS LES MODIFICATIONS :
+RÈGLE : TOUJOURS utiliser <Button>, <Input>, <Card> au lieu de HTML brut.
+
+RÈGLES REACT :
+- Composants fonctionnels avec hooks
+- TailwindCSS + composants UI — JAMAIS de CSS inline
+- Lucide React pour les icônes
+- React Router : <Link> + useNavigate()
+- fetch('/api/...') avec try/catch + toast erreur/succès
+
+PATTERNS MODIFICATIONS :
 - Garder le code existant intact — modifications chirurgicales
-- Conserver les imports existants, ajouter les nouveaux
-- Conserver les routes existantes dans App.jsx, ajouter les nouvelles
-- Si ajout d'état global : useContext + Provider, wrap dans App.jsx
-- Toast/notification pour feedback utilisateur après action
+- Conserver les imports, ajouter les nouveaux
+- Toast feedback après chaque action (succès/erreur)
+- <Skeleton> pour les loading states
 
 PACKAGES NPM PRÉ-INSTALLÉS (utilise-les directement dans server.js) :
 pdfkit (PDF), nodemailer (emails), stripe (paiements), socket.io (temps réel),

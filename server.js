@@ -425,10 +425,10 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 const DEFAULT_INDEX_CSS = `@import "tailwindcss";
 
-/* Design System Tokens — customize these for the project theme */
 :root {
   --color-primary: #2563eb;
   --color-primary-hover: #1d4ed8;
+  --color-primary-light: #dbeafe;
   --color-secondary: #64748b;
   --color-accent: #f59e0b;
   --color-background: #ffffff;
@@ -438,6 +438,7 @@ const DEFAULT_INDEX_CSS = `@import "tailwindcss";
   --color-border: #e2e8f0;
   --color-success: #16a34a;
   --color-error: #dc2626;
+  --color-warning: #f59e0b;
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
@@ -446,6 +447,19 @@ const DEFAULT_INDEX_CSS = `@import "tailwindcss";
   --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
   --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
 }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: var(--color-text);
+  background-color: var(--color-background);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slide-in-from-bottom-2 { from { opacity: 0; transform: translateY(0.5rem); } to { opacity: 1; transform: translateY(0); } }
+.animate-in { animation: fade-in 0.3s ease-out; }
+html { scroll-behavior: smooth; }
+*:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 `;
 
 const DEFAULT_APP_JSX = `import React from 'react';
@@ -760,7 +774,7 @@ function readProjectFilesRecursive(projectDir) {
   const validNames = [
     'package.json', 'vite.config.js', 'index.html', 'server.js',
   ];
-  const validDirs = ['src/components', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
+  const validDirs = ['src/components', 'src/components/ui', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
   const validSrcFiles = ['src/main.jsx', 'src/index.css', 'src/App.jsx'];
 
   // Read root-level files
@@ -861,6 +875,24 @@ function writeDefaultReactProject(projectDir) {
     if (!fs.existsSync(filePath)) {
       fs.writeFileSync(filePath, content);
       console.log(`[Defaults] Wrote default ${filename}`);
+    }
+  }
+
+  // Copy UI component library (shadcn-style) from templates
+  const templateUiDir = path.join(__dirname, 'templates', 'react', 'src');
+  const uiDirs = ['components/ui', 'lib', 'hooks'];
+  for (const dir of uiDirs) {
+    const srcDir = path.join(templateUiDir, dir);
+    const destDir = path.join(projectDir, 'src', dir);
+    if (fs.existsSync(srcDir)) {
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+      for (const file of fs.readdirSync(srcDir)) {
+        const destFile = path.join(destDir, file);
+        if (!fs.existsSync(destFile)) {
+          fs.copyFileSync(path.join(srcDir, file), destFile);
+          console.log(`[Defaults] Copied UI: src/${dir}/${file}`);
+        }
+      }
     }
   }
 }
@@ -2026,6 +2058,7 @@ const VALID_FILE_PATTERNS = [
   /^src\/index\.css$/,
   /^src\/App\.jsx$/,
   /^src\/components\/[A-Za-z0-9_-]+\.jsx$/,
+  /^src\/components\/ui\/[A-Za-z0-9_-]+\.jsx$/,
   /^src\/pages\/[A-Za-z0-9_-]+\.jsx$/,
   /^src\/styles\/[A-Za-z0-9_-]+\.css$/,
   /^src\/lib\/[A-Za-z0-9_-]+\.(js|jsx)$/,
