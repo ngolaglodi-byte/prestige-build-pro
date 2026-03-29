@@ -1036,10 +1036,10 @@ function writeDefaultReactProject(projectDir) {
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
       for (const file of fs.readdirSync(srcDir)) {
         const destFile = path.join(destDir, file);
-        if (!fs.existsSync(destFile)) {
-          fs.copyFileSync(path.join(srcDir, file), destFile);
-          console.log(`[Defaults] Copied UI: src/${dir}/${file}`);
-        }
+        // ALWAYS overwrite UI components with our canonical versions
+        // The AI might generate broken versions — ours are guaranteed to work
+        fs.copyFileSync(path.join(srcDir, file), destFile);
+        console.log(`[Defaults] Wrote canonical UI: src/${dir}/${file}`);
       }
     }
   }
@@ -2117,14 +2117,12 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
 Brief: ${brief}
 ${sectorHint ? `Secteur: ${sectorHint}` : ''}
 
-NE GÉNÈRE PAS package.json — il est fourni automatiquement.
+FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
+  package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx
 
-Génère ces 5 fichiers avec ### markers :
-### vite.config.js — plugins react+tailwindcss, resolve alias @/→src, server: host 0.0.0.0 port 5173 allowedHosts:true, proxy /api→localhost:3000
-### index.html — <div id="root">, <script type="module" src="/src/main.tsx">
-### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/ en production. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/main.tsx — ReactDOM.createRoot, import App from './App', import './index.css'
-### src/index.css — @import "tailwindcss"; puis :root avec tokens couleurs adaptés au secteur
+Génère SEULEMENT ces 2 fichiers :
+### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
+### src/index.css — @import "tailwindcss"; puis :root { --color-primary: [couleur secteur]; --color-primary-hover; --color-secondary; --color-accent; --color-background: #ffffff; --color-surface; --color-text; --color-text-muted; --color-border; }
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
@@ -2405,7 +2403,7 @@ function validateJsxFiles(projectDir) {
     if (!fs.existsSync(dir)) return;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) scanDir(path.join(dir, entry.name));
-      else if (entry.name.endsWith('.jsx') || entry.name.endsWith('.js')) jsxFiles.push(path.join(dir, entry.name));
+      else if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts') || entry.name.endsWith('.jsx') || entry.name.endsWith('.js')) jsxFiles.push(path.join(dir, entry.name));
     }
   }
   scanDir(srcDir);
@@ -2442,6 +2440,28 @@ function validateJsxFiles(projectDir) {
     const defaultExports = (content.match(/export default/g) || []).length;
     if (defaultExports > 1) {
       errors.push({ file: rel, issue: `${defaultExports} default exports (should be 1)` });
+    }
+    // Auto-fix relative imports → @/ alias (the AI sometimes generates ../ despite the prompt)
+    if (/from ['"]\.\.\//.test(content) || /from ['"]\.\/components/.test(content) || /from ['"]\.\/pages/.test(content)) {
+      let fixed = content;
+      // ../components/ → @/components/
+      fixed = fixed.replace(/from ['"]\.\.\/components\//g, "from '@/components/");
+      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/components\//g, "from '@/components/");
+      // ../pages/ → @/pages/
+      fixed = fixed.replace(/from ['"]\.\.\/pages\//g, "from '@/pages/");
+      // ../lib/ → @/lib/
+      fixed = fixed.replace(/from ['"]\.\.\/lib\//g, "from '@/lib/");
+      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/lib\//g, "from '@/lib/");
+      // ../hooks/ → @/hooks/
+      fixed = fixed.replace(/from ['"]\.\.\/hooks\//g, "from '@/hooks/");
+      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/hooks\//g, "from '@/hooks/");
+      // ./components/ → @/components/ (from App.tsx)
+      fixed = fixed.replace(/from ['"]\.\/components\//g, "from '@/components/");
+      fixed = fixed.replace(/from ['"]\.\/pages\//g, "from '@/pages/");
+      if (fixed !== content) {
+        fs.writeFileSync(file, fixed);
+        errors.push({ file: rel, issue: 'relative imports converted to @/' });
+      }
     }
   }
   return errors;
@@ -4267,10 +4287,48 @@ async function buildDockerProject(projectId, code, onProgress) {
       fs.writeFileSync(pkgJsonPath, JSON.stringify(canonical, null, 2));
       console.log(`[Docker Build] Wrote canonical package.json (${Object.keys(canonical.dependencies).length} deps)`);
     } catch (e) {
-      // Fallback: write DEFAULT_PACKAGE_JSON as-is
       fs.writeFileSync(pkgJsonPath, DEFAULT_PACKAGE_JSON);
       console.warn(`[Docker Build] Wrote fallback package.json: ${e.message}`);
     }
+
+    // CANONICAL FILES — these are NEVER generated by the AI (like Lovable)
+    // They are ALWAYS written by the server, overwriting any AI-generated version
+    const canonicalFiles = {
+      'vite.config.js': DEFAULT_VITE_CONFIG,
+      'index.html': DEFAULT_INDEX_HTML,
+      'src/main.tsx': DEFAULT_MAIN_JSX,
+    };
+    for (const [fn, content] of Object.entries(canonicalFiles)) {
+      const fp = path.join(projectDir, fn);
+      const fpDir = path.dirname(fp);
+      if (!fs.existsSync(fpDir)) fs.mkdirSync(fpDir, { recursive: true });
+      // For index.html: preserve the AI's <title> and <meta description> if present
+      if (fn === 'index.html' && fs.existsSync(fp)) {
+        try {
+          const aiHtml = fs.readFileSync(fp, 'utf8');
+          let canonical = content;
+          const titleMatch = aiHtml.match(/<title>([^<]+)<\/title>/);
+          if (titleMatch) canonical = canonical.replace(/<title>[^<]*<\/title>/, `<title>${titleMatch[1]}</title>`);
+          const descMatch = aiHtml.match(/<meta\s+name="description"\s+content="([^"]+)"/);
+          if (descMatch) canonical = canonical.replace('</head>', `  <meta name="description" content="${descMatch[1]}">\n</head>`);
+          fs.writeFileSync(fp, canonical);
+        } catch { fs.writeFileSync(fp, content); }
+      } else {
+        fs.writeFileSync(fp, content);
+      }
+      console.log(`[Docker Build] Wrote canonical ${fn}`);
+    }
+    // Write tsconfig.json (always)
+    const tsconfigContent = JSON.stringify({
+      compilerOptions: { target: "ES2020", useDefineForClassFields: true, lib: ["ES2020", "DOM", "DOM.Iterable"],
+        module: "ESNext", skipLibCheck: true, moduleResolution: "bundler", allowImportingTsExtensions: true,
+        isolatedModules: true, moduleDetection: "force", noEmit: true, jsx: "react-jsx",
+        strict: true, noUnusedLocals: false, noUnusedParameters: false, allowJs: true,
+        paths: { "@/*": ["./src/*"] } },
+      include: ["src"]
+    }, null, 2);
+    fs.writeFileSync(path.join(projectDir, 'tsconfig.json'), tsconfigContent);
+    console.log(`[Docker Build] Wrote canonical tsconfig.json`);
 
     // Step 2.25: Validate mandatory React project files
     console.log(`[Docker Build] Step 2.25: Validating React project files...`);
