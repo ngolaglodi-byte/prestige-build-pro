@@ -1,7 +1,6 @@
-// Re-export Sonner's toast for backward compatibility
-// Usage: import { toast } from "sonner" directly, or:
-//        import { useToast } from "../hooks/useToast"
-//        const { toast } = useToast()
+// Re-export Sonner's toast for convenience
+// Usage: import { toast } from "sonner" (recommended)
+//    or: import { useToast } from "@/hooks/useToast"
 import { toast } from "sonner";
 
 export function useToast() {

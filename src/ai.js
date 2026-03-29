@@ -576,7 +576,7 @@ OUTILS :
 COMPOSANTS UI — TOUJOURS importer avec @/ alias :
 Imports : from '@/components/ui/button', from '@/components/ui/card', from '@/components/ui/input', etc.
 JAMAIS de chemin relatif (../) — TOUJOURS @/components/ui/xxx (fichiers en lowercase)
-Utils : cn() from '../lib/utils', toast from 'sonner', useIsMobile from '../hooks/useIsMobile'
+Utils : cn() from '@/lib/utils', toast from 'sonner', useIsMobile from '@/hooks/useIsMobile'
 JAMAIS de <button>/<input>/<table> HTML brut → TOUJOURS les composants UI.
 Customiser via VARIANTS, pas d'overrides.
 

@@ -923,7 +923,7 @@ function readProjectFilesRecursive(projectDir) {
     'package.json', 'vite.config.js', 'index.html', 'server.js',
   ];
   const validDirs = ['src/components', 'src/components/ui', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
-  const validSrcFiles = ['src/main.tsx', 'src/main.tsx', 'src/index.css', 'src/App.tsx', 'src/App.tsx'];
+  const validSrcFiles = ['src/main.tsx', 'src/index.css', 'src/App.tsx'];
 
   // Read root-level files
   for (const name of validNames) {
