@@ -662,6 +662,15 @@ const generationJobs = new Map(); // Map<job_id, {status, code, error, progress,
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
 const PUBLISH_DOMAIN = process.env.PUBLISH_DOMAIN || 'prestige-build.dev';
+
+// Generate preview URL — subdomain (pro) with /run/ fallback
+function getPreviewUrl(projectId) {
+  // Subdomain preview: preview-59.prestige-build.dev (no proxy rewriting needed)
+  const subdomainUrl = `https://preview-${projectId}.${PUBLISH_DOMAIN}`;
+  // Fallback: /run/59/ (requires proxy rewriting)
+  const pathUrl = `/run/${projectId}/`;
+  return { subdomain: subdomainUrl, path: pathUrl, preferred: subdomainUrl };
+}
 const CNAME_TARGET = process.env.CNAME_TARGET || `app.${PUBLISH_DOMAIN}`;
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
 const CADDY_ADMIN_API = process.env.CADDY_ADMIN_API || 'http://localhost:2019';
@@ -5325,8 +5334,70 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // SUBDOMAINS (*.prestige-build.dev)
-  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN) {
+  // PREVIEW SUBDOMAINS — preview-{id}.prestige-build.dev → direct proxy to container:5173
+  // Zero URL rewriting — like Lovable's per-project subdomains
+  if (host && host.match(/^preview-\d+\./) && host.endsWith('.' + PUBLISH_DOMAIN)) {
+    const previewMatch = host.match(/^preview-(\d+)\./);
+    if (previewMatch) {
+      const projectId = parseInt(previewMatch[1]);
+      const containerHost = getContainerHostname(projectId);
+
+      // Auth: check cookie or query token
+      const user = getAuth(req);
+      if (!user) {
+        // Set auth cookie on first access with token
+        const qsToken = (req.url.split('?')[1] || '').match(/token=([^&]+)/)?.[1];
+        if (qsToken) {
+          const verified = verifyToken(qsToken);
+          if (verified) {
+            const isHttps = req.headers['x-forwarded-proto'] === 'https';
+            res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/; ${isHttps ? 'HttpOnly; SameSite=None; Secure' : 'HttpOnly; SameSite=Lax'}; Max-Age=86400`);
+            // Continue to proxy below
+          } else {
+            json(res, 401, { error: 'Token invalide.' }); return;
+          }
+        } else {
+          json(res, 401, { error: 'Non autorisé.' }); return;
+        }
+      }
+
+      // Track access for auto-sleep
+      containerLastAccess.set(projectId, Date.now());
+
+      // Direct proxy to Vite dev server — NO URL rewriting needed
+      const proxyOpts = {
+        hostname: containerHost,
+        port: 5173,
+        path: req.url,
+        method: req.method,
+        headers: { ...req.headers, host: `${containerHost}:5173` }
+      };
+      delete proxyOpts.headers['authorization'];
+
+      const proxyReq = http.request(proxyOpts, (proxyRes) => {
+        // Strip security headers for iframe compatibility
+        const headers = { ...proxyRes.headers };
+        delete headers['content-security-policy'];
+        delete headers['x-frame-options'];
+        delete headers['cross-origin-opener-policy'];
+        delete headers['cross-origin-embedder-policy'];
+        res.writeHead(proxyRes.statusCode, headers);
+        proxyRes.pipe(res);
+      });
+      proxyReq.on('error', () => {
+        if (!res.headersSent) {
+          res.writeHead(503, { 'Content-Type': 'text/html' });
+          res.end('<html><body><h2>Projet en cours de démarrage...</h2><script>setTimeout(()=>location.reload(),3000)</script></body></html>');
+        }
+      });
+      if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(proxyReq);
+      else proxyReq.end();
+      return;
+    }
+  }
+
+  // PUBLISHED SITE SUBDOMAINS (*.prestige-build.dev — NOT preview-*)
+  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && !host.startsWith('preview-')) {
     const subdomain = host.replace('.' + PUBLISH_DOMAIN, '').replace(/[^a-zA-Z0-9-]/g, '');
     if (subdomain) {
       const siteDir = path.join(SITES_DIR, subdomain);
@@ -7191,12 +7262,23 @@ const server = http.createServer(async (req, res) => {
 // ─── WEBSOCKET UPGRADE HANDLER (Vite HMR through /run/:id/ proxy) ───
 server.on('upgrade', (req, socket, head) => {
   const url = req.url || '';
-  const match = url.match(/^\/run\/(\d+)\//);
-  if (!match) { socket.destroy(); return; }
+  const host = (req.headers.host || '').split(':')[0];
+  let projectId, targetPath;
 
-  const projectId = match[1];
+  // Preview subdomain: preview-59.prestige-build.dev — direct, no rewrite
+  const previewMatch = host.match(/^preview-(\d+)\./);
+  if (previewMatch) {
+    projectId = previewMatch[1];
+    targetPath = url; // pass through as-is
+  } else {
+    // Legacy /run/:id/ path
+    const runMatch = url.match(/^\/run\/(\d+)\//);
+    if (!runMatch) { socket.destroy(); return; }
+    projectId = runMatch[1];
+    targetPath = url.replace(`/run/${projectId}`, '') || '/';
+  }
+
   const containerHost = getContainerHostname(projectId);
-  const targetPath = url.replace(`/run/${projectId}`, '') || '/';
 
   const proxyReq = http.request({
     hostname: containerHost,
