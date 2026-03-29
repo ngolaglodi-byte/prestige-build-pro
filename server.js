@@ -5964,6 +5964,50 @@ const server = http.createServer(async (req, res) => {
           });
           
           if (result.success) {
+            // Wait for Vite to start and check for errors in container logs
+            await new Promise(r => setTimeout(r, 5000));
+            const viteLogs = await getContainerLogsAsync(project_id, 50);
+            const viteErrors = viteLogs.split('\n').filter(l =>
+              /Failed to resolve|error|Error|ENOENT|Cannot find/i.test(l) &&
+              !/✅|Prêt|Ready|watching/i.test(l)
+            );
+
+            if (viteErrors.length > 0) {
+              console.warn(`[Build] Vite runtime errors detected for project ${project_id}:`);
+              viteErrors.forEach(e => console.warn(`  ${e.trim().substring(0, 120)}`));
+
+              // Auto-fix: send Vite errors to Claude
+              db.prepare('UPDATE builds SET message=? WHERE id=?').run('Correction des erreurs Vite...', buildId);
+              try {
+                const fixPrompt = `Le container Vite affiche ces erreurs après démarrage:\n\n${viteErrors.join('\n').substring(0, 2000)}\n\nCorrige les fichiers en cause. Utilise write_file ou edit_file. Imports avec @/ alias, fichiers UI en lowercase.`;
+                const fixCode = await callClaudeAPI(
+                  [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige les erreurs.' }],
+                  [{ role: 'user', content: fixPrompt }],
+                  16000,
+                  { userId: project.user_id, projectId: project_id, operation: 'auto-correct' },
+                  { useTools: true }
+                );
+                if (fixCode) {
+                  // Apply fixes to project files on disk
+                  const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
+                  writeGeneratedFiles(projDir, fixCode);
+                  // Update DB code
+                  const updatedFiles = readProjectFilesRecursive(projDir);
+                  const updatedCode = formatProjectCode(updatedFiles);
+                  db.prepare("UPDATE projects SET generated_code=? WHERE id=?").run(updatedCode, project_id);
+                  // Hot-reload the fix into the running container
+                  const { execSync } = require('child_process');
+                  const containerName = getContainerName(project_id);
+                  try {
+                    execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+                    console.log(`[Build] Vite error auto-fixed and hot-reloaded`);
+                  } catch(e) { console.warn(`[Build] Hot-reload after fix failed: ${e.message}`); }
+                }
+              } catch (fixErr) {
+                console.warn(`[Build] Vite auto-fix failed: ${fixErr.message}`);
+              }
+            }
+
             db.prepare("UPDATE builds SET status='done',progress=100,url=?,message='Prêt !' WHERE id=?").run(result.url, buildId);
             db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(result.url, project_id);
             db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(project.user_id, `Projet "${project.title}" prêt à explorer !`, 'success');
