@@ -4254,6 +4254,7 @@ RUN chmod +x start-dev.sh
 RUN mkdir -p /app/data
 ENV JWT_SECRET=${jwtSecret}
 ENV PORT=3000
+ENV VITE_BASE=/run/${projectId}/
 ENV NODE_OPTIONS="--max-old-space-size=256"
 EXPOSE 3000 5173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \\
@@ -4274,7 +4275,8 @@ CMD ["sh", "start-dev.sh"]
       'echo $! > /tmp/express.pid',
       '',
       '# Start Vite dev server with HMR (port 5173)',
-      './node_modules/.bin/vite --host 0.0.0.0 --port 5173 &',
+      '# VITE_BASE sets the base path so all imports are prefixed correctly',
+      './node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "$VITE_BASE" &',
       'echo $! > /tmp/vite.pid',
       '',
       '# Keep running — if container receives SIGTERM, forward to children',
@@ -5050,89 +5052,12 @@ async function proxyToContainer(req, res, projectId, targetPath) {
     // Remove content-encoding — we may modify the body below (inject <base>)
     // and gzipped content can't be modified in-flight
     const isHtml = (headers['content-type'] || '').includes('text/html');
-    if (isHtml) {
-      delete headers['content-encoding'];
-      delete headers['content-length']; // length will change after injection
-      if (!headers['content-type'].includes('charset')) {
-        headers['content-type'] = 'text/html; charset=utf-8';
-      }
-    }
-
+    // Strip headers that break iframe embedding
     res.writeHead(proxyRes.statusCode, headers);
 
-    if (isHtml) {
-      let body = '';
-      proxyRes.on('data', chunk => body += chunk.toString());
-      proxyRes.on('end', () => {
-        try {
-          const pid = Number(projectId);
-          const prefix = `/run/${pid}`;
-
-          // Rewrite absolute paths in Vite HTML so they route through the proxy
-          // /@vite/client → /run/59/@vite/client
-          // /src/main.tsx → /run/59/src/main.tsx
-          // /node_modules/.vite/... → /run/59/node_modules/.vite/...
-          body = body.replace(/((?:src|href|from)\s*=\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-          // Also fix import() and import ... from "/..." in inline scripts
-          body = body.replace(/(from\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-          body = body.replace(/(import\s*\(\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-
-          const baseTag = `<base href="${prefix}/">`;
-          const proxyScript = `<script>(function(){var B='${prefix}/';` +
-            `var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};` +
-            `var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};` +
-            // Intercept window.location changes that would navigate to Prestige
-            `var _a=HTMLAnchorElement.prototype;Object.defineProperty(_a,'href',{set:function(v){if(typeof v==='string'&&v.startsWith('/')&&!v.startsWith(B))v=B+v.substring(1);this.setAttribute('href',v);}});` +
-            // Intercept form actions
-            `document.addEventListener('submit',function(e){var a=e.target.action;if(a&&a.includes(location.origin)&&!a.includes(B)){e.target.action=a.replace(location.origin+'/',location.origin+B);}},true);` +
-            // Visibility rescue: fix opacity:0, visibility:hidden, and SPA .page display:none
-            `window.addEventListener('load',function(){` +
-            `document.querySelectorAll('*').forEach(function(el){var s=getComputedStyle(el);if(s.opacity==='0')el.style.opacity='1';if(s.visibility==='hidden')el.style.visibility='visible';});` +
-            `var pages=document.querySelectorAll('.page');if(pages.length>0){var hasActive=document.querySelector('.page.active');if(!hasActive){pages[0].classList.add('active');pages[0].style.display='block';}}` +
-            `});` +
-            `})();</script>`;
-          // Inject after <meta charset> so browser knows encoding before parsing our script
-          const injection = baseTag + proxyScript;
-          if (body.match(/<meta\s+charset[^>]*>/i)) {
-            body = body.replace(/<meta\s+charset[^>]*>/i, `$&${injection}`);
-          } else if (body.includes('<head>')) {
-            body = body.replace('<head>', `<head>${injection}`);
-          } else if (body.includes('<head ')) {
-            body = body.replace(/<head\s[^>]*>/, `$&${injection}`);
-          } else if (body.includes('<html')) {
-            body = body.replace(/<html[^>]*>/, `$&<head>${injection}</head>`);
-          } else {
-            body = injection + body;
-          }
-          res.end(body);
-        } catch (injErr) {
-          console.error(`[Proxy] HTML injection error for project ${projectId}:`, injErr.message);
-          res.end(body);
-        }
-      });
-      proxyRes.on('error', () => { try { res.end(); } catch(e) {} });
-    } else {
-      // For JS/TS modules: rewrite absolute imports so they route through proxy
-      const ct = (headers['content-type'] || '');
-      const isJs = ct.includes('javascript') || ct.includes('typescript');
-      if (isJs) {
-        delete headers['content-length'];
-        delete headers['content-encoding'];
-        let jsBody = '';
-        proxyRes.on('data', chunk => jsBody += chunk.toString());
-        proxyRes.on('end', () => {
-          const prefix = `/run/${projectId}`;
-          // Rewrite ALL absolute import paths: from "/..." → from "/run/59/..."
-          jsBody = jsBody.replace(/(from\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-          jsBody = jsBody.replace(/(import\s*\(\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-          // Also rewrite bare import "/path" (CSS imports, side-effect imports)
-          jsBody = jsBody.replace(/(import\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
-          res.end(jsBody);
-        });
-      } else {
-        proxyRes.pipe(res);
-      }
-    }
+    // Vite uses --base /run/{id}/ so ALL paths are already correctly prefixed.
+    // No URL rewriting needed — just pipe the response through.
+    proxyRes.pipe(res);
   });
 
   proxyReq.on('error', async (e) => {
