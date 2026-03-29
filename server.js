@@ -5445,6 +5445,7 @@ async function initializeDockerSystem() {
 
 // ─── SERVER ───
 const server = http.createServer(async (req, res) => {
+  try {
   cors(res);
   if (req.method==='OPTIONS') { res.writeHead(200); res.end(); return; }
   const url = req.url.split('?')[0];
@@ -7494,6 +7495,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   res.writeHead(404); res.end('Not found');
+
+  } catch (reqErr) {
+    // Global error handler — prevents ANY unhandled error from crashing the server
+    // Like Express error middleware — catches everything that falls through
+    console.error(`[REQUEST ERROR] ${req.method} ${req.url}: ${reqErr.message}`);
+    console.error(reqErr.stack);
+    try {
+      if (!res.headersSent) {
+        json(res, 500, { error: 'Erreur interne du serveur. Réessayez.' });
+      }
+    } catch { /* response already sent or destroyed */ }
+  }
 });
 
 // ─── WEBSOCKET UPGRADE HANDLER (Vite HMR through /run/:id/ proxy) ───
