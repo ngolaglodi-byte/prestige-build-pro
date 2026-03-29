@@ -4369,8 +4369,11 @@ async function buildDockerProject(projectId, code, onProgress) {
     // but Vite/npx needs a local node_modules symlink to resolve them
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
+# Cache buster to force npm install on every build
+ARG CACHEBUST=${Date.now()}
 COPY package.json ./
-RUN npm install --legacy-peer-deps 2>&1 | tail -5
+# Install ALL dependencies — --force handles React 19 vs Radix peer deps
+RUN npm install --force 2>&1 | tail -5
 COPY vite.config.js ./
 COPY index.html ./
 COPY server.js ./
