@@ -428,23 +428,48 @@ STRUCTURE src/App.jsx OBLIGATOIRE :
 - BrowserRouter > Routes avec toutes les <Route>
 - Header et Footer inclus dans le layout
 
-COMPOSANTS UI PRÉ-INSTALLÉS (style shadcn/ui) — UTILISE-LES :
-Le projet inclut des composants professionnels dans src/components/ui/ :
-- import { Button } from '../components/ui/button' → <Button variant="default|outline|secondary|ghost|destructive" size="default|sm|lg|icon">
+COMPOSANTS UI PRÉ-INSTALLÉS (style shadcn/ui) — UTILISE-LES TOUJOURS :
+Le projet inclut 20 composants professionnels dans src/components/ui/ :
+
+ESSENTIELS (utilise dans CHAQUE projet) :
+- import { Button } from '../components/ui/button' → <Button variant="default|outline|secondary|ghost|destructive|link" size="default|sm|lg|icon">
 - import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '../components/ui/card'
 - import { Input } from '../components/ui/input' → <Input type="text|email|password|number" placeholder="..." />
 - import { Textarea } from '../components/ui/textarea'
 - import { Label } from '../components/ui/label' → <Label htmlFor="email">Email</Label>
 - import { Badge } from '../components/ui/badge' → <Badge variant="default|secondary|destructive|outline|success">
-- import { Select } from '../components/ui/select'
 - import { Separator } from '../components/ui/separator'
-- import { Skeleton } from '../components/ui/skeleton' → loading placeholder
-- import { cn } from '../lib/utils' → cn("base-class", condition && "conditional-class")
+
+FEEDBACK & ÉTATS :
+- import { Skeleton } from '../components/ui/skeleton' → <Skeleton className="h-4 w-full" /> pour loading
+- import { Alert, AlertTitle, AlertDescription } from '../components/ui/alert' → <Alert variant="default|destructive|success|warning">
+- import { Progress } from '../components/ui/progress' → <Progress value={75} />
+
+NAVIGATION & LAYOUT :
+- import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs' → onglets
+- import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from '../components/ui/accordion' → FAQ, sections repliables
+- import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog' → modales
+- import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
+
+DONNÉES :
+- import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../components/ui/table'
+- import { Avatar, AvatarImage, AvatarFallback } from '../components/ui/avatar' → photos profil
+- import { Select } from '../components/ui/select'
+
+FORMULAIRES :
+- import { Switch } from '../components/ui/switch' → <Switch checked={value} onCheckedChange={setValue} />
+- import { Checkbox } from '../components/ui/checkbox' → <Checkbox checked={value} onCheckedChange={setValue} />
+
+UTILITAIRES :
+- import { cn } from '../lib/utils' → cn("base", isActive && "active", className)
 
 RÈGLE ABSOLUE : utilise TOUJOURS les composants UI pour les éléments interactifs.
-JAMAIS de <button className="px-4 py-2 bg-blue-600..."> → TOUJOURS <Button variant="default">
+JAMAIS de <button className="px-4 py-2 bg-blue-600..."> → TOUJOURS <Button>
 JAMAIS de <input className="border rounded..."> → TOUJOURS <Input />
-JAMAIS de <div className="border rounded shadow..."> pour un conteneur → TOUJOURS <Card>
+JAMAIS de <div className="border shadow..."> pour un conteneur → TOUJOURS <Card>
+JAMAIS de <table className="..."> → TOUJOURS <Table> avec TableHeader, TableRow, TableCell
+JAMAIS de modal custom → TOUJOURS <Dialog>
+JAMAIS de FAQ custom → TOUJOURS <Accordion>
 
 HOOKS PRÉ-INSTALLÉS :
 - import { useToast } from '../hooks/useToast' → const { toast } = useToast(); toast({ title: "Succès!", variant: "success" })
@@ -588,18 +613,16 @@ RÈGLE CRITIQUE :
 - Tu PEUX créer de nouveaux fichiers via write_file
 - Pour une nouvelle page → write_file la page + edit_file App.jsx (ajouter import + Route)
 
-COMPOSANTS UI DISPONIBLES (utilise-les pour un résultat professionnel) :
-- import { Button } from '../components/ui/button' → <Button variant="default|outline|ghost">
-- import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/card'
-- import { Input } from '../components/ui/input'
-- import { Textarea } from '../components/ui/textarea'
-- import { Label } from '../components/ui/label'
-- import { Badge } from '../components/ui/badge'
-- import { Skeleton } from '../components/ui/skeleton' → loading state
-- import { cn } from '../lib/utils' → merge classes conditionnellement
-- import { useToast } from '../hooks/useToast' → toast({ title, variant })
+COMPOSANTS UI DISPONIBLES (TOUJOURS les utiliser) :
+Basiques : Button, Card, Input, Textarea, Label, Badge, Select, Separator
+Feedback : Skeleton (loading), Alert (messages), Progress (barre), Toaster (notifications)
+Navigation : Tabs (onglets), Accordion (FAQ), Dialog (modales), DropdownMenu
+Données : Table, Avatar, Switch, Checkbox
+Utils : cn() (merge classes), useToast() (notifications), useIsMobile()
 
-RÈGLE : TOUJOURS utiliser <Button>, <Input>, <Card> au lieu de HTML brut.
+Imports depuis '../components/ui/[composant]' et '../lib/utils', '../hooks/useToast'
+
+RÈGLE : TOUJOURS <Button> au lieu de <button>, <Input> au lieu de <input>, <Card> au lieu de <div border shadow>, <Dialog> au lieu de modal custom, <Table> au lieu de <table>.
 
 RÈGLES REACT :
 - Composants fonctionnels avec hooks
