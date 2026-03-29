@@ -1737,21 +1737,24 @@ function mergeModifiedCode(existingCode, newCode) {
 function mergeFullFiles(existingCode, newCode) {
   const existingFiles = {};
   const newFiles = {};
+  // Strip artifacts from both inputs before parsing
+  const cleanExisting = stripCodeArtifacts(existingCode);
+  const cleanNew = stripCodeArtifacts(newCode);
   // Parse existing
-  const eSections = existingCode.split(/### /).filter(s => s.trim());
+  const eSections = cleanExisting.split(/### /).filter(s => s.trim());
   for (const s of eSections) {
     const nl = s.indexOf('\n');
     if (nl === -1) continue;
     const fn = s.substring(0, nl).trim();
-    if (fn) existingFiles[fn] = s.substring(nl + 1).trim();
+    if (fn && !fn.startsWith('DIFF ')) existingFiles[fn] = cleanGeneratedContent(s.substring(nl + 1).trim());
   }
   // Parse new (may be partial — only modified files)
-  const nSections = newCode.split(/### /).filter(s => s.trim());
+  const nSections = cleanNew.split(/### /).filter(s => s.trim());
   for (const s of nSections) {
     const nl = s.indexOf('\n');
     if (nl === -1) continue;
     const fn = s.substring(0, nl).trim();
-    if (fn) newFiles[fn] = s.substring(nl + 1).trim();
+    if (fn && !fn.startsWith('DIFF ')) newFiles[fn] = cleanGeneratedContent(s.substring(nl + 1).trim());
   }
   // Merge: new files override existing, existing files kept if not in new
   const merged = { ...existingFiles, ...newFiles };
@@ -1987,6 +1990,9 @@ Règles d'intégration automatique :
     apiRes.on('end', async () => {
       if (job.status === 'running' && job.code.length > 0) {
         try {
+          // Strip Claude artifacts (SUGGESTIONS, conversational text, backticks)
+          job.code = stripCodeArtifacts(job.code);
+
           // Merge with existing code if modification
           if (job.project_id && job.code.includes('### ')) {
             const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
@@ -2941,42 +2947,54 @@ function cleanGeneratedContent(content) {
 
   let cleaned = content;
 
-  // 1) Remove markdown code block markers (```javascript, ```, etc.)
+  // 1) Remove markdown code block markers (```javascript, ```jsx, ```, etc.)
   cleaned = cleaned.replace(/^```(?:javascript|js|json|html|css|jsx|tsx|typescript|ts|bash|sh|sql|yaml|yml|xml|text|txt|plain)?\s*$/gm, '');
+  cleaned = cleaned.replace(/^`{3,}.*$/gm, '');
 
-  // 2) Remove SUGGESTIONS: lines (Claude appends these inside file content)
-  cleaned = cleaned.replace(/^SUGGESTIONS:.*$/gm, '');
+  // 2) Remove SUGGESTIONS: line and everything after it (Claude appends at end of last file)
+  cleaned = cleaned.replace(/\n*SUGGESTIONS:[\s\S]*$/m, '');
 
-  // 3) Remove stray explanatory text that isn't code
-  //    Lines starting with "Voici", "Ce fichier", "J'ai", "Voilà", "Note:", "---", "**"
-  cleaned = cleaned.replace(/^(?:Voici|Ce fichier|Ce composant|J'ai |Voilà|Note\s*:|---+|\*\*[^*]+\*\*\s*$|Ce code|Ci-dessus|Ci-dessous|En résumé).+$/gm, '');
+  // 3) Remove conversational text that isn't code
+  //    Must be careful not to remove JSX text content or comments
+  cleaned = cleaned.replace(/^(?:Voici|Voilà|Ce fichier|Ce composant|Ce code|J'ai (?:ajouté|modifié|créé|changé|corrigé)|Ci-dessus|Ci-dessous|En résumé|Bien sûr|Parfait|D'accord|Très bien|OK,|C'est fait).+$/gm, '');
+  cleaned = cleaned.replace(/^---+\s*$/gm, '');
+  cleaned = cleaned.replace(/^\*\*[^*]+\*\*\s*$/gm, '');
+  // Lines that are pure text (no code chars) at the very end of the file
+  cleaned = cleaned.replace(/\n(?:N'hésitez pas|N'hésite pas|Les? modifications?|Si vous|Tu peux|Bonne continuation).+$/gm, '');
 
-  // 4) Remove inline backtick artifacts that break JSX (```)
-  cleaned = cleaned.replace(/^`{3,}$/gm, '');
-
-  // 5) Fix Express wildcard patterns
+  // 4) Fix Express wildcard patterns
   cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
   cleaned = cleaned.replace(/app\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "app.use(/.*/,");
   cleaned = cleaned.replace(/router\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "router.get(/.*/,");
   cleaned = cleaned.replace(/router\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "router.use(/.*/,");
 
-  // 6) Fix Express 5.x version references
+  // 5) Fix Express 5.x version references
   cleaned = cleaned.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
 
-  // 7) Pin critical dependency versions (remove ^ prefix)
-  cleaned = cleaned.replace(/"express"\s*:\s*"\^4/g, '"express": "4');
-  cleaned = cleaned.replace(/"better-sqlite3"\s*:\s*"\^/g, '"better-sqlite3": "');
-  cleaned = cleaned.replace(/"bcryptjs"\s*:\s*"\^/g, '"bcryptjs": "');
-  cleaned = cleaned.replace(/"jsonwebtoken"\s*:\s*"\^/g, '"jsonwebtoken": "');
-  cleaned = cleaned.replace(/"cors"\s*:\s*"\^/g, '"cors": "');
-  cleaned = cleaned.replace(/"helmet"\s*:\s*"\^/g, '"helmet": "');
-  cleaned = cleaned.replace(/"compression"\s*:\s*"\^/g, '"compression": "');
+  // 6) Pin critical dependency versions (remove ^ prefix)
+  const pinDeps = ['express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression'];
+  for (const dep of pinDeps) {
+    cleaned = cleaned.replace(new RegExp(`"${dep}"\\s*:\\s*"\\^`, 'g'), `"${dep}": "`);
+  }
 
-  // 8) Remove consecutive blank lines (keep max 1)
+  // 7) Remove consecutive blank lines (keep max 1)
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
 
   cleaned = cleaned.trim();
   return cleaned;
+}
+
+// Strip all Claude artifacts from a full ### marked code string (top-level)
+// Removes conversational messages BEFORE the first ### and SUGGESTIONS at the end
+function stripCodeArtifacts(code) {
+  if (!code) return '';
+  // Remove any text before the first ### marker (conversational message from Claude)
+  let cleaned = code.replace(/^[\s\S]*?(?=### )/, '');
+  // Remove SUGGESTIONS: and everything after it (at the very end)
+  cleaned = cleaned.replace(/\n*SUGGESTIONS:[\s\S]*$/, '');
+  // Remove trailing non-code text after the last file content
+  cleaned = cleaned.replace(/\n+(?:N'hésitez|N'hésite|Voilà|Les modifications|Si vous|C'est fait|Bonne continuation)[\s\S]*$/, '');
+  return cleaned.trim();
 }
 
 // Validate React project index.html: must have <div id="root"> and module script entry point
@@ -4535,7 +4553,8 @@ const server = http.createServer(async (req, res) => {
     
     // If done, finalize project and cleanup
     if (job.status === 'done' && job.project_id && !job.finalized) {
-      const fullCode = job.code;
+      // Final artifact cleanup before persisting to DB
+      const fullCode = stripCodeArtifacts(job.code);
       db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(job.project_id, 'assistant', fullCode);
       db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready',version=version+1 WHERE id=?").run(fullCode, job.project_id);
       saveProjectVersion(job.project_id, fullCode, user.id, `Génération via chat: ${(job.message || '').substring(0,50)}...`);
