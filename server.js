@@ -253,7 +253,7 @@ const ERROR_TYPES = {
 
 // ─── ABSOLUTE RULE FOR REACT PROJECTS ───
 const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE : Les projets générés utilisent React + Vite + TailwindCSS.
-- Les fichiers .jsx contiennent des composants React fonctionnels
+- Les fichiers .tsx contiennent des composants React fonctionnels
 - Le styling se fait via TailwindCSS classes dans className
 - Les icônes via lucide-react — JAMAIS de CDN
 - Navigation via react-router-dom <Link> — JAMAIS window.location
@@ -387,7 +387,7 @@ const DEFAULT_INDEX_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
+  <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>
 `;
@@ -680,15 +680,15 @@ vite.config.js        — plugins: react + tailwindcss, proxy /api → localhost
 index.html            — point d'entrée avec <div id="root"> (à la RACINE, pas dans public/)
 server.js             — backend Express servant dist/ en production
 src/
-  main.jsx            — ReactDOM.createRoot
+  main.tsx            — ReactDOM.createRoot
   index.css           — @import "tailwindcss"
-  App.jsx             — BrowserRouter + Routes + Layout
+  App.tsx             — BrowserRouter + Routes + Layout
   components/
-    Header.jsx        — Navigation responsive avec menu mobile
-    Footer.jsx        — Pied de page
+    Header.tsx        — Navigation responsive avec menu mobile
+    Footer.tsx        — Pied de page
     ...               — Composants réutilisables selon le secteur
   pages/
-    Home.jsx          — Page d'accueil
+    Home.tsx          — Page d'accueil
     ...               — Pages selon le secteur
 \`\`\`
 
@@ -709,7 +709,7 @@ src/
 
 ## Règles React
 
-1. Un composant = un fichier .jsx avec export default function
+1. Un composant = un fichier .tsx avec export default function
 2. Composants dans src/components/, pages dans src/pages/
 3. TailwindCSS dans className="..." — JAMAIS de CSS inline
 4. Icônes : import { Icon } from 'lucide-react'
@@ -778,7 +778,7 @@ function readProjectFilesRecursive(projectDir) {
     'package.json', 'vite.config.js', 'index.html', 'server.js',
   ];
   const validDirs = ['src/components', 'src/components/ui', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
-  const validSrcFiles = ['src/main.jsx', 'src/index.css', 'src/App.jsx'];
+  const validSrcFiles = ['src/main.tsx', 'src/main.tsx', 'src/index.css', 'src/App.tsx', 'src/App.tsx'];
 
   // Read root-level files
   for (const name of validNames) {
@@ -813,7 +813,7 @@ function readProjectFilesRecursive(projectDir) {
     if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
       const entries = fs.readdirSync(dirPath);
       for (const entry of entries) {
-        if (entry.endsWith('.jsx') || entry.endsWith('.js') || entry.endsWith('.css')) {
+        if (entry.endsWith('.tsx') || entry.endsWith('.ts') || entry.endsWith('.jsx') || entry.endsWith('.js') || entry.endsWith('.css')) {
           const relativePath = `${dir}/${entry}`;
           const fullPath = path.join(dirPath, entry);
           if (fs.statSync(fullPath).isFile()) {
@@ -831,7 +831,7 @@ function readProjectFilesRecursive(projectDir) {
 function formatProjectCode(files) {
   const fileOrder = [
     'package.json', 'vite.config.js', 'index.html', 'server.js',
-    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+    'src/main.tsx', 'src/index.css', 'src/App.tsx'
   ];
 
   let result = '';
@@ -866,9 +866,9 @@ function writeDefaultReactProject(projectDir) {
     'vite.config.js': DEFAULT_VITE_CONFIG,
     'index.html': DEFAULT_INDEX_HTML,
     'server.js': DEFAULT_SERVER_JS,
-    'src/main.jsx': DEFAULT_MAIN_JSX,
+    'src/main.tsx': DEFAULT_MAIN_JSX,
     'src/index.css': DEFAULT_INDEX_CSS,
-    'src/App.jsx': DEFAULT_APP_JSX,
+    'src/App.tsx': DEFAULT_APP_JSX,
   };
 
   for (const [filename, content] of Object.entries(defaults)) {
@@ -969,7 +969,7 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   console.log(`[Claude Code] Project directory: ${projectDir}`);
   
   // Build the prompt for Claude Code
-  const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application React + Vite + TailwindCSS complète basée sur le brief. Génère tous les fichiers du projet (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css, src/App.jsx, src/components/*.jsx, src/pages/*.jsx), teste-les avec npm run build, et crée le fichier READY quand tout fonctionne.`;
+  const prompt = `Lis le fichier CLAUDE.md dans ce dossier et exécute toutes les instructions pour générer une application React + Vite + TailwindCSS complète basée sur le brief. Génère tous les fichiers du projet (package.json, vite.config.js, index.html, server.js, src/main.tsx, src/index.css, src/App.tsx, src/components/*.tsx, src/pages/*.tsx), teste-les avec npm run build, et crée le fichier READY quand tout fonctionne.`;
   
   // Spawn Claude Code process
   // NOTE: --dangerously-skip-permissions is required for non-interactive server-side execution.
@@ -1140,7 +1140,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   console.log(`[Claude Code Chat] Starting modification for project ${projectId}: ${message.substring(0, 100)}...`);
   
   // Build the prompt for modification
-  const prompt = `Modifie les fichiers React existants dans ce dossier selon cette instruction: "${message}". Le projet utilise React + Vite + TailwindCSS. Tu peux modifier src/App.jsx, src/components/*.jsx, src/pages/*.jsx, server.js, src/index.css, etc. Teste avec npm run build, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
+  const prompt = `Modifie les fichiers React existants dans ce dossier selon cette instruction: "${message}". Le projet utilise React + Vite + TailwindCSS. Tu peux modifier src/App.tsx, src/components/*.tsx, src/pages/*.tsx, server.js, src/index.css, etc. Teste avec npm run build, puis crée le fichier READY quand tout fonctionne. Si erreur après 5 tentatives, crée le fichier ERROR.`;
   
   // Spawn Claude Code process (see generateClaudeCode for security notes)
   const claudeProcess = spawn('claude', [
@@ -1257,7 +1257,7 @@ const CODE_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'File path relative to project root (e.g. src/components/Header.jsx)' },
+        path: { type: 'string', description: 'File path relative to project root (e.g. src/components/Header.tsx)' },
         content: { type: 'string', description: 'Complete file content' }
       },
       required: ['path', 'content']
@@ -1308,7 +1308,7 @@ function parseToolResponse(response) {
 // Convert tool response files into ### marker format (for DB storage compatibility)
 function toolResponseToCode(parsed) {
   let code = '';
-  const fileOrder = ['package.json', 'vite.config.js', 'index.html', 'server.js', 'src/main.jsx', 'src/index.css', 'src/App.jsx'];
+  const fileOrder = ['package.json', 'vite.config.js', 'index.html', 'server.js', 'src/main.tsx', 'src/index.css', 'src/App.tsx'];
   const written = new Set();
   for (const fn of fileOrder) {
     if (parsed.files[fn]) { code += (code ? '\n\n' : '') + `### ${fn}\n${parsed.files[fn]}`; written.add(fn); }
@@ -1492,9 +1492,9 @@ ${sectorHint ? `Secteur: ${sectorHint}` : ''}
 Génère ces 6 fichiers avec ### markers :
 ### package.json — "type":"module", React 19, Vite 6, TailwindCSS 4, Express 4.18.2, better-sqlite3
 ### vite.config.js — plugins react+tailwindcss, server: host 0.0.0.0 port 5173 allowedHosts:true, proxy /api→localhost:3000
-### index.html — <div id="root">, <script type="module" src="/src/main.jsx">
+### index.html — <div id="root">, <script type="module" src="/src/main.tsx">
 ### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/main.jsx — ReactDOM.createRoot, import App + index.css
+### src/main.tsx — ReactDOM.createRoot, import App + index.css
 ### src/index.css — @import "tailwindcss";
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
@@ -1524,10 +1524,10 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
 Brief: ${brief}
 
 Génère ces fichiers avec ### markers :
-### src/App.jsx — import BrowserRouter,Routes,Route. Import Header,Footer,Home,About,Contact (ou pages adaptées au brief). Layout: <Header/> + <Routes> + <Footer/>
-### src/pages/Home.jsx — page d'accueil COMPLÈTE: hero section, sections principales, contenu réaliste en français, fetch('/api/...') pour données dynamiques
-### src/pages/About.jsx — page à propos, histoire, équipe, valeurs
-### src/pages/Contact.jsx — formulaire contact complet avec validation useState, carte/adresse
+### src/App.tsx — import BrowserRouter,Routes,Route. Import Header,Footer,Home,About,Contact (ou pages adaptées au brief). Layout: <Header/> + <Routes> + <Footer/>
+### src/pages/Home.tsx — page d'accueil COMPLÈTE: hero section, sections principales, contenu réaliste en français, fetch('/api/...') pour données dynamiques
+### src/pages/About.tsx — page à propos, histoire, équipe, valeurs
+### src/pages/Contact.tsx — formulaire contact complet avec validation useState, carte/adresse
 
 Chaque fichier : export default function, TailwindCSS classes, lucide-react icônes, responsive.
 Contenu PRO français, zéro lorem ipsum. Images: picsum.photos.`;
@@ -1537,9 +1537,9 @@ Contenu PRO français, zéro lorem ipsum. Images: picsum.photos.`;
 Brief: ${brief}
 
 Génère ces fichiers avec ### markers :
-### src/components/Header.jsx — header sticky responsive, logo, nav desktop + menu hamburger mobile (useState), liens: Accueil, À propos, Contact
-### src/components/Footer.jsx — footer professionnel, copyright 2024, liens rapides, coordonnées
-### src/components/HeroSection.jsx — hero plein écran, titre accrocheur, sous-titre, CTA button, image de fond picsum.photos
+### src/components/Header.tsx — header sticky responsive, logo, nav desktop + menu hamburger mobile (useState), liens: Accueil, À propos, Contact
+### src/components/Footer.tsx — footer professionnel, copyright 2024, liens rapides, coordonnées
+### src/components/HeroSection.tsx — hero plein écran, titre accrocheur, sous-titre, CTA button, image de fond picsum.photos
 
 Chaque composant : export default function, TailwindCSS, lucide-react. Design pro, responsive.`;
 
@@ -1599,7 +1599,7 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
       for (const f of missingFiles) {
         const fp = path.join(projectDir, f);
         if (!fs.existsSync(fp)) {
-          const name = path.basename(f, '.jsx');
+          const name = path.basename(f, '.tsx');
           const fpDir = path.dirname(fp);
           if (!fs.existsSync(fpDir)) fs.mkdirSync(fpDir, { recursive: true });
           fs.writeFileSync(fp, `import React from 'react';\n\nexport default function ${name}() {\n  return <div className="p-8"><h2 className="text-xl font-bold">${name}</h2></div>;\n}\n`);
@@ -1628,7 +1628,7 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
   console.log(`[Gen] COMPLETE: ${Object.keys(finalFiles).length} files, ${allCode.length} chars, ${totalSec}s total`);
 }
 
-// Scan App.jsx and all components/pages for missing imports
+// Scan App.tsx and all components/pages for missing imports
 function findMissingImports(projectDir) {
   const missing = [];
   const srcDir = path.join(projectDir, 'src');
@@ -1636,7 +1636,7 @@ function findMissingImports(projectDir) {
 
   // Collect all .jsx files to scan
   const filesToScan = [];
-  const appJsx = path.join(srcDir, 'App.jsx');
+  const appJsx = path.join(srcDir, 'App.tsx');
   if (fs.existsSync(appJsx)) filesToScan.push(appJsx);
   for (const sub of ['components', 'pages']) {
     const dir = path.join(srcDir, sub);
@@ -1658,7 +1658,7 @@ function findMissingImports(projectDir) {
       // Resolve to absolute path, try .jsx extension
       let resolved = path.resolve(fileDir, importPath);
       if (!resolved.endsWith('.jsx') && !resolved.endsWith('.js') && !resolved.endsWith('.css')) {
-        resolved += '.jsx';
+        resolved += '.tsx';
       }
       if (!checked.has(resolved)) {
         checked.add(resolved);
@@ -1789,7 +1789,7 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
     }
 
     // 2) Validate essential React files exist
-    const essentialFiles = ['index.html', 'src/main.jsx', 'src/App.jsx', 'vite.config.js'];
+    const essentialFiles = ['index.html', 'src/main.tsx', 'src/App.jsx', 'vite.config.js'];
     let missingFiles = [];
     for (const f of essentialFiles) {
       if (!fs.existsSync(path.join(projDir, f))) missingFiles.push(f);
@@ -1800,7 +1800,7 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
     }
 
     // 3) Quick JSX sanity check: src/App.jsx should contain valid-looking JSX
-    const appJsxPath = path.join(projDir, 'src', 'App.jsx');
+    const appJsxPath = path.join(projDir, 'src', 'App.tsx');
     if (fs.existsSync(appJsxPath)) {
       const appContent = fs.readFileSync(appJsxPath, 'utf8');
       const hasExport = /export\s+default/.test(appContent);
@@ -1810,7 +1810,7 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
         console.warn(`[Validate] src/App.jsx looks malformed (export:${hasExport} jsx:${hasJsx} import:${hasImport})`);
         if (attempt < maxAttempts) {
           // Ask Claude to fix App.jsx
-          const fixPrompt = `Le fichier src/App.jsx du projet React est malformé. Il doit contenir un composant React valide avec import React, export default function, et du JSX. Corrige-le.\n\nContenu actuel:\n${appContent.substring(0, 3000)}\n\nRetourne le fichier corrigé avec ### src/App.jsx`;
+          const fixPrompt = `Le fichier src/App.jsx du projet React est malformé. Il doit contenir un composant React valide avec import React, export default function, et du JSX. Corrige-le.\n\nContenu actuel:\n${appContent.substring(0, 3000)}\n\nRetourne le fichier corrigé avec ### src/App.tsx`;
           const fixPayload = JSON.stringify({
             model: 'claude-sonnet-4-20250514', max_tokens: 16000,
             messages: [{ role: 'user', content: fixPrompt }]
@@ -1956,7 +1956,7 @@ function applyDiffs(existingCode, diffCode) {
 function formatProjectCodeFromMap(files) {
   const fileOrder = [
     'package.json', 'vite.config.js', 'index.html', 'server.js',
-    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+    'src/main.tsx', 'src/index.css', 'src/App.tsx'
   ];
   let result = '';
   const written = new Set();
@@ -2019,7 +2019,7 @@ function mergeFullFiles(existingCode, newCode) {
   // Rebuild code string with React project file ordering
   const fileOrder = [
     'package.json', 'vite.config.js', 'index.html', 'server.js',
-    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+    'src/main.tsx', 'src/index.css', 'src/App.tsx'
   ];
 
   let result = '';
@@ -2054,20 +2054,22 @@ function mergeFullFiles(existingCode, newCode) {
 // Valid file paths for React + Vite projects (multi-file)
 const VALID_FILE_PATTERNS = [
   /^package\.json$/,
-  /^vite\.config\.js$/,
+  /^tsconfig\.json$/,
+  /^vite\.config\.(js|ts)$/,
   /^index\.html$/,
   /^server\.js$/,
-  /^src\/main\.jsx$/,
+  /^src\/main\.(tsx|jsx)$/,
   /^src\/index\.css$/,
-  /^src\/App\.jsx$/,
-  /^src\/components\/[A-Za-z0-9_-]+\.jsx$/,
-  /^src\/components\/ui\/[A-Za-z0-9_-]+\.jsx$/,
-  /^src\/pages\/[A-Za-z0-9_-]+\.jsx$/,
+  /^src\/App\.(tsx|jsx)$/,
+  /^src\/components\/[A-Za-z0-9_-]+\.(tsx|jsx)$/,
+  /^src\/components\/ui\/[A-Za-z0-9_-]+\.(tsx|jsx)$/,
+  /^src\/pages\/[A-Za-z0-9_-]+\.(tsx|jsx)$/,
   /^src\/styles\/[A-Za-z0-9_-]+\.css$/,
-  /^src\/lib\/[A-Za-z0-9_-]+\.(js|jsx)$/,
-  /^src\/hooks\/[A-Za-z0-9_-]+\.(js|jsx)$/,
-  /^src\/context\/[A-Za-z0-9_-]+\.(js|jsx)$/,
-  // Legacy support for public/index.html (map to index.html at root)
+  /^src\/lib\/[A-Za-z0-9_-]+\.(ts|js|tsx|jsx)$/,
+  /^src\/hooks\/[A-Za-z0-9_-]+\.(ts|js|tsx|jsx)$/,
+  /^src\/context\/[A-Za-z0-9_-]+\.(ts|js|tsx|jsx)$/,
+  /^src\/types\/[A-Za-z0-9_-]+\.(ts|d\.ts)$/,
+  // Legacy support
   /^public\/index\.html$/,
 ];
 
@@ -2414,13 +2416,13 @@ Analyse l'image design-reference.png et reproduis FIDÈLEMENT ce design en React
 Crée un projet React complet :
 - package.json — "type": "module", dépendances React + Vite + TailwindCSS + Express
 - vite.config.js — plugins: react + tailwindcss, proxy /api
-- index.html — <div id="root"> + <script type="module" src="/src/main.jsx">
+- index.html — <div id="root"> + <script type="module" src="/src/main.tsx">
 - server.js — Express servant dist/, SQLite, JWT auth
 - src/main.jsx — point d'entrée React
 - src/index.css — @import "tailwindcss" + custom CSS
 - src/App.jsx — BrowserRouter + Routes + Layout
-- src/components/*.jsx — Header, Footer, etc.
-- src/pages/*.jsx — Home, etc.
+- src/components/*.tsx — Header, Footer, etc.
+- src/pages/*.tsx — Home, etc.
 
 ## Qualité
 - REPRODUIS FIDÈLEMENT le design de l'image en composants React + TailwindCSS
@@ -3375,10 +3377,10 @@ function validateReactIndexHtml(projectDir) {
   }
 
   // Must have module script entry point
-  if (!html.includes('src="/src/main.jsx"') && !html.includes("src='/src/main.jsx'")) {
+  if (!html.includes('src="/src/main.tsx"') && !html.includes("src='/src/main.jsx'")) {
     console.warn(`[Validate] index.html missing main.jsx entry — fixing`);
     if (html.includes('</body>')) {
-      html = html.replace('</body>', '  <script type="module" src="/src/main.jsx"></script>\n</body>');
+      html = html.replace('</body>', '  <script type="module" src="/src/main.tsx"></script>\n</body>');
       changed = true;
     }
   }
@@ -3578,7 +3580,7 @@ async function buildDockerProject(projectId, code, onProgress) {
     const essentialFiles = {
       'vite.config.js': DEFAULT_VITE_CONFIG,
       'index.html': DEFAULT_INDEX_HTML,
-      'src/main.jsx': DEFAULT_MAIN_JSX,
+      'src/main.tsx': DEFAULT_MAIN_JSX,
       'src/index.css': DEFAULT_INDEX_CSS,
       'src/App.jsx': DEFAULT_APP_JSX,
     };
@@ -3860,7 +3862,7 @@ function checkSyntax(projectDir) {
   }
 
   // 2) Validate essential React project structure
-  const requiredFiles = ['index.html', 'vite.config.js', 'src/main.jsx', 'src/App.jsx'];
+  const requiredFiles = ['index.html', 'vite.config.js', 'src/main.tsx', 'src/App.tsx'];
   const missing = requiredFiles.filter(f => !fs.existsSync(path.join(projectDir, f)));
   if (missing.length > 0) {
     console.warn(`[checkSyntax] Missing React files: ${missing.join(', ')}`);
@@ -3868,7 +3870,7 @@ function checkSyntax(projectDir) {
   }
 
   // 3) Quick JSX sanity: App.jsx should have export default and JSX
-  const appJsx = path.join(projectDir, 'src', 'App.jsx');
+  const appJsx = path.join(projectDir, 'src', 'App.tsx');
   if (fs.existsSync(appJsx)) {
     const content = fs.readFileSync(appJsx, 'utf8');
     if (!content.includes('export') || !/<\w/.test(content)) {
@@ -3966,7 +3968,7 @@ async function callClaudeForCorrection(originalCode, errorLogs, errorType) {
   // Identify which file likely caused the error
   const errorFileHints = [];
   if (errorLogs.includes('server.js')) errorFileHints.push('server.js');
-  if (errorLogs.includes('App.jsx') || errorLogs.includes('src/')) errorFileHints.push('src/App.jsx');
+  if (errorLogs.includes('App.jsx') || errorLogs.includes('src/')) errorFileHints.push('src/App.tsx');
   if (errorLogs.match(/components\/\w+/)) errorFileHints.push(errorLogs.match(/components\/(\w+\.jsx)/)?.[0] || '');
   if (errorLogs.match(/pages\/\w+/)) errorFileHints.push(errorLogs.match(/pages\/(\w+\.jsx)/)?.[0] || '');
   if (errorLogs.includes('vite') || errorLogs.includes('build')) errorFileHints.push('vite.config.js');
@@ -3989,7 +3991,7 @@ ${originalCode}
 CORRIGE l'erreur. Retourne TOUS les fichiers modifiés avec ### markers.
 
 RÈGLES:
-1. Format ### pour chaque fichier (### package.json, ### server.js, ### src/App.jsx, etc.)
+1. Format ### pour chaque fichier (### package.json, ### server.js, ### src/App.tsx, etc.)
 2. JAMAIS de backticks markdown autour du code
 3. Retourne SEULEMENT les fichiers que tu modifies
 4. server.js: Port 3000, route /health, express.static(path.join(__dirname,'dist'))

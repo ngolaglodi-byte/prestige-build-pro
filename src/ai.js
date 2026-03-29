@@ -342,7 +342,7 @@ const SYSTEM_PROMPT = `Tu es Prestige AI, un générateur de code expert React/V
 FORMAT DE SORTIE — utilise les outils write_file et edit_file :
 
 Pour CRÉER ou RÉÉCRIRE un fichier, utilise l'outil write_file :
-  write_file({ path: "src/components/Header.jsx", content: "le code complet du fichier" })
+  write_file({ path: "src/components/Header.tsx", content: "le code complet du fichier" })
 
 Pour MODIFIER chirurgicalement un fichier existant, utilise l'outil edit_file :
   edit_file({ path: "src/index.css", search: "bg-amber-600", replace: "bg-blue-800" })
@@ -354,9 +354,9 @@ RÈGLE : utilise write_file pour les nouveaux fichiers et les gros changements.
 
 Fichiers typiques d'un projet :
   package.json, vite.config.js, index.html, server.js,
-  src/main.jsx, src/index.css, src/App.jsx,
-  src/components/Header.jsx, src/components/Footer.jsx,
-  src/pages/Home.jsx, src/pages/About.jsx, src/pages/Contact.jsx
+  src/main.tsx, src/index.css, src/App.tsx,
+  src/components/Header.tsx, src/components/Footer.tsx,
+  src/pages/Home.tsx, src/pages/About.tsx, src/pages/Contact.tsx
 
 STACK TECHNIQUE OBLIGATOIRE :
 - React 19.1.0 avec JSX
@@ -391,7 +391,7 @@ STRUCTURE index.html OBLIGATOIRE (racine du projet, PAS dans public/) :
 <!DOCTYPE html>
 <html lang="fr">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>...</title></head>
-<body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body>
+<body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
 </html>
 
 STRUCTURE src/index.css OBLIGATOIRE :
@@ -415,14 +415,14 @@ DESIGN TOKENS OBLIGATOIRES :
 - Pour changer le thème entier, modifier seulement :root dans index.css
 - Jamais de couleurs hex en dur dans les composants — toujours des tokens ou Tailwind sémantique
 
-STRUCTURE src/main.jsx OBLIGATOIRE :
+STRUCTURE src/main.tsx OBLIGATOIRE :
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
 ReactDOM.createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
 
-STRUCTURE src/App.jsx OBLIGATOIRE :
+STRUCTURE src/App.tsx OBLIGATOIRE :
 - import { BrowserRouter, Routes, Route } from 'react-router-dom'
 - Import de tous les composants et pages
 - BrowserRouter > Routes avec toutes les <Route>
@@ -490,7 +490,7 @@ HOOKS PRÉ-INSTALLÉS :
 - import { useIsMobile } from '../hooks/useIsMobile' → const isMobile = useIsMobile()
 
 RÈGLES REACT :
-1. Un composant = un fichier .jsx avec export default function NomComposant()
+1. Un composant = un fichier .tsx avec export default function NomComposant()
 2. Composants métier dans src/components/, UI dans src/components/ui/, pages dans src/pages/
 3. Hooks : useState, useEffect, useCallback, useMemo — JAMAIS de hooks conditionnels
 4. fetch('/api/...') pour le backend (Vite proxy gère)
@@ -608,24 +608,24 @@ OUTILS DISPONIBLES :
 
 edit_file — pour les PETITES modifications (couleur, texte, style, fix) :
   edit_file({ path: "src/index.css", search: "bg-amber-600", replace: "bg-blue-800" })
-  edit_file({ path: "src/components/Header.jsx", search: "Bella Vita", replace: "Le Fournil" })
+  edit_file({ path: "src/components/Header.tsx", search: "Bella Vita", replace: "Le Fournil" })
   Règles : search doit correspondre EXACTEMENT au code existant.
 
 write_file — pour les GROS changements ou nouveaux fichiers :
-  write_file({ path: "src/pages/NewPage.jsx", content: "le code complet" })
-  write_file({ path: "src/App.jsx", content: "le fichier complet avec la nouvelle route" })
+  write_file({ path: "src/pages/NewPage.tsx", content: "le code complet" })
+  write_file({ path: "src/App.tsx", content: "le fichier complet avec la nouvelle route" })
 
 QUAND UTILISER QUEL OUTIL :
 - Changement couleur/texte/style → edit_file (chirurgical)
 - Correction de bug → edit_file
 - Nouveau composant/page → write_file
 - Refactoring d'un composant → write_file
-- Ajout d'une route → edit_file sur src/App.jsx
+- Ajout d'une route → edit_file sur src/App.tsx
 
 RÈGLE CRITIQUE :
 - Modifie SEULEMENT les fichiers qui changent
 - Tu PEUX créer de nouveaux fichiers via write_file
-- Pour une nouvelle page → write_file la page + edit_file App.jsx (ajouter import + Route)
+- Pour une nouvelle page → write_file la page + edit_file App.tsx (ajouter import + Route)
 
 COMPOSANTS UI DISPONIBLES (TOUJOURS les utiliser) :
 Basiques : Button, Card, Input, Textarea, Label, Badge, Select, Separator
@@ -884,7 +884,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const routes = (serverJs.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []).slice(0, 20);
     const tables = (serverJs.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
 
-    const appJsx = files['src/App.jsx'] || '';
+    const appJsx = files['src/App.tsx'] || '';
     const reactRoutes = (appJsx.match(/<Route\s+path="([^"]+)"/g) || []);
     const components = Object.keys(files).filter(f => f.startsWith('src/components/'));
     const pages = Object.keys(files).filter(f => f.startsWith('src/pages/'));
@@ -899,7 +899,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
         structure += `\n  ${fn} (${size} chars)\n`;
         structure += `    Routes API: ${routes.slice(0, 15).join(', ') || 'aucune'}\n`;
         structure += `    Tables: ${tables.join(', ') || 'aucune'}\n`;
-      } else if (fn === 'src/App.jsx') {
+      } else if (fn === 'src/App.tsx') {
         const imports = (content.match(/import\s+(\w+)/g) || []).map(i => i.replace('import ', ''));
         structure += `\n  ${fn} (${size} chars)\n`;
         structure += `    Routes: ${reactRoutes.join(', ') || 'aucune'}\n`;
@@ -933,7 +933,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
       }
     }
     structure += '\nTu modifies CE projet React. Retourne UNIQUEMENT les fichiers modifiés avec ### markers.';
-    structure += '\nSi tu crées un NOUVEAU composant/page, retourne aussi src/App.jsx avec la nouvelle route.';
+    structure += '\nSi tu crées un NOUVEAU composant/page, retourne aussi src/App.tsx avec la nouvelle route.';
 
     let projectContext = structure;
 
@@ -945,31 +945,31 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
       // Send all files for major changes
       allFileNames.forEach(f => filesToSend.push(f));
     } else {
-      // ALWAYS send App.jsx (routing context) and index.css (styling context)
-      if (files['src/App.jsx']) filesToSend.push('src/App.jsx');
+      // ALWAYS send App.tsx (routing context) and index.css (styling context)
+      if (files['src/App.tsx']) filesToSend.push('src/App.tsx');
       if (files['src/index.css']) filesToSend.push('src/index.css');
 
       // Send specifically affected files
       if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
       if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
-      if (affected.mainJsx && files['src/main.jsx']) filesToSend.push('src/main.jsx');
+      if (affected.mainJsx && files['src/main.tsx']) filesToSend.push('src/main.tsx');
       if (affected.viteConfig && files['vite.config.js']) filesToSend.push('vite.config.js');
       if (affected.indexHtml && files['index.html']) filesToSend.push('index.html');
 
       // Send affected components
       for (const comp of affected.components) {
-        const key = `src/components/${comp}.jsx`;
+        const key = `src/components/${comp}.tsx`;
         if (files[key]) filesToSend.push(key);
       }
       for (const page of affected.pages) {
-        const key = `src/pages/${page}.jsx`;
+        const key = `src/pages/${page}.tsx`;
         if (files[key]) filesToSend.push(key);
       }
 
       // If adding a feature, also send the main page to understand context
       if (affected.serverJs && affected.appJsx) {
         // Feature addition — send Home page too for layout understanding
-        const homePage = allFileNames.find(f => f.includes('Home.jsx'));
+        const homePage = allFileNames.find(f => f.includes('Home.tsx'));
         if (homePage && !filesToSend.includes(homePage)) filesToSend.push(homePage);
       }
     }
