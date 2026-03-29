@@ -4218,6 +4218,7 @@ async function buildDockerProject(projectId, code, onProgress) {
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
+RUN npm install --prefer-offline 2>/dev/null || true
 COPY vite.config.js ./
 COPY index.html ./
 COPY server.js ./
