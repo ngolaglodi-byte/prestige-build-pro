@@ -459,6 +459,20 @@ DONNÉES :
 FORMULAIRES :
 - import { Switch } from '../components/ui/switch' → <Switch checked={value} onCheckedChange={setValue} />
 - import { Checkbox } from '../components/ui/checkbox' → <Checkbox checked={value} onCheckedChange={setValue} />
+- import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group'
+- import { Slider } from '../components/ui/slider' → <Slider value={50} onValueChange={setValue} min={0} max={100} />
+- import { DatePicker } from '../components/ui/date-picker' → <DatePicker value={date} onChange={setDate} />
+
+OVERLAYS & PANELS :
+- import { Tooltip } from '../components/ui/tooltip' → <Tooltip content="Aide"><Button>?</Button></Tooltip>
+- import { Popover, PopoverTrigger, PopoverContent } from '../components/ui/popover'
+- import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet' → drawer latéral mobile
+- import { Command, CommandInput, CommandList, CommandItem } from '../components/ui/command' → palette de recherche
+
+LAYOUT :
+- import { Breadcrumb, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '../components/ui/breadcrumb'
+- import { ScrollArea } from '../components/ui/scroll-area' → zone scrollable avec hauteur max
+- import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../components/ui/collapsible'
 
 UTILITAIRES :
 - import { cn } from '../lib/utils' → cn("base", isActive && "active", className)
