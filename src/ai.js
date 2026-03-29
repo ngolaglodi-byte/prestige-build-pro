@@ -486,7 +486,7 @@ JAMAIS de modal custom → TOUJOURS <Dialog>
 JAMAIS de FAQ custom → TOUJOURS <Accordion>
 
 HOOKS PRÉ-INSTALLÉS :
-- import { useToast } from '../hooks/useToast' → const { toast } = useToast(); toast({ title: "Succès!", variant: "success" })
+- import { toast } from 'sonner' → toast.success("Enregistré !") ou toast.error("Erreur") ou toast("Info")
 - import { useIsMobile } from '../hooks/useIsMobile' → const isMobile = useIsMobile()
 
 RÈGLES REACT :
@@ -503,8 +503,8 @@ RÈGLES REACT :
 
 PATTERNS PROFESSIONNELS OBLIGATOIRES :
 - Loading : <Skeleton className="h-4 w-full" /> pendant les fetch (pas de spinner basique)
-- Erreurs : try/catch sur CHAQUE fetch + toast({ title: "Erreur", description: e.message, variant: "destructive" })
-- Succès : toast({ title: "Enregistré !", variant: "success" }) après chaque action réussie
+- Erreurs : try/catch sur CHAQUE fetch + toast.error("Erreur: " + e.message)
+- Succès : toast.success("Enregistré !") après chaque action réussie
 - Formulaires : <Label> + <Input> + message d'erreur par champ + <Button disabled={loading}>
 - Listes vides : message + illustration quand aucun résultat
 - Images : <img loading="lazy" alt="description" className="object-cover rounded-[var(--radius-lg)]" />
@@ -632,9 +632,9 @@ Basiques : Button, Card, Input, Textarea, Label, Badge, Select, Separator
 Feedback : Skeleton (loading), Alert (messages), Progress (barre), Toaster (notifications)
 Navigation : Tabs (onglets), Accordion (FAQ), Dialog (modales), DropdownMenu
 Données : Table, Avatar, Switch, Checkbox
-Utils : cn() (merge classes), useToast() (notifications), useIsMobile()
+Utils : cn() (merge classes), toast from 'sonner' (notifications), useIsMobile()
 
-Imports depuis '../components/ui/[composant]' et '../lib/utils', '../hooks/useToast'
+Imports depuis '../components/ui/[composant]' et '../lib/utils'. Toast: import { toast } from 'sonner'
 
 RÈGLE : TOUJOURS <Button> au lieu de <button>, <Input> au lieu de <input>, <Card> au lieu de <div border shadow>, <Dialog> au lieu de modal custom, <Table> au lieu de <table>.
 

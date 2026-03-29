@@ -60,7 +60,8 @@ RUN npm install \
   @radix-ui/react-avatar@1.1.7 \
   @radix-ui/react-alert-dialog@1.1.14 \
   @radix-ui/react-select@2.1.14 \
-  cmdk@1.1.1
+  cmdk@1.1.1 \
+  sonner@2.0.3
 
 ENV NODE_PATH=/app/node_modules
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
