@@ -739,7 +739,7 @@ async function addCustomDomainToCaddy(customDomain, siteDir) {
 // ─── AUTH ───
 function signToken(p) {
   const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
-  const b=Buffer.from(JSON.stringify({...p,exp:Math.floor(Date.now()/1000)+604800})).toString('base64url');
+  const b=Buffer.from(JSON.stringify({...p,exp:Math.floor(Date.now()/1000)+86400})).toString('base64url'); // 24h expiry
   const s=crypto.createHmac('sha256',JWT_SECRET).update(`${h}.${b}`).digest('base64url');
   return `${h}.${b}.${s}`;
 }
@@ -771,8 +771,15 @@ function getAuth(req) {
   if (cookieMatch) return verifyToken(cookieMatch[1]);
   return null;
 }
-function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}); res.end(JSON.stringify(data)); }
-function cors(res) { res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization'); }
+function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json'}); res.end(JSON.stringify(data)); }
+function cors(res) {
+  // Allow only our own domain + localhost for development
+  const allowedOrigins = process.env.CORS_ORIGIN || 'https://app.prestige-build.dev';
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigins);
+  res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+}
 function getBody(req, maxSize = 5 * 1024 * 1024) {
   return new Promise(r => {
     let b = '';
@@ -1887,8 +1894,8 @@ function executeServerTool(toolName, toolInput) {
     try {
       const existing = db.prepare('SELECT id FROM project_api_keys WHERE project_id=? AND env_name=?').get(toolInput.project_id, keyName);
       if (existing) return Promise.resolve(`Stripe déjà configuré (${keyName}). Utilisez l'interface admin pour modifier la clé.`);
-      db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(toolInput.project_id, keyName, encryptValue('sk_test_CONFIGURE_ME'), 'stripe');
-      return Promise.resolve(`Stripe activé. Variable ${keyName} créée. L'admin doit configurer la vraie clé via l'interface. Utilise process.env.${keyName} dans server.js.`);
+      db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(toolInput.project_id, keyName, encryptValue('CONFIGURE_VIA_ADMIN_PANEL'), 'stripe');
+      return Promise.resolve(`Stripe activé. Variable ${keyName} créée. L'admin doit configurer la clé via l'interface admin. Utilise process.env.${keyName} dans server.js.`);
     } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
   }
 
@@ -5448,6 +5455,12 @@ const server = http.createServer(async (req, res) => {
   try {
   cors(res);
   if (req.method==='OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // Security headers for all responses
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+
   const url = req.url.split('?')[0];
 
   // Health check endpoint for proxy monitoring
