@@ -2117,13 +2117,14 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
 Brief: ${brief}
 ${sectorHint ? `Secteur: ${sectorHint}` : ''}
 
-Génère ces 6 fichiers avec ### markers :
-### package.json — "type":"module", React 19, Vite 6, TailwindCSS 4, Express 4.18.2, better-sqlite3
-### vite.config.js — plugins react+tailwindcss, server: host 0.0.0.0 port 5173 allowedHosts:true, proxy /api→localhost:3000
+NE GÉNÈRE PAS package.json — il est fourni automatiquement.
+
+Génère ces 5 fichiers avec ### markers :
+### vite.config.js — plugins react+tailwindcss, resolve alias @/→src, server: host 0.0.0.0 port 5173 allowedHosts:true, proxy /api→localhost:3000
 ### index.html — <div id="root">, <script type="module" src="/src/main.tsx">
-### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/main.tsx — ReactDOM.createRoot, import App + index.css
-### src/index.css — @import "tailwindcss";
+### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/ en production. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
+### src/main.tsx — ReactDOM.createRoot, import App from './App', import './index.css'
+### src/index.css — @import "tailwindcss"; puis :root avec tokens couleurs adaptés au secteur
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
@@ -4241,60 +4242,34 @@ async function buildDockerProject(projectId, code, onProgress) {
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
-    // Fix package.json to use pinned versions and ensure "type": "module"
-    const packageJsonPathForScan = path.join(projectDir, 'package.json');
-    if (fs.existsSync(packageJsonPathForScan)) {
-      let packageContent = fs.readFileSync(packageJsonPathForScan, 'utf8');
-      let packageCorrected = false;
-
-      // Fix Express 5.x references
-      if (packageContent.includes('"express": "^5') || packageContent.includes('"express": "5')) {
-        packageContent = packageContent.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
-        console.log(`[Docker Build] Fixed Express 5.x to 4.18.2`);
-        packageCorrected = true;
+    // LOVABLE APPROACH: The AI does NOT control package.json.
+    // We ALWAYS write the canonical DEFAULT_PACKAGE_JSON which has all required packages.
+    // If the AI added extra deps (e.g. chart.js), we preserve them.
+    const pkgJsonPath = path.join(projectDir, 'package.json');
+    try {
+      const canonical = JSON.parse(DEFAULT_PACKAGE_JSON);
+      // Read AI-generated package.json to preserve project name and any extra deps
+      if (fs.existsSync(pkgJsonPath)) {
+        try {
+          const aiPkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+          // Preserve project name
+          if (aiPkg.name) canonical.name = aiPkg.name;
+          // Preserve any EXTRA dependencies the AI added (chart.js, etc.)
+          if (aiPkg.dependencies) {
+            for (const [name, version] of Object.entries(aiPkg.dependencies)) {
+              if (!canonical.dependencies[name]) {
+                canonical.dependencies[name] = version;
+              }
+            }
+          }
+        } catch (e) { /* AI package.json was invalid — use canonical as-is */ }
       }
-
-      // Remove ^ prefix from critical dependencies
-      const criticalDeps = ['express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression', 'react', 'react-dom', 'react-router-dom', 'vite'];
-      for (const dep of criticalDeps) {
-        const regex = new RegExp(`"${dep}"\\s*:\\s*"\\^`, 'g');
-        if (packageContent.match(regex)) {
-          packageContent = packageContent.replace(regex, `"${dep}": "`);
-          packageCorrected = true;
-        }
-      }
-
-      if (packageCorrected) {
-        fs.writeFileSync(packageJsonPathForScan, packageContent);
-        console.log(`[Docker Build] package.json versions pinned`);
-      }
-
-      // FORCE inject required stack packages (Radix, sonner, cmdk, tailwind-merge)
-      // The AI-generated package.json often misses these — they are NON-NEGOTIABLE
-      try {
-        const pkg = JSON.parse(fs.readFileSync(packageJsonPathForScan, 'utf8'));
-        if (!pkg.dependencies) pkg.dependencies = {};
-        const requiredDeps = {
-          "clsx": "2.1.1", "tailwind-merge": "3.3.0", "sonner": "2.0.3", "cmdk": "1.1.1",
-          "@radix-ui/react-dialog": "1.1.14", "@radix-ui/react-dropdown-menu": "2.1.15",
-          "@radix-ui/react-tabs": "1.1.12", "@radix-ui/react-accordion": "1.2.11",
-          "@radix-ui/react-tooltip": "1.1.18", "@radix-ui/react-popover": "1.1.14",
-          "@radix-ui/react-checkbox": "1.1.8", "@radix-ui/react-switch": "1.1.7",
-          "@radix-ui/react-radio-group": "1.2.7", "@radix-ui/react-slider": "1.2.7",
-          "@radix-ui/react-progress": "1.1.7", "@radix-ui/react-collapsible": "1.1.7",
-          "@radix-ui/react-scroll-area": "1.2.8", "@radix-ui/react-separator": "1.1.7",
-          "@radix-ui/react-label": "2.1.7", "@radix-ui/react-avatar": "1.1.7",
-          "@radix-ui/react-alert-dialog": "1.1.14", "@radix-ui/react-select": "2.1.14"
-        };
-        let injected = 0;
-        for (const [name, version] of Object.entries(requiredDeps)) {
-          if (!pkg.dependencies[name]) { pkg.dependencies[name] = version; injected++; }
-        }
-        if (injected > 0) {
-          fs.writeFileSync(packageJsonPathForScan, JSON.stringify(pkg, null, 2));
-          console.log(`[Docker Build] Injected ${injected} required packages (Radix, sonner, cmdk)`);
-        }
-      } catch (e) { console.warn('[Docker Build] Package injection error:', e.message); }
+      fs.writeFileSync(pkgJsonPath, JSON.stringify(canonical, null, 2));
+      console.log(`[Docker Build] Wrote canonical package.json (${Object.keys(canonical.dependencies).length} deps)`);
+    } catch (e) {
+      // Fallback: write DEFAULT_PACKAGE_JSON as-is
+      fs.writeFileSync(pkgJsonPath, DEFAULT_PACKAGE_JSON);
+      console.warn(`[Docker Build] Wrote fallback package.json: ${e.message}`);
     }
 
     // Step 2.25: Validate mandatory React project files

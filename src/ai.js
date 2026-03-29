@@ -378,6 +378,9 @@ Avant de coder, COMMENCE par :
 3. Choisir la palette de couleurs (--color-primary, --color-accent) adaptée au secteur
 4. Puis appeler write_file pour CHAQUE fichier
 
+NE GÉNÈRE PAS package.json — il est fourni automatiquement avec tous les packages.
+Si tu as besoin d'un package supplémentaire (chart.js, etc.) → utilise le tool add_dependency.
+
 COMMENCER SIMPLE — ajouter de la complexité seulement quand nécessaire.
 Ne construis que ce qui est explicitement demandé. Pas de features "bonus".
 
