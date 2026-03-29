@@ -468,7 +468,19 @@ function getAuth(req) {
 }
 function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}); res.end(JSON.stringify(data)); }
 function cors(res) { res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization'); }
-function getBody(req) { return new Promise(r=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{try{r(JSON.parse(b))}catch{r({})}})}); }
+function getBody(req, maxSize = 5 * 1024 * 1024) {
+  return new Promise(r => {
+    let b = '';
+    let size = 0;
+    req.on('data', c => {
+      size += c.length;
+      if (size > maxSize) { req.destroy(); r({}); return; }
+      b += c;
+    });
+    req.on('end', () => { try { r(JSON.parse(b)); } catch { r({}); } });
+    req.on('error', () => r({}));
+  });
+}
 
 // ─── STREAM CLAUDE ───
 // ─── STREAM CLAUDE (DEPRECATED - KEPT FOR BACKWARDS COMPATIBILITY) ───
@@ -1117,6 +1129,7 @@ function generateViaAPI(projectId, brief, jobId) {
   };
 
   let accumulatedCode = '';
+  const MAX_CODE_SIZE = 2 * 1024 * 1024; // 2MB safety limit
 
   anthropicRequest(payload, opts, (apiRes) => {
     if (apiRes.statusCode !== 200) {
@@ -1125,35 +1138,64 @@ function generateViaAPI(projectId, brief, jobId) {
       apiRes.on('end', () => {
         console.error(`[API Fallback] API returned ${apiRes.statusCode}: ${errorBody.substring(0, 500)}`);
         job.status = 'error';
-        job.error = `Erreur API (${apiRes.statusCode}).`;
+        job.error = `Erreur API (${apiRes.statusCode}). Réessayez.`;
       });
       return;
     }
+
+    // Proper SSE parsing with buffer for chunk boundary handling
+    let sseBuffer = '';
     apiRes.on('data', chunk => {
-      for (const line of chunk.toString().split('\n')) {
+      sseBuffer += chunk.toString();
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() || ''; // keep incomplete last line in buffer
+
+      for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (!data || data === '[DONE]') continue;
         try {
-          const d = JSON.parse(line.slice(6));
+          const d = JSON.parse(data);
           if (d.type === 'content_block_delta' && d.delta?.text) {
             accumulatedCode += d.delta.text;
+            if (accumulatedCode.length > MAX_CODE_SIZE) {
+              job.status = 'error';
+              job.error = 'Code généré trop volumineux. Simplifiez le brief.';
+              apiRes.destroy();
+              return;
+            }
             job.code = accumulatedCode;
             job.progress = accumulatedCode.length;
             const text = d.delta.text;
             if (text.includes('package.json')) job.progressMessage = 'Génération du package.json...';
             else if (text.includes('server.js')) job.progressMessage = 'Génération du backend Express...';
-            else if (text.includes('index.html')) job.progressMessage = 'Génération du frontend...';
+            else if (text.includes('App.jsx')) job.progressMessage = 'Génération des composants React...';
+            else if (text.includes('index.html')) job.progressMessage = 'Génération du point d\'entrée...';
+            else if (text.includes('components/')) job.progressMessage = 'Génération des composants...';
+            else if (text.includes('pages/')) job.progressMessage = 'Génération des pages...';
           }
           if (d.type === 'message_stop') {
             try {
               writeGeneratedFiles(projectDir, accumulatedCode);
               job.status = 'done';
-              job.progressMessage = 'Projet généré avec succès !';
+              job.progressMessage = 'Projet React généré avec succès !';
             } catch (writeErr) {
+              console.error(`[API Fallback] File write error: ${writeErr.message}`);
               job.status = 'done';
               job.progressMessage = 'Projet généré (écriture partielle).';
             }
           }
-        } catch (e) {}
+          if (d.type === 'error') {
+            console.error(`[API Fallback] Stream error: ${JSON.stringify(d.error)}`);
+            job.status = 'error';
+            job.error = d.error?.message || 'Erreur API stream.';
+          }
+        } catch (parseErr) {
+          // Log malformed SSE events instead of silently swallowing
+          if (data.length > 10) {
+            console.warn(`[API Fallback] Malformed SSE: ${data.substring(0, 80)}`);
+          }
+        }
       }
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = `Erreur stream: ${e.message}`; });
@@ -1553,7 +1595,9 @@ Règles d'intégration automatique :
             job.status = 'error';
             job.error = d.error?.message || 'Erreur API';
           }
-        } catch(e) {}
+        } catch(e) {
+          if (data && data.length > 10) console.warn(`[Claude API] Malformed SSE: ${data.substring(0, 80)}`);
+        }
       }
     });
     apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
@@ -3990,14 +4034,30 @@ const server = http.createServer(async (req, res) => {
 
   // Login (no auth required)
   if (url==='/api/login' && req.method==='POST') {
+    // Rate limit: max 5 login attempts per IP per minute
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    const loginKey = `login:${clientIp}`;
+    const now = Date.now();
+    if (!global._loginAttempts) global._loginAttempts = new Map();
+    const attempts = global._loginAttempts.get(loginKey) || { count: 0, reset: now + 60000 };
+    if (now > attempts.reset) { attempts.count = 0; attempts.reset = now + 60000; }
+    attempts.count++;
+    global._loginAttempts.set(loginKey, attempts);
+    if (attempts.count > 5) {
+      json(res, 429, { error: 'Trop de tentatives. Réessayez dans 1 minute.' }); return;
+    }
+
     const {email,password}=await getBody(req);
     if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
       json(res, 400, { error: 'Email et mot de passe requis.' }); return;
     }
+    if (email.length > 200 || password.length > 200) {
+      json(res, 400, { error: 'Données invalides.' }); return;
+    }
     const bcrypt=require('bcryptjs');
     const u=db.prepare('SELECT * FROM users WHERE email=?').get(email.trim().toLowerCase());
     if (!u||!bcrypt.compareSync(password,u.password)) {
-      console.log(`[Auth] Failed login attempt for: ${email}`);
+      console.log(`[Auth] Failed login attempt for: ${email} from ${clientIp}`);
       json(res,401,{error:'Email ou mot de passe incorrect.'}); return;
     }
     console.log(`[Auth] Login: ${u.email} (${u.role})`);
@@ -4005,26 +4065,43 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ─── ANALYTICS TRACKING (NO AUTH - CALLED BY CLIENT SITES) ───
+  // ─── ANALYTICS TRACKING (NO AUTH - CALLED BY PUBLISHED CLIENT SITES) ───
   if (url.match(/^\/api\/track\/\d+$/) && req.method==='POST') {
     const projectId = parseInt(url.split('/')[3]);
+
+    // Rate limit: max 30 analytics events per IP per minute
+    const trackIp = (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').split(',')[0].trim();
+    const trackKey = `track:${trackIp}`;
+    if (!global._trackLimits) global._trackLimits = new Map();
+    const tl = global._trackLimits.get(trackKey) || { count: 0, reset: Date.now() + 60000 };
+    if (Date.now() > tl.reset) { tl.count = 0; tl.reset = Date.now() + 60000; }
+    tl.count++;
+    global._trackLimits.set(trackKey, tl);
+    if (tl.count > 30) { json(res, 429, { error: 'Rate limited' }); return; }
+
+    // Verify project exists and is published
+    const project = db.prepare('SELECT id, is_published FROM projects WHERE id=?').get(projectId);
+    if (!project || !project.is_published) { json(res, 404, { error: 'Not found' }); return; }
+
     const body = await getBody(req);
     const { event_type, event_data, page } = body;
-    
-    if (!event_type) { json(res, 400, { error: 'event_type required' }); return; }
-    
-    // Store analytics event
+
+    if (!event_type || typeof event_type !== 'string') { json(res, 400, { error: 'event_type required' }); return; }
+
+    // Validate and sanitize input
+    const safeEventType = String(event_type).substring(0, 50);
+    const safeEventData = event_data ? JSON.stringify(event_data).substring(0, 2000) : '{}';
+
     try {
-      const ipAddress = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '';
-      const userAgent = req.headers['user-agent'] || '';
-      const eventDataStr = event_data ? JSON.stringify({ ...event_data, page }) : JSON.stringify({ page });
-      
+      const userAgent = (req.headers['user-agent'] || '').substring(0, 255);
+      const eventDataStr = page ? JSON.stringify({ ...(event_data || {}), page: String(page).substring(0, 500) }).substring(0, 2000) : safeEventData;
+
       db.prepare('INSERT INTO analytics (project_id, event_type, event_data, ip_address, user_agent) VALUES (?,?,?,?,?)').run(
-        projectId, event_type, eventDataStr, ipAddress.split(',')[0], userAgent.substring(0, 255)
+        projectId, safeEventType, eventDataStr, trackIp.substring(0, 45), userAgent
       );
       json(res, 200, { ok: true });
     } catch(e) {
-      json(res, 500, { error: e.message });
+      json(res, 500, { error: 'Tracking error' });
     }
     return;
   }

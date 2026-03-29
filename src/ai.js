@@ -310,7 +310,10 @@ function detectSectorProfile(brief) {
 const COMPLEX_PROJECT_KEYWORDS = [
   'portail', 'erp', 'complet', 'dashboard', 'multi-rôles', 'multi-roles',
   'hôpital', 'hospital', 'e-commerce', 'ecommerce', 'boutique', 'plateforme',
-  'système', 'systeme', 'gestion', 'admin', 'clinique', 'medical', 'médical'
+  'système', 'systeme', 'gestion', 'admin', 'clinique', 'medical', 'médical',
+  'upload', 'fichier', 'socket', 'temps réel', 'stripe', 'paiement',
+  'calendrier', 'réservation', 'api externe', 'intégration', 'webhook',
+  'notification', 'email', 'marketplace', 'multi-vendeur'
 ];
 
 function detectProjectComplexity(brief) {
@@ -424,45 +427,75 @@ STRUCTURE src/App.jsx OBLIGATOIRE :
 - Header et Footer inclus dans le layout
 
 RÈGLES REACT :
-1. Un composant = un fichier .jsx avec export default
+1. Un composant = un fichier .jsx avec export default function NomComposant()
 2. Les composants dans src/components/, les pages dans src/pages/
-3. Utiliser useState, useEffect, useCallback pour le state et les effets
+3. Hooks : useState, useEffect, useCallback, useMemo — JAMAIS de hooks conditionnels
 4. fetch('/api/...') pour les appels backend (avec slash initial — Vite proxy s'en charge)
 5. Icônes : import { Icon } from 'lucide-react' — JAMAIS de CDN icônes
-6. Classes CSS : TailwindCSS classes dans className="..." — JAMAIS de CSS inline sauf cas exceptionnel
-7. Responsive : classes Tailwind mobile-first (sm:, md:, lg:)
-8. Animations : classes Tailwind (transition, hover:, group-hover:)
+6. Classes CSS : TailwindCSS dans className="..." — JAMAIS de CSS inline
+7. Responsive : mobile-first (sm:, md:, lg:, xl:)
+8. Animations : transition-all duration-300, hover:, group-hover:, focus:ring-2
 9. Navigation : <Link to="/page"> de react-router-dom — JAMAIS window.location
-10. État global simple : props drilling ou context API si nécessaire
+10. État global : props pour petits arbres | useContext + Provider pour auth, thème, panier
+
+PATTERNS PROFESSIONNELS OBLIGATOIRES :
+- Loading states : const [loading, setLoading] = useState(false) + skeleton/spinner pendant fetch
+- Error states : const [error, setError] = useState(null) + try/catch sur CHAQUE fetch + message d'erreur UI
+- Formulaires : validation temps réel (onChange ou onBlur), messages d'erreur par champ, disable submit pendant envoi
+- Images : <img loading="lazy" alt="description pertinente" className="object-cover" />
+- Listes vides : toujours afficher un état vide ("Aucun résultat", illustration)
+
+ACCESSIBILITÉ (WCAG AA) :
+- HTML sémantique : <main>, <nav>, <section>, <article>, <button> (pas de <div onClick>)
+- ARIA : aria-label sur les boutons icônes, aria-labelledby sur les sections
+- Focus visible : focus:ring-2 focus:ring-offset-2 sur TOUS les éléments interactifs
+- Contraste : texte sombre sur fond clair (ratio 4.5:1 minimum)
+- Clavier : tous les éléments interactifs accessibles via Tab
 
 STRUCTURE server.js OBLIGATOIRE :
 - Port 3000, route /health
-- Sert dist/ en production : app.use(express.static('dist'))
-- SQLite avec tables selon le secteur
-- JWT auth, compte admin
+- Sert dist/ en production : app.use(express.static(path.join(__dirname, 'dist')))
+- SQLite avec tables selon le secteur + timestamps (created_at, updated_at)
+- Contraintes : NOT NULL, UNIQUE, FOREIGN KEY appropriés
+- Index sur colonnes de recherche/filtrage fréquentes
+- JWT auth, compte admin avec mot de passe fort (crypto.randomBytes(8).toString('hex'))
 - SPA fallback : app.get(/.*/, ...) qui sert dist/index.html
-- Ordre : static → public routes → auth middleware → protected routes → SPA fallback
+- Ordre : static → public routes (/health, /api/auth/*) → auth middleware → protected /api/* → SPA fallback
 - À la FIN : // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
+- Validation : typeof checks, trim(), longueur max sur TOUTES les entrées
+- Rate limiting simple : Map en mémoire, max 5 req/min sur login, 100/min général
 
 QUALITÉ PROFESSIONNELLE OBLIGATOIRE :
-- Design moderne avec TailwindCSS, inspiré des meilleures apps
+- Design moderne avec TailwindCSS, inspiré des meilleures apps SaaS
 - Responsive : mobile-first avec breakpoints Tailwind (sm, md, lg, xl)
-- Animations Tailwind subtiles (transition, duration, hover:, group-hover:)
-- Zéro lorem ipsum — contenu réel, professionnel, crédible
+- Animations Tailwind subtiles (transition-all duration-300, hover:scale-105, group-hover:)
+- Zéro lorem ipsum — contenu réel, professionnel, crédible en français
 - Toutes les pages fonctionnelles avec navigation React Router
-- Formulaires avec validation côté client (useState pour errors)
-- Données de démonstration réalistes dans la DB
-- Images via picsum.photos avec tailles appropriées
+- Toast/notifications pour feedback utilisateur (succès, erreur)
+- Données de démonstration réalistes pré-remplies dans la DB
+- Images : https://picsum.photos/800/600 avec alt text descriptif, loading="lazy"
 
 SÉCURITÉ OBLIGATOIRE :
-- bcryptjs rounds=12, JWT signé, SQL préparé
-- Validation des entrées, rate limiting
-- process.env pour les clés API
+- bcryptjs rounds=12, JWT signé avec expiration 24h
+- SQL : UNIQUEMENT requêtes préparées db.prepare('...').run(...)
+- XSS : échapper les sorties, Content-Security-Policy via helmet
+- Validation serveur : vérifier type, longueur, format de TOUTES les entrées
+- process.env pour TOUTES les clés/secrets — JAMAIS en dur dans le code
 
-PACKAGES NPM DISPONIBLES dans le container :
-pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
+PACKAGES NPM DISPONIBLES dans le container (utilise-les librement) :
+pdfkit (PDF), nodemailer (emails), stripe (paiements), socket.io (temps réel),
+multer (uploads), sharp (images), qrcode (QR codes), exceljs (Excel),
+csv-parse (CSV), marked (Markdown), axios (HTTP)
 
-IMAGES : https://picsum.photos/800/600 ou https://images.unsplash.com/photo-XXXXX?w=800&q=80
+INTÉGRATIONS API EXTERNES — quand demandé, intègre proprement :
+- Stripe : checkout session côté serveur, webhook pour confirmation, UI Tailwind
+- Google Maps : iframe embed ou API avec clé via process.env.GOOGLE_MAPS_KEY
+- Twilio/SMS : envoi côté serveur uniquement, clés dans env vars
+- Email (nodemailer) : SMTP config via env vars, templates HTML
+- Upload (multer) : limits 10MB, fileFilter par type, stockage /data/uploads/
+- Socket.io : namespace par fonctionnalité, auth JWT sur connection
+
+IMAGES : https://picsum.photos/800/600 ou Unsplash avec alt descriptif et loading="lazy"
 
 FORMAT DE RÉPONSE :
 - Pour une NOUVELLE génération : commence directement par ### package.json
@@ -496,18 +529,32 @@ RÈGLES REACT :
 - Composants fonctionnels avec hooks (useState, useEffect, useCallback)
 - TailwindCSS pour le styling — classes dans className
 - Lucide React pour les icônes : import { Icon } from 'lucide-react'
-- React Router pour la navigation : <Link to="/...">
-- fetch('/api/...') pour le backend
-- Un composant = un fichier .jsx
+- React Router : <Link to="/..."> pour navigation, useNavigate() pour programmatique
+- fetch('/api/...') avec try/catch + loading state + error handling
+- Un composant = un fichier .jsx avec export default
 
-PACKAGES NPM PRÉ-INSTALLÉS :
-pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
+PATTERNS À RESPECTER DANS LES MODIFICATIONS :
+- Garder le code existant intact — modifications chirurgicales
+- Conserver les imports existants, ajouter les nouveaux
+- Conserver les routes existantes dans App.jsx, ajouter les nouvelles
+- Si ajout d'état global : useContext + Provider, wrap dans App.jsx
+- Toast/notification pour feedback utilisateur après action
 
-COMMANDES / :
-/couleurs [nom] — changer palette | /style [site] — s'inspirer d'un site | /section [nom] — ajouter une section
-/dark — dark mode | /mobile — optimiser mobile | /seo — optimiser SEO | /premium — effets avancés
+PACKAGES NPM PRÉ-INSTALLÉS (utilise-les directement dans server.js) :
+pdfkit (PDF), nodemailer (emails), stripe (paiements), socket.io (temps réel),
+multer (uploads 10MB max), sharp (images), qrcode, exceljs (Excel), csv-parse, marked, axios
 
-SÉCURITÉ : bcrypt rounds=12, SQL préparé, JWT, process.env pour les clés API`;
+COMMANDES / (quand l'utilisateur tape un slash) :
+/couleurs [hex ou nom] — changer la palette complète (primary, secondary, accent)
+/style [nom de site] — reproduire le style de stripe.com, airbnb.com, etc.
+/section [type] — ajouter hero, pricing, testimonials, faq, team, gallery, contact
+/dark — activer dark mode avec classes Tailwind dark:
+/mobile — optimiser le responsive mobile (menu hamburger, touch targets 44px)
+/seo — meta tags, Open Graph, sémantique HTML, alt texts
+/api [service] — intégrer Stripe, Google Maps, Twilio, etc.
+
+SÉCURITÉ : bcrypt rounds=12, SQL préparé, JWT, process.env pour les clés API
+ACCESSIBILITÉ : HTML sémantique, aria-label sur icônes, focus visible, contraste AA`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
@@ -574,12 +621,33 @@ const SECTOR_SUGGESTIONS = {
     'Ajouter des vidéos d\'exercices par catégorie',
     'Créer un calculateur IMC/calories',
   ],
+  portfolio: [
+    'Ajouter des filtres par catégorie (branding, web, print)',
+    'Créer des études de cas détaillées avec process',
+    'Intégrer un formulaire de brief pour les clients',
+    'Ajouter un carrousel interactif des projets',
+    'Créer une page processus de travail avec timeline',
+  ],
+  nonprofit: [
+    'Créer un système de suivi des campagnes de dons',
+    'Ajouter un espace bénévole avec inscriptions',
+    'Intégrer un tableau de bord d\'impact',
+    'Créer un blog/actualités de l\'association',
+    'Ajouter un système d\'événements avec localisation',
+  ],
+  dashboard: [
+    'Créer des graphiques analytics interactifs (Chart.js)',
+    'Ajouter un système de notifications/alertes',
+    'Implémenter l\'export de données (CSV, PDF)',
+    'Créer un système de rapports automatisés',
+    'Ajouter un mode dark système-wide',
+  ],
   default: [
-    'Améliorer le design responsive mobile',
     'Ajouter un formulaire de contact avec validation',
-    'Intégrer des animations Tailwind subtiles',
-    'Ajouter une section témoignages',
-    'Optimiser le SEO avec les meta tags',
+    'Créer une section témoignages clients animée',
+    'Intégrer des animations Tailwind au scroll',
+    'Ajouter un mode dark avec toggle',
+    'Optimiser le SEO avec meta tags et sémantique HTML',
   ]
 };
 
@@ -595,6 +663,9 @@ function getSuggestionsForSector(brief) {
   if (b.match(/immobilier|agence|bien|appartement|maison/)) return SECTOR_SUGGESTIONS.realestate;
   if (b.match(/hôtel|hébergement|chambre|réservation|séjour/)) return SECTOR_SUGGESTIONS.hotel;
   if (b.match(/fitness|sport|gym|salle|coach|musculation/)) return SECTOR_SUGGESTIONS.fitness;
+  if (b.match(/portfolio|photographe|designer|artiste|créatif|freelance/)) return SECTOR_SUGGESTIONS.portfolio;
+  if (b.match(/association|ong|humanitaire|bénévolat|don|fondation/)) return SECTOR_SUGGESTIONS.nonprofit;
+  if (b.match(/dashboard|admin|gestion|back.?office|erp|tableau de bord|crm/)) return SECTOR_SUGGESTIONS.dashboard;
   return SECTOR_SUGGESTIONS.default;
 }
 
@@ -609,40 +680,60 @@ function detectAffectedFiles(message) {
     mainJsx: false,
     appJsx: false,
     indexCss: false,
-    components: [], // list of component names to modify
-    pages: []       // list of page names to modify
+    components: [],
+    pages: []
   };
 
-  // CSS/style changes
-  if (m.match(/couleur|color|css|style|design|police|font|thème|dark|theme|tailwind/)) {
+  // CSS/style/theme changes
+  if (m.match(/couleur|color|css|style|police|font|thème|dark|theme|tailwind|palette|gradient|ombre|shadow|spacing|margin|padding/)) {
     files.indexCss = true;
   }
-  // Layout/header/footer changes
-  if (m.match(/header|menu|navigation|navbar|nav/)) {
+  // Layout/header changes
+  if (m.match(/header|navbar|barre de navigation|logo|menu principal/)) {
     files.components.push('Header');
   }
-  if (m.match(/footer|pied de page/)) {
+  // Footer changes
+  if (m.match(/footer|pied de page|copyright|mentions légales/)) {
     files.components.push('Footer');
   }
-  // Backend changes
-  if (m.match(/api|route|endpoint|base de données|table|sql|auth|login|password|email|envoi|notification|upload|pdf|stripe|paiement|webhook|socket|temps réel|chat|export|import|middleware/)) {
+  // Backend/API changes
+  if (m.match(/api|endpoint|base de données|table|sql|auth|login|password|envoi|notification|upload|pdf|stripe|paiement|webhook|socket|temps réel|chat|export csv|import csv|middleware|serveur|backend|route api/)) {
     files.serverJs = true;
   }
-  // Package changes
-  if (m.match(/package|dépendance|module|install|npm|version/)) {
+  // Package/dependency changes
+  if (m.match(/package|dépendance|module|install|npm|version|librairie/)) {
     files.packageJson = true;
   }
-  // Routing changes
-  if (m.match(/route|page|navigation|lien|menu/)) {
+  // Vite/build config
+  if (m.match(/vite|proxy|build|hmr|config vite/)) {
+    files.viteConfig = true;
+  }
+  // HTML meta/title changes
+  if (m.match(/title|titre page|meta|favicon|og:|open graph|seo head/)) {
+    files.indexHtml = true;
+  }
+  // React routing / page addition
+  if (m.match(/nouvelle page|ajouter.*page|route react|navigation|lien|menu/)) {
     files.appJsx = true;
   }
-  // If adding a feature, likely touches backend + new components
-  if (m.match(/ajoute|ajout|crée|créer|intègre|implémente|nouveau|nouvelle/)) {
+  // Feature addition — likely touches backend + components + routing
+  if (m.match(/ajoute|ajout|crée|créer|intègre|implémente|nouveau|nouvelle|construis/)) {
     files.serverJs = true;
     files.appJsx = true;
   }
+  // Specific page mentions
+  if (m.match(/page d'accueil|home|hero|landing/)) files.pages.push('Home');
+  if (m.match(/contact|formulaire de contact/)) files.pages.push('Contact');
+  if (m.match(/à propos|about/)) files.pages.push('About');
+  if (m.match(/menu|carte|plats/)) files.pages.push('Menu');
+  if (m.match(/réservation|booking/)) files.pages.push('Reservation');
+  if (m.match(/galerie|gallery|photos/)) files.pages.push('Gallery');
+  if (m.match(/pricing|tarifs|abonnement/)) files.pages.push('Pricing');
+
   // If nothing detected, assume component-level change
-  if (!files.packageJson && !files.serverJs && !files.indexCss && files.components.length === 0 && files.pages.length === 0 && !files.appJsx) {
+  const hasAny = files.packageJson || files.serverJs || files.indexCss || files.viteConfig ||
+    files.indexHtml || files.appJsx || files.components.length > 0 || files.pages.length > 0;
+  if (!hasAny) {
     files.appJsx = true;
   }
   return files;
@@ -699,7 +790,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     // Determine which files to send
     const filesToSend = [];
-    const isMajor = /backend|dashboard|admin|complet|système|fonctionnalit/i.test(userMessage);
+    const isMajor = /redesign complet|refonte|tout changer|full rewrite|ajoute.*dashboard|système complet|erp|multi.?rôle/i.test(userMessage);
 
     if (isMajor) {
       // Send all files for major changes
@@ -750,7 +841,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
   if (messages && messages.length > 0) {
     const chatMessages = messages.filter(m => !m.content.startsWith('### ')).slice(-4);
     chatMessages.forEach(m => {
-      context.push({ role: m.role, content: m.content.substring(0, 500) });
+      context.push({ role: m.role, content: m.content.substring(0, 1000) });
     });
   }
 
