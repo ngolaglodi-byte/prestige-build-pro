@@ -1821,8 +1821,11 @@ function writeGeneratedFiles(projectDir, code) {
     const newlineIdx = section.indexOf('\n');
     if (newlineIdx === -1) continue;
     let filename = section.substring(0, newlineIdx).trim();
-    const content = section.substring(newlineIdx + 1).trim();
 
+    // Skip DIFF markers (handled by applyDiffs)
+    if (filename.startsWith('DIFF ')) continue;
+
+    let content = section.substring(newlineIdx + 1).trim();
     if (!filename || !content) continue;
 
     // Map public/index.html → index.html (React projects have index.html at root)
@@ -1835,6 +1838,10 @@ function writeGeneratedFiles(projectDir, code) {
       console.log(`[WriteFiles] Skipping invalid file: ${filename}`);
       continue;
     }
+
+    // Clean Claude artifacts from file content before writing
+    content = cleanGeneratedContent(content);
+    if (!content) continue;
 
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
@@ -2931,27 +2938,32 @@ function extractCredentials(code) {
 
 function cleanGeneratedContent(content) {
   if (!content) return '';
-  
+
   let cleaned = content;
-  
-  // Combined regex to remove markdown code block markers in one pass:
-  // - Opening markers: ```javascript, ```js, ```json, etc. at start of line
-  // - Closing markers: ``` at end of line
-  // - Standalone ``` markers on their own line (indicating code block boundaries)
+
+  // 1) Remove markdown code block markers (```javascript, ```, etc.)
   cleaned = cleaned.replace(/^```(?:javascript|js|json|html|css|jsx|tsx|typescript|ts|bash|sh|sql|yaml|yml|xml|text|txt|plain)?\s*$/gm, '');
-  
-  // CORRECTION 3: Fix Express wildcard patterns - use regex for path-to-regexp compatibility
-  // Replace wildcard routes ('*' or '/*') with regex /.*/ to avoid path-to-regexp errors
-  // Match exactly '*' or '/*' patterns, not empty strings or other patterns like '/**'
+
+  // 2) Remove SUGGESTIONS: lines (Claude appends these inside file content)
+  cleaned = cleaned.replace(/^SUGGESTIONS:.*$/gm, '');
+
+  // 3) Remove stray explanatory text that isn't code
+  //    Lines starting with "Voici", "Ce fichier", "J'ai", "Voilà", "Note:", "---", "**"
+  cleaned = cleaned.replace(/^(?:Voici|Ce fichier|Ce composant|J'ai |Voilà|Note\s*:|---+|\*\*[^*]+\*\*\s*$|Ce code|Ci-dessus|Ci-dessous|En résumé).+$/gm, '');
+
+  // 4) Remove inline backtick artifacts that break JSX (```)
+  cleaned = cleaned.replace(/^`{3,}$/gm, '');
+
+  // 5) Fix Express wildcard patterns
   cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
   cleaned = cleaned.replace(/app\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "app.use(/.*/,");
   cleaned = cleaned.replace(/router\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "router.get(/.*/,");
   cleaned = cleaned.replace(/router\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "router.use(/.*/,");
-  
-  // Fix Express 5.x version references to use 4.18.2
+
+  // 6) Fix Express 5.x version references
   cleaned = cleaned.replace(/"express"\s*:\s*"\^?5[^"]*"/g, '"express": "4.18.2"');
-  
-  // Ensure all dependency versions are pinned (no ^ prefix) for critical packages
+
+  // 7) Pin critical dependency versions (remove ^ prefix)
   cleaned = cleaned.replace(/"express"\s*:\s*"\^4/g, '"express": "4');
   cleaned = cleaned.replace(/"better-sqlite3"\s*:\s*"\^/g, '"better-sqlite3": "');
   cleaned = cleaned.replace(/"bcryptjs"\s*:\s*"\^/g, '"bcryptjs": "');
@@ -2959,10 +2971,11 @@ function cleanGeneratedContent(content) {
   cleaned = cleaned.replace(/"cors"\s*:\s*"\^/g, '"cors": "');
   cleaned = cleaned.replace(/"helmet"\s*:\s*"\^/g, '"helmet": "');
   cleaned = cleaned.replace(/"compression"\s*:\s*"\^/g, '"compression": "');
-  
-  // Remove any leading/trailing whitespace and blank lines at start/end
+
+  // 8) Remove consecutive blank lines (keep max 1)
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+
   cleaned = cleaned.trim();
-  
   return cleaned;
 }
 
