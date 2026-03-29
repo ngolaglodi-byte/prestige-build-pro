@@ -3299,6 +3299,10 @@ Règles d'intégration automatique :
             if (fs.existsSync(path.join(projDir, 'src'))) {
               execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
             }
+            // Push index.html (may have custom title or meta tags)
+            if (fs.existsSync(path.join(projDir, 'index.html'))) {
+              execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+            }
             // Push server.js if valid
             if (fs.existsSync(path.join(projDir, 'server.js'))) {
               const { spawnSync } = require('child_process');
@@ -4538,6 +4542,10 @@ async function writeFilesToContainer(projectId, code) {
   // Copy into running container
   if (fs.existsSync(path.join(projectDir, 'src'))) {
     execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+  }
+  // Copy index.html (may have custom title or meta tags)
+  if (fs.existsSync(path.join(projectDir, 'index.html'))) {
+    execSync(`docker cp ${projectDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
   }
   if (fs.existsSync(path.join(projectDir, 'server.js'))) {
     // Validate syntax before copying
