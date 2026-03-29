@@ -5401,9 +5401,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Build the target path: strip /run/{id} prefix, preserve query string
-    // but remove the auth token param (no need to leak it to the container)
-    let targetPath = runMatch[2] || '/';
+    // Build the target path: keep /run/{id}/ prefix (Vite uses --base /run/{id}/)
+    // Remove auth token from query string (no need to leak it to the container)
+    let targetPath = `/run/${projectId}${runMatch[2] || '/'}`;
     targetPath = targetPath.replace(/([?&])token=[^&]*/g, (m) => {
       return m.startsWith('?') ? '?' : '';
     }).replace(/\?&/, '?').replace(/\?$/, '');
@@ -7200,7 +7200,7 @@ server.on('upgrade', (req, socket, head) => {
     const runMatch = url.match(/^\/run\/(\d+)\//);
     if (!runMatch) { socket.destroy(); return; }
     projectId = runMatch[1];
-    targetPath = url.replace(`/run/${projectId}`, '') || '/';
+    targetPath = url; // Keep full path — Vite uses --base /run/{id}/
   }
 
   const containerHost = getContainerHostname(projectId);
