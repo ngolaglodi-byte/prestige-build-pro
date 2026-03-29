@@ -172,11 +172,23 @@ const TOKEN_PRICING = {
   'default': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 }
 };
 
+// Classify operation complexity for smart tracking
+function classifyComplexity(operation, inputTokens, outputTokens) {
+  const total = inputTokens + outputTokens;
+  if (operation === 'chat') return 'chat';
+  if (operation === 'auto-correct') return 'fix';
+  if (operation === 'generate-plan') return 'plan';
+  if (total < 5000) return 'simple';     // color change, text edit
+  if (total < 20000) return 'moderate';   // add component, modify page
+  if (total < 50000) return 'complex';    // full page, backend feature
+  return 'heavy';                          // full project generation
+}
+
 function trackTokenUsage(userId, projectId, operation, model, usage) {
   if (!db || !usage) return;
   const inputTokens = usage.input_tokens || 0;
   const outputTokens = usage.output_tokens || 0;
-  const cacheRead = usage.cache_read_input_tokens || usage.cache_creation_input_tokens || 0;
+  const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheWrite = usage.cache_creation_input_tokens || 0;
 
   const pricing = TOKEN_PRICING[model] || TOKEN_PRICING['default'];
@@ -186,11 +198,12 @@ function trackTokenUsage(userId, projectId, operation, model, usage) {
     (cacheRead / 1_000_000) * pricing.cache_read +
     (cacheWrite / 1_000_000) * pricing.cache_write
   );
+  const complexity = classifyComplexity(operation, inputTokens, outputTokens);
 
   try {
     db.prepare('INSERT INTO token_usage (user_id, project_id, operation, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(userId || null, projectId || null, operation, model, inputTokens, outputTokens, cacheRead, cacheWrite, Math.round(costUsd * 100000) / 100000);
-    console.log(`[Tokens] ${operation}: ${inputTokens}in + ${outputTokens}out = $${costUsd.toFixed(4)} (user:${userId} proj:${projectId})`);
+      .run(userId || null, projectId || null, `${operation}:${complexity}`, model, inputTokens, outputTokens, cacheRead, cacheWrite, Math.round(costUsd * 100000) / 100000);
+    console.log(`[Tokens] ${operation}:${complexity} ${inputTokens}in+${outputTokens}out=$${costUsd.toFixed(4)} (u:${userId} p:${projectId})`);
   } catch (e) {
     console.error('[Tokens] Track error:', e.message);
   }
@@ -206,8 +219,8 @@ function checkUserQuota(userId) {
   const dailyLimit = user.daily_generation_limit || 50;
   const monthlyLimit = user.monthly_generation_limit || 500;
 
-  const todayCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation IN ('generate','modify') AND created_at >= date('now')").get(userId)?.c || 0;
-  const monthCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation IN ('generate','modify') AND created_at >= date('now','start of month')").get(userId)?.c || 0;
+  const todayCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation LIKE 'generate%' AND created_at >= date('now')").get(userId)?.c || 0;
+  const monthCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation LIKE 'generate%' AND created_at >= date('now','start of month')").get(userId)?.c || 0;
 
   if (todayCount >= dailyLimit) {
     return { allowed: false, reason: `Limite quotidienne atteinte (${dailyLimit} générations/jour). Réessayez demain.`, daily: todayCount, dailyLimit };
@@ -5707,9 +5720,11 @@ const server = http.createServer(async (req, res) => {
     const byUser = db.prepare("SELECT u.email, u.name, COUNT(*) as calls, COALESCE(SUM(t.input_tokens),0) as inp, COALESCE(SUM(t.output_tokens),0) as out, COALESCE(SUM(t.cost_usd),0) as cost FROM token_usage t LEFT JOIN users u ON t.user_id=u.id WHERE t.created_at >= date('now','start of month') GROUP BY t.user_id ORDER BY cost DESC").all();
     const byProject = db.prepare("SELECT p.title, t.project_id, COUNT(*) as calls, COALESCE(SUM(t.input_tokens),0) as inp, COALESCE(SUM(t.output_tokens),0) as out, COALESCE(SUM(t.cost_usd),0) as cost FROM token_usage t LEFT JOIN projects p ON t.project_id=p.id WHERE t.created_at >= date('now','start of month') AND t.project_id IS NOT NULL GROUP BY t.project_id ORDER BY cost DESC LIMIT 20").all();
     const recentCalls = db.prepare("SELECT t.*, u.email FROM token_usage t LEFT JOIN users u ON t.user_id=u.id ORDER BY t.id DESC LIMIT 50").all();
+    const byComplexity = db.prepare("SELECT operation, COUNT(*) as calls, COALESCE(SUM(cost_usd),0) as cost FROM token_usage WHERE created_at >= date('now','start of month') GROUP BY operation ORDER BY cost DESC").all();
     json(res, 200, {
       today: { input_tokens: today.inp, output_tokens: today.out, cost_usd: Math.round(today.cost * 10000) / 10000, api_calls: today.calls },
       month: { input_tokens: month.inp, output_tokens: month.out, cost_usd: Math.round(month.cost * 10000) / 10000, api_calls: month.calls },
+      by_complexity: byComplexity.map(c => ({ ...c, cost: Math.round(c.cost * 10000) / 10000 })),
       by_user: byUser.map(u => ({ ...u, cost: Math.round(u.cost * 10000) / 10000 })),
       by_project: byProject.map(p => ({ ...p, cost: Math.round(p.cost * 10000) / 10000 })),
       recent: recentCalls.slice(0, 20)
@@ -5875,6 +5890,135 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       console.error('[GitHub Export] Error:', e.message);
       json(res, 500, { error: 'Erreur export GitHub: ' + e.message });
+    }
+    return;
+  }
+
+  // ─── GITHUB PULL (sync from GitHub → project) ───
+  if (url.match(/^\/api\/projects\/\d+\/github-pull$/) && req.method === 'POST') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    if (!p.github_repo) { json(res, 400, { error: 'Aucun repo GitHub lié. Exportez d\'abord.' }); return; }
+    const cfg = db.prepare('SELECT github_token, github_username, github_org FROM github_config WHERE id=1').get();
+    if (!cfg) { json(res, 400, { error: 'GitHub non configuré.' }); return; }
+
+    const tok = decryptValue(cfg.github_token);
+    // Extract owner/repo from URL: https://github.com/owner/repo
+    const repoMatch = p.github_repo.match(/github\.com\/([^/]+)\/([^/]+)/);
+    if (!repoMatch) { json(res, 400, { error: 'URL GitHub invalide.' }); return; }
+    const [, ghOwner, ghRepo] = repoMatch;
+
+    try {
+      console.log(`[GitHub Pull] Fetching ${ghOwner}/${ghRepo} for project ${pid}`);
+      const ghApi = (apiPath) => new Promise((resolve, reject) => {
+        const req = https.request({ hostname: 'api.github.com', path: apiPath, method: 'GET',
+          headers: { 'Authorization': `token ${tok}`, 'User-Agent': 'PrestigeBuildPro' }
+        }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } }); });
+        req.on('error', reject); req.end();
+      });
+
+      // Get repo tree recursively
+      const branch = await ghApi(`/repos/${ghOwner}/${ghRepo}/git/ref/heads/main`);
+      if (!branch.object?.sha) { json(res, 400, { error: 'Branche main introuvable.' }); return; }
+      const tree = await ghApi(`/repos/${ghOwner}/${ghRepo}/git/trees/${branch.object.sha}?recursive=1`);
+      if (!tree.tree) { json(res, 400, { error: 'Arborescence introuvable.' }); return; }
+
+      // Download each file
+      const projDir = path.join(DOCKER_PROJECTS_DIR, String(pid));
+      let filesUpdated = 0;
+      const validFiles = tree.tree.filter(f => f.type === 'blob' && isValidProjectFile(f.path));
+
+      for (const file of validFiles) {
+        const blob = await ghApi(`/repos/${ghOwner}/${ghRepo}/git/blobs/${file.sha}`);
+        if (blob.content) {
+          const content = Buffer.from(blob.content, blob.encoding || 'base64').toString('utf8');
+          const filePath = path.join(projDir, file.path);
+          const fileDir = path.dirname(filePath);
+          if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+          fs.writeFileSync(filePath, content);
+          filesUpdated++;
+        }
+      }
+
+      // Re-read all files and update DB
+      const allFiles = readProjectFilesRecursive(projDir);
+      const newCode = formatProjectCode(allFiles);
+      db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now') WHERE id=?").run(newCode, pid);
+      saveProjectVersion(pid, newCode, user.id, `Pull depuis GitHub ${ghOwner}/${ghRepo}`);
+      console.log(`[GitHub Pull] Updated ${filesUpdated} files for project ${pid}`);
+
+      json(res, 200, { ok: true, filesUpdated, files: validFiles.map(f => f.path) });
+    } catch (e) {
+      console.error('[GitHub Pull] Error:', e.message);
+      json(res, 500, { error: 'Erreur pull GitHub: ' + e.message });
+    }
+    return;
+  }
+
+  // ─── GITHUB PUSH (sync project → GitHub, update existing repo) ───
+  if (url.match(/^\/api\/projects\/\d+\/github-push$/) && req.method === 'POST') {
+    const pid = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    if (!p.github_repo) { json(res, 400, { error: 'Aucun repo GitHub lié.' }); return; }
+    const cfg = db.prepare('SELECT github_token, github_username, github_org FROM github_config WHERE id=1').get();
+    if (!cfg) { json(res, 400, { error: 'GitHub non configuré.' }); return; }
+
+    const tok = decryptValue(cfg.github_token);
+    const repoMatch = p.github_repo.match(/github\.com\/([^/]+)\/([^/]+)/);
+    if (!repoMatch) { json(res, 400, { error: 'URL GitHub invalide.' }); return; }
+    const [, ghOwner, ghRepo] = repoMatch;
+    const body = await getBody(req);
+    const commitMsg = body.message || `Update via Prestige Build Pro — ${new Date().toISOString().split('T')[0]}`;
+
+    try {
+      console.log(`[GitHub Push] Pushing to ${ghOwner}/${ghRepo} for project ${pid}`);
+      const ghApi = (method, apiPath, payload) => new Promise((resolve, reject) => {
+        const data = payload ? JSON.stringify(payload) : '';
+        const req = https.request({ hostname: 'api.github.com', path: apiPath, method,
+          headers: { 'Authorization': `token ${tok}`, 'User-Agent': 'PrestigeBuildPro', 'Content-Type': 'application/json', ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) }
+        }, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(d); } }); });
+        req.on('error', reject); if (data) req.write(data); req.end();
+      });
+
+      // Get current HEAD
+      const ref = await ghApi('GET', `/repos/${ghOwner}/${ghRepo}/git/ref/heads/main`);
+      const parentSha = ref.object?.sha;
+      if (!parentSha) { json(res, 400, { error: 'Branche main introuvable.' }); return; }
+
+      // Collect project files
+      const projDir = path.join(DOCKER_PROJECTS_DIR, String(pid));
+      const filesToPush = {};
+      const collectFiles = (dir, prefix) => {
+        if (!fs.existsSync(dir)) return;
+        fs.readdirSync(dir).forEach(f => {
+          if (['node_modules', '.git', 'data', 'dist', 'Dockerfile', 'start-dev.sh', 'BRIEF.md', 'CLAUDE.md', 'READY', 'ERROR'].includes(f)) return;
+          const fp = path.join(dir, f);
+          const rel = prefix ? prefix + '/' + f : f;
+          if (fs.statSync(fp).isDirectory()) collectFiles(fp, rel);
+          else filesToPush[rel] = fs.readFileSync(fp);
+        });
+      };
+      collectFiles(projDir, '');
+
+      // Create blobs + tree + commit
+      const treeItems = [];
+      for (const [fpath, content] of Object.entries(filesToPush)) {
+        const blob = await ghApi('POST', `/repos/${ghOwner}/${ghRepo}/git/blobs`, { content: content.toString('base64'), encoding: 'base64' });
+        treeItems.push({ path: fpath, mode: '100644', type: 'blob', sha: blob.sha });
+      }
+      const treeRes = await ghApi('POST', `/repos/${ghOwner}/${ghRepo}/git/trees`, { tree: treeItems });
+      const commitRes = await ghApi('POST', `/repos/${ghOwner}/${ghRepo}/git/commits`, {
+        message: commitMsg, tree: treeRes.sha, parents: [parentSha]
+      });
+      await ghApi('PATCH', `/repos/${ghOwner}/${ghRepo}/git/refs/heads/main`, { sha: commitRes.sha });
+
+      console.log(`[GitHub Push] Pushed ${Object.keys(filesToPush).length} files`);
+      json(res, 200, { ok: true, commitSha: commitRes.sha, filesPushed: Object.keys(filesToPush).length });
+    } catch (e) {
+      console.error('[GitHub Push] Error:', e.message);
+      json(res, 500, { error: 'Erreur push GitHub: ' + e.message });
     }
     return;
   }
