@@ -1377,8 +1377,43 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   savePartialToDb();
   console.log(`[Gen] Phase 2+3 done in ${((Date.now()-phase2Start)/1000).toFixed(0)}s`);
 
+  // ── Verify imports: find missing files referenced in App.jsx and generate them ──
+  writeDefaultReactProject(projectDir); // fill basic defaults first
+  const missingFiles = findMissingImports(projectDir);
+  if (missingFiles.length > 0) {
+    job.progressMessage = `Génération de ${missingFiles.length} fichier(s) manquant(s)...`;
+    console.log(`[Gen] Missing imports: ${missingFiles.join(', ')}`);
+    const fixPrompt = `Génère ces fichiers React manquants pour le projet.
+
+Brief: ${brief}
+
+Fichiers à générer avec ### markers :
+${missingFiles.map(f => `### ${f}`).join('\n')}
+
+Chaque fichier : export default function, TailwindCSS, lucide-react, contenu professionnel.`;
+    try {
+      const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000, { ...tracking, operation: 'generate' });
+      allCode = mergeModifiedCode(allCode, fixCode);
+      writeGeneratedFiles(projectDir, fixCode);
+      console.log(`[Gen] Fixed ${missingFiles.length} missing imports`);
+    } catch (e) {
+      console.warn(`[Gen] Could not generate missing files: ${e.message}`);
+      // Write stub components so Vite doesn't crash
+      for (const f of missingFiles) {
+        const fp = path.join(projectDir, f);
+        if (!fs.existsSync(fp)) {
+          const name = path.basename(f, '.jsx');
+          const fpDir = path.dirname(fp);
+          if (!fs.existsSync(fpDir)) fs.mkdirSync(fpDir, { recursive: true });
+          fs.writeFileSync(fp, `import React from 'react';\n\nexport default function ${name}() {\n  return <div className="p-8"><h2 className="text-xl font-bold">${name}</h2></div>;\n}\n`);
+          console.log(`[Gen] Wrote stub: ${f}`);
+        }
+      }
+    }
+    savePartialToDb();
+  }
+
   // ── Finalize ──
-  writeDefaultReactProject(projectDir);
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
   job.code = allCode;
@@ -1387,6 +1422,53 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   const totalSec = ((Date.now() - startTime) / 1000).toFixed(0);
   job.progressMessage = `Projet React généré en ${totalSec}s !`;
   console.log(`[Gen] COMPLETE: ${Object.keys(finalFiles).length} files, ${allCode.length} chars, ${totalSec}s total`);
+}
+
+// Scan App.jsx and all components/pages for missing imports
+function findMissingImports(projectDir) {
+  const missing = [];
+  const srcDir = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDir)) return missing;
+
+  // Collect all .jsx files to scan
+  const filesToScan = [];
+  const appJsx = path.join(srcDir, 'App.jsx');
+  if (fs.existsSync(appJsx)) filesToScan.push(appJsx);
+  for (const sub of ['components', 'pages']) {
+    const dir = path.join(srcDir, sub);
+    if (fs.existsSync(dir)) {
+      fs.readdirSync(dir).filter(f => f.endsWith('.jsx')).forEach(f => filesToScan.push(path.join(dir, f)));
+    }
+  }
+
+  // Extract relative imports and check if target exists
+  const checked = new Set();
+  for (const file of filesToScan) {
+    const content = fs.readFileSync(file, 'utf8');
+    const fileDir = path.dirname(file);
+    // Match: import X from './path' or import X from '../path'
+    const importRegex = /import\s+\w+\s+from\s+['"](\.[^'"]+)['"]/g;
+    let match;
+    while ((match = importRegex.exec(content)) !== null) {
+      const importPath = match[1];
+      // Resolve to absolute path, try .jsx extension
+      let resolved = path.resolve(fileDir, importPath);
+      if (!resolved.endsWith('.jsx') && !resolved.endsWith('.js') && !resolved.endsWith('.css')) {
+        resolved += '.jsx';
+      }
+      if (!checked.has(resolved)) {
+        checked.add(resolved);
+        if (!fs.existsSync(resolved)) {
+          // Convert back to project-relative path
+          const rel = path.relative(projectDir, resolved);
+          if (rel.startsWith('src/')) {
+            missing.push(rel);
+          }
+        }
+      }
+    }
+  }
+  return missing;
 }
 
 // Write ### marked code sections to files in the project directory
