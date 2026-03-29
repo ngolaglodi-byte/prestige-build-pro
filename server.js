@@ -1267,39 +1267,55 @@ function generateViaAPI(projectId, brief, jobId) {
 
 async function generateMultiTurn(projectId, brief, jobId, job, projectDir, systemBlocks) {
   let allCode = '';
+  const tracking = { userId: job.user_id, projectId };
+
+  // Helper: save partial code to DB after each successful phase
+  function savePartialToDb() {
+    try {
+      if (allCode.length > 0 && job.project_id) {
+        db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready' WHERE id=?").run(allCode, job.project_id);
+        console.log(`[MultiTurn] Saved ${allCode.length} chars to DB for project ${job.project_id}`);
+      }
+    } catch (e) { console.error('[MultiTurn] DB save error:', e.message); }
+  }
 
   // ── PHASE 1: Plan ──
   job.progressMessage = 'Prestige AI analyse le brief...';
   console.log(`[MultiTurn] Phase 1: Planning`);
 
-  const planPrompt = `Analyse ce brief et retourne UNIQUEMENT un plan JSON (pas de code) :
+  const planPrompt = `Analyse ce brief et retourne UNIQUEMENT un plan JSON (pas de code).
+IMPORTANT: Maximum 5 composants et 4 pages. Un projet simple et efficace.
 
 Brief: ${brief}
 
 Retourne ce JSON exact (rien d'autre) :
 {
   "projectName": "nom-du-projet",
-  "components": ["Header", "Footer", "HeroSection", ...],
-  "pages": ["Home", "About", ...],
-  "apiRoutes": ["/api/auth/login", "/api/items", ...],
-  "dbTables": ["users", "items", ...],
+  "components": ["Header", "Footer", "HeroSection"],
+  "pages": ["Home", "Contact"],
+  "apiRoutes": ["/api/auth/login", "/api/items"],
+  "dbTables": ["users", "items"],
   "adminEmail": "admin@project.com"
-}`;
+}
+
+RÈGLES: max 5 composants, max 4 pages. Pas plus.`;
 
   let plan;
   try {
-    const tracking = { userId: job.user_id, projectId, operation: 'generate-plan' };
-    const planText = await callClaudeAPI(systemBlocks, [{ role: 'user', content: planPrompt }], 2000, tracking);
-    // Extract JSON from response (might have text around it)
+    const planText = await callClaudeAPI(systemBlocks, [{ role: 'user', content: planPrompt }], 2000, { ...tracking, operation: 'generate-plan' });
     const jsonMatch = planText.match(/\{[\s\S]*\}/);
     plan = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    // Enforce limits
+    if (plan) {
+      plan.components = (plan.components || []).slice(0, 5);
+      plan.pages = (plan.pages || []).slice(0, 4);
+    }
     console.log(`[MultiTurn] Plan: ${plan?.components?.length || 0} components, ${plan?.pages?.length || 0} pages`);
   } catch (e) {
-    console.warn(`[MultiTurn] Plan parsing failed: ${e.message}, using defaults`);
+    console.warn(`[MultiTurn] Plan failed: ${e.message}, using defaults`);
     plan = null;
   }
 
-  // Fallback plan if parsing failed
   if (!plan || !plan.components) {
     plan = {
       projectName: 'project',
@@ -1311,118 +1327,141 @@ Retourne ce JSON exact (rien d'autre) :
     };
   }
 
-  // ── PHASE 2: Infrastructure files ──
-  job.progressMessage = 'Génération de l\'infrastructure...';
-  console.log(`[MultiTurn] Phase 2: Infrastructure (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css)`);
+  // ── PHASE 2: Infrastructure (6 files) ──
+  job.progressMessage = 'Génération du backend et configuration...';
+  console.log(`[MultiTurn] Phase 2: Infrastructure`);
 
   const infraPrompt = `Génère les fichiers d'infrastructure pour ce projet React+Vite+TailwindCSS.
 
 Brief: ${brief}
-Nom du projet: ${plan.projectName}
-Tables SQLite: ${plan.dbTables.join(', ')}
-Routes API: ${plan.apiRoutes.join(', ')}
-Email admin: ${plan.adminEmail}
+Nom: ${plan.projectName}
+Tables: ${plan.dbTables.join(', ')}
+Routes: ${plan.apiRoutes.join(', ')}
+Admin: ${plan.adminEmail}
 
 Génère EXACTEMENT ces 6 fichiers avec ### markers :
 ### package.json
-### vite.config.js
+### vite.config.js  (OBLIGATOIRE: allowedHosts: true dans server config)
 ### index.html
 ### server.js
 ### src/main.jsx
 ### src/index.css
 
-Le server.js doit avoir TOUTES les tables et routes API. C'est le backend COMPLET.
-À la fin de server.js : // CREDENTIALS: email=${plan.adminEmail} password=[MotDePasse fort]`;
+server.js = backend COMPLET avec toutes les tables, routes, auth JWT.
+Fin de server.js : // CREDENTIALS: email=${plan.adminEmail} password=[MotDePasse]`;
 
   try {
-    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000, { userId: job.user_id, projectId, operation: 'generate' });
+    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000, { ...tracking, operation: 'generate' });
     allCode = infraCode;
     writeGeneratedFiles(projectDir, infraCode);
     job.code = allCode;
     job.progress = allCode.length;
-    console.log(`[MultiTurn] Infrastructure: ${infraCode.length} chars`);
+    savePartialToDb();
+    console.log(`[MultiTurn] Phase 2 OK: ${infraCode.length} chars`);
   } catch (e) {
-    console.error(`[MultiTurn] Infrastructure failed: ${e.message}`);
+    console.error(`[MultiTurn] Phase 2 failed: ${e.message}`);
     job.status = 'error';
-    job.error = `Erreur génération infrastructure: ${e.message}`;
+    job.error = `Erreur infrastructure: ${e.message}`;
     return;
   }
 
-  // ── PHASE 3: App.jsx + Components + Pages ──
-  job.progressMessage = 'Génération des composants React...';
-  const componentsList = plan.components.map(c => `src/components/${c}.jsx`).join(', ');
-  const pagesList = plan.pages.map(p => `src/pages/${p}.jsx`).join(', ');
-  console.log(`[MultiTurn] Phase 3: Components (${plan.components.length}) + Pages (${plan.pages.length})`);
+  // ── PHASE 3a: App.jsx + Layout components (Header, Footer) ──
+  job.progressMessage = 'Génération de la navigation...';
+  console.log(`[MultiTurn] Phase 3a: App.jsx + Header + Footer`);
 
-  const uiPrompt = `Génère src/App.jsx et tous les composants et pages React pour ce projet.
+  const layoutPrompt = `Génère le layout React (navigation, routing, footer) pour ce projet.
 
 Brief: ${brief}
 Nom: ${plan.projectName}
+Pages prévues: ${plan.pages.join(', ')}
 
-Fichiers d'infrastructure déjà générés (NE PAS les retourner) :
-- package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css
+Génère ces fichiers avec ### markers :
+### src/App.jsx — BrowserRouter avec routes : ${plan.pages.map(p => `"/${p.toLowerCase()}" → ${p}`).join(', ')} et "/" → Home
+### src/components/Header.jsx — header responsive, menu hamburger mobile, liens vers toutes les pages
+### src/components/Footer.jsx — footer professionnel avec copyright et liens
 
-Génère MAINTENANT ces fichiers avec ### markers :
-### src/App.jsx — BrowserRouter avec routes vers toutes les pages
-${plan.components.map(c => `### src/components/${c}.jsx`).join('\n')}
-${plan.pages.map(p => `### src/pages/${p}.jsx`).join('\n')}
-
-Chaque composant : export default function, TailwindCSS, icônes lucide-react, responsive.
-Chaque page : contenu riche et réaliste, zéro lorem ipsum, données de démo.
-Les pages font fetch('/api/...') pour les données dynamiques.`;
+Chaque fichier : export default function, TailwindCSS, lucide-react pour icônes.`;
 
   try {
-    const uiCode = await callClaudeAPI(systemBlocks, [
-      { role: 'user', content: infraPrompt },
-      { role: 'assistant', content: 'Infrastructure générée. Les 6 fichiers (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css) sont prêts.' },
-      { role: 'user', content: uiPrompt }
-    ], 64000, { userId: job.user_id, projectId, operation: 'generate' });
-    allCode = mergeModifiedCode(allCode, uiCode);
-    writeGeneratedFiles(projectDir, uiCode);
+    const layoutCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: layoutPrompt }], 16000, { ...tracking, operation: 'generate' });
+    allCode = mergeModifiedCode(allCode, layoutCode);
+    writeGeneratedFiles(projectDir, layoutCode);
     job.code = allCode;
     job.progress = allCode.length;
-    console.log(`[MultiTurn] UI: ${uiCode.length} chars, total: ${allCode.length} chars`);
+    savePartialToDb();
+    console.log(`[MultiTurn] Phase 3a OK: +${layoutCode.length} chars`);
   } catch (e) {
-    console.error(`[MultiTurn] Phase 3 UI failed: ${e.message}`);
-    console.log(`[MultiTurn] Retrying Phase 3 with smaller scope...`);
+    console.error(`[MultiTurn] Phase 3a failed: ${e.message}`);
+    // Continue — defaults will fill App.jsx
+  }
 
-    // Retry with just App.jsx + 2 key components (smaller request)
-    try {
-      job.progressMessage = 'Nouvelle tentative composants...';
-      const retryPrompt = `Génère src/App.jsx et les composants principaux pour ce projet.
+  // ── PHASE 3b: Pages ──
+  job.progressMessage = 'Génération des pages...';
+  const pagesToGen = plan.pages.slice(0, 4);
+  console.log(`[MultiTurn] Phase 3b: ${pagesToGen.length} pages`);
+
+  const pagesPrompt = `Génère les pages React pour ce projet.
+
 Brief: ${brief}
 Nom: ${plan.projectName}
 
 Génère ces fichiers avec ### markers :
-### src/App.jsx — BrowserRouter avec route "/" vers Home
-### src/components/Header.jsx — header responsive avec navigation
-### src/components/Footer.jsx — footer avec copyright
-### src/pages/Home.jsx — page d'accueil complète avec hero, sections principales
+${pagesToGen.map(p => `### src/pages/${p}.jsx — page ${p} complète, contenu riche et réaliste`).join('\n')}
 
-Chaque fichier : export default function, TailwindCSS, lucide-react pour icônes.
-Contenu professionnel et réaliste, zéro lorem ipsum.`;
+Chaque page : export default function, TailwindCSS, lucide-react.
+Contenu professionnel en français, zéro lorem ipsum, données de démo.
+Les pages appellent fetch('/api/...') pour les données dynamiques.`;
 
-      const retryCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: retryPrompt }], 32000, { userId: job.user_id, projectId, operation: 'generate' });
-      allCode = mergeModifiedCode(allCode, retryCode);
-      writeGeneratedFiles(projectDir, retryCode);
+  try {
+    const pagesCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 32000, { ...tracking, operation: 'generate' });
+    allCode = mergeModifiedCode(allCode, pagesCode);
+    writeGeneratedFiles(projectDir, pagesCode);
+    job.code = allCode;
+    job.progress = allCode.length;
+    savePartialToDb();
+    console.log(`[MultiTurn] Phase 3b OK: +${pagesCode.length} chars`);
+  } catch (e) {
+    console.error(`[MultiTurn] Phase 3b pages failed: ${e.message}`);
+  }
+
+  // ── PHASE 3c: Extra components (if any beyond Header/Footer) ──
+  const extraComponents = plan.components.filter(c => c !== 'Header' && c !== 'Footer').slice(0, 3);
+  if (extraComponents.length > 0) {
+    job.progressMessage = 'Génération des composants...';
+    console.log(`[MultiTurn] Phase 3c: ${extraComponents.length} extra components`);
+
+    const compsPrompt = `Génère ces composants React réutilisables.
+
+Brief: ${brief}
+
+Génère ces fichiers avec ### markers :
+${extraComponents.map(c => `### src/components/${c}.jsx`).join('\n')}
+
+Chaque composant : export default function, TailwindCSS, lucide-react.
+Design professionnel, responsive, contenu réaliste.`;
+
+    try {
+      const compsCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 16000, { ...tracking, operation: 'generate' });
+      allCode = mergeModifiedCode(allCode, compsCode);
+      writeGeneratedFiles(projectDir, compsCode);
       job.code = allCode;
       job.progress = allCode.length;
-      console.log(`[MultiTurn] Retry UI: ${retryCode.length} chars, total: ${allCode.length} chars`);
-    } catch (retryErr) {
-      console.error(`[MultiTurn] Retry also failed: ${retryErr.message}`);
-      // Still have infrastructure — fill defaults and continue
+      savePartialToDb();
+      console.log(`[MultiTurn] Phase 3c OK: +${compsCode.length} chars`);
+    } catch (e) {
+      console.error(`[MultiTurn] Phase 3c components failed: ${e.message}`);
     }
   }
 
   // ── Finalize ──
-  writeDefaultReactProject(projectDir); // fill any missing files (App.jsx, etc.)
-  // Re-read all files to get the complete picture including defaults
+  writeDefaultReactProject(projectDir);
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
   job.code = allCode;
+  savePartialToDb();
   job.status = 'done';
   job.progressMessage = 'Projet React généré avec succès !';
-  console.log(`[MultiTurn] Complete: ${Object.keys(finalFiles).length} files, ${allCode.length} chars total`);
+  console.log(`[MultiTurn] Complete: ${Object.keys(finalFiles).length} files, ${allCode.length} chars`);
 }
 
 // Write ### marked code sections to files in the project directory
