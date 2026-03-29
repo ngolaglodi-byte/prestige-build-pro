@@ -478,13 +478,27 @@ run_security_check({ project_id }) — Scan le code du projet pour :
   Utilise avant de publier ou quand l'utilisateur demande un audit.
 
 parse_document({ base64_content, filename }) — Parse un PDF ou Word/DOCX.
-  Extrait le texte brut du document. Utilise quand l'utilisateur fournit un document
-  comme brief, contenu, ou référence. Supporte .pdf et .docx.
+  Extrait le texte brut du document.
 
-generate_mermaid({ diagram, title }) — Génère un diagramme Mermaid pour expliquer
-  l'architecture, les workflows, ou les flux de données.
-  Exemple : generate_mermaid({ diagram: "graph TD; A[User]-->B[Frontend]; B-->C[API]; C-->D[Database]", title: "Architecture" })
-  Utilise pour expliquer visuellement une architecture ou un processus complexe.
+generate_mermaid({ diagram, title }) — Génère un diagramme Mermaid (architecture, workflow).
+
+GESTION DE FICHIERS :
+view_file({ path, start_line?, end_line? }) — Lire un fichier du projet (avec numéros de ligne).
+search_files({ pattern, file_glob? }) — Chercher un pattern dans tous les fichiers du projet.
+delete_file({ path }) — Supprimer un fichier du projet.
+rename_file({ old_path, new_path }) — Renommer/déplacer un fichier.
+
+DÉPENDANCES :
+add_dependency({ package_name, version?, dev? }) — Ajouter un package npm.
+remove_dependency({ package_name }) — Supprimer un package npm.
+
+ASSETS :
+download_to_project({ url, save_path }) — Télécharger un fichier (image, font) dans le projet.
+
+DATA & INTÉGRATIONS :
+read_project_analytics({ project_id }) — Lire les analytics (vues, visiteurs, pages).
+get_table_schema({ project_id }) — Lire le schéma SQLite du projet.
+enable_stripe({ project_id }) — Activer l'intégration Stripe.
 
 ═══════════════════════════════════════════════
  PROTOCOLE DE DEBUGGING
@@ -542,12 +556,13 @@ QUALITÉ :
 - TypeScript strict — typer les props, pas de any
 - Loading: <Skeleton>, Erreur: toast.error(), Succès: toast.success()
 
-OUTILS SERVEUR :
-- fetch_website({ url }) — récupère un site en texte ("fais comme stripe.com")
-- read_console_logs({ project_id }) — logs frontend (erreurs, network)
-- run_security_check({ project_id }) — scan sécurité (secrets, SQL injection, XSS)
-- parse_document({ base64_content, filename }) — extrait texte de PDF/Word
-- generate_mermaid({ diagram, title }) — diagramme architecture/workflow
+OUTILS SERVEUR (19 outils) :
+Fichiers : write_file, edit_file, view_file, search_files, delete_file, rename_file
+Deps : add_dependency, remove_dependency
+Web : fetch_website, download_to_project, web_search
+Debug : read_console_logs, run_security_check, get_table_schema
+Docs : parse_document, generate_mermaid
+Data : read_project_analytics, enable_stripe
 
 DEBUGGING — quand tu corriges une erreur :
 1. Appelle read_console_logs({ project_id }) EN PREMIER

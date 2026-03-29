@@ -1333,6 +1333,125 @@ const CODE_TOOLS = [
       },
       required: ['diagram']
     }
+  },
+  // ─── FILE MANAGEMENT TOOLS ───
+  {
+    name: 'view_file',
+    description: 'Read the contents of a file in the project. Use to examine code before editing.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to project root' },
+        start_line: { type: 'number', description: 'Start line (optional, default 1)' },
+        end_line: { type: 'number', description: 'End line (optional, default 500)' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'search_files',
+    description: 'Search for a text pattern across all project files. Returns matching lines with file paths.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Text or regex pattern to search for' },
+        file_glob: { type: 'string', description: 'File glob filter (e.g. "*.tsx", "src/pages/*")' }
+      },
+      required: ['pattern']
+    }
+  },
+  {
+    name: 'delete_file',
+    description: 'Delete a file from the project. Use when removing a component or page.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path to delete' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'rename_file',
+    description: 'Rename or move a file in the project.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        old_path: { type: 'string', description: 'Current file path' },
+        new_path: { type: 'string', description: 'New file path' }
+      },
+      required: ['old_path', 'new_path']
+    }
+  },
+  {
+    name: 'add_dependency',
+    description: 'Add an npm package to the project. Only use for packages not already installed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        package_name: { type: 'string', description: 'Package name (e.g. "chart.js")' },
+        version: { type: 'string', description: 'Version (optional, e.g. "4.4.0")' },
+        dev: { type: 'boolean', description: 'Install as devDependency (default false)' }
+      },
+      required: ['package_name']
+    }
+  },
+  {
+    name: 'remove_dependency',
+    description: 'Remove an npm package from the project.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        package_name: { type: 'string', description: 'Package name to remove' }
+      },
+      required: ['package_name']
+    }
+  },
+  {
+    name: 'download_to_project',
+    description: 'Download a file from a URL and save it into the project (images, fonts, data files).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to download from' },
+        save_path: { type: 'string', description: 'Path in the project to save to (e.g. "public/logo.png")' }
+      },
+      required: ['url', 'save_path']
+    }
+  },
+  {
+    name: 'read_project_analytics',
+    description: 'Read production analytics for a published project: pageviews, visitors, top pages, bounce rate.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'The project ID' }
+      },
+      required: ['project_id']
+    }
+  },
+  {
+    name: 'get_table_schema',
+    description: 'Read the SQLite database schema and table structure of a project. Shows all tables, columns, and relationships.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'The project ID' }
+      },
+      required: ['project_id']
+    }
+  },
+  {
+    name: 'enable_stripe',
+    description: 'Configure Stripe payment integration for a project. Sets up the Stripe secret key as env var and adds checkout routes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'The project ID' },
+        stripe_key_name: { type: 'string', description: 'Env var name for the Stripe key (default STRIPE_SECRET_KEY)' }
+      },
+      required: ['project_id']
+    }
   }
 ];
 
@@ -1419,9 +1538,134 @@ function executeServerTool(toolName, toolInput) {
   }
 
   if (toolName === 'generate_mermaid' && toolInput.diagram) {
-    // Return the Mermaid syntax as-is — the frontend will render it
     const title = toolInput.title ? `**${toolInput.title}**\n\n` : '';
     return Promise.resolve(`${title}\`\`\`mermaid\n${toolInput.diagram}\n\`\`\``);
+  }
+
+  // ─── FILE MANAGEMENT TOOLS ───
+  if (toolName === 'view_file' && toolInput.path && toolInput._projectDir) {
+    const filePath = path.join(toolInput._projectDir, toolInput.path);
+    if (!fs.existsSync(filePath)) return Promise.resolve(`Fichier introuvable: ${toolInput.path}`);
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n');
+    const start = (toolInput.start_line || 1) - 1;
+    const end = toolInput.end_line || 500;
+    return Promise.resolve(lines.slice(start, end).map((l, i) => `${start + i + 1}: ${l}`).join('\n'));
+  }
+
+  if (toolName === 'search_files' && toolInput.pattern && toolInput._projectDir) {
+    const results = [];
+    const searchDir = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (['node_modules', '.git', 'data', 'dist'].includes(entry.name)) continue;
+        const fp = path.join(dir, entry.name);
+        if (entry.isDirectory()) { searchDir(fp); continue; }
+        if (toolInput.file_glob && !entry.name.match(new RegExp(toolInput.file_glob.replace(/\*/g, '.*')))) continue;
+        try {
+          const content = fs.readFileSync(fp, 'utf8');
+          const regex = new RegExp(toolInput.pattern, 'gi');
+          content.split('\n').forEach((line, i) => {
+            if (regex.test(line)) {
+              results.push(`${path.relative(toolInput._projectDir, fp)}:${i + 1}: ${line.trim()}`);
+            }
+          });
+        } catch {}
+      }
+    };
+    searchDir(toolInput._projectDir);
+    return Promise.resolve(results.length > 0 ? results.slice(0, 30).join('\n') : 'Aucun résultat.');
+  }
+
+  if (toolName === 'delete_file' && toolInput.path && toolInput._projectDir) {
+    const fp = path.join(toolInput._projectDir, toolInput.path);
+    if (!fs.existsSync(fp)) return Promise.resolve(`Fichier introuvable: ${toolInput.path}`);
+    fs.unlinkSync(fp);
+    return Promise.resolve(`Supprimé: ${toolInput.path}`);
+  }
+
+  if (toolName === 'rename_file' && toolInput.old_path && toolInput.new_path && toolInput._projectDir) {
+    const oldFp = path.join(toolInput._projectDir, toolInput.old_path);
+    const newFp = path.join(toolInput._projectDir, toolInput.new_path);
+    if (!fs.existsSync(oldFp)) return Promise.resolve(`Fichier introuvable: ${toolInput.old_path}`);
+    const newDir = path.dirname(newFp);
+    if (!fs.existsSync(newDir)) fs.mkdirSync(newDir, { recursive: true });
+    fs.renameSync(oldFp, newFp);
+    return Promise.resolve(`Renommé: ${toolInput.old_path} → ${toolInput.new_path}`);
+  }
+
+  if (toolName === 'add_dependency' && toolInput.package_name && toolInput._projectDir) {
+    const pkgPath = path.join(toolInput._projectDir, 'package.json');
+    if (!fs.existsSync(pkgPath)) return Promise.resolve('package.json introuvable.');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      const section = toolInput.dev ? 'devDependencies' : 'dependencies';
+      if (!pkg[section]) pkg[section] = {};
+      pkg[section][toolInput.package_name] = toolInput.version || 'latest';
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+      return Promise.resolve(`Ajouté: ${toolInput.package_name}@${toolInput.version || 'latest'} dans ${section}`);
+    } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
+  }
+
+  if (toolName === 'remove_dependency' && toolInput.package_name && toolInput._projectDir) {
+    const pkgPath = path.join(toolInput._projectDir, 'package.json');
+    if (!fs.existsSync(pkgPath)) return Promise.resolve('package.json introuvable.');
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      let removed = false;
+      for (const section of ['dependencies', 'devDependencies']) {
+        if (pkg[section]?.[toolInput.package_name]) { delete pkg[section][toolInput.package_name]; removed = true; }
+      }
+      if (removed) { fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2)); return Promise.resolve(`Supprimé: ${toolInput.package_name}`); }
+      return Promise.resolve(`Package non trouvé: ${toolInput.package_name}`);
+    } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
+  }
+
+  if (toolName === 'download_to_project' && toolInput.url && toolInput.save_path && toolInput._projectDir) {
+    return new Promise((resolve) => {
+      const savePath = path.join(toolInput._projectDir, toolInput.save_path);
+      const saveDir = path.dirname(savePath);
+      if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+      const proto = toolInput.url.startsWith('https') ? https : http;
+      const file = fs.createWriteStream(savePath);
+      proto.get(toolInput.url, { timeout: 15000 }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const rProto = res.headers.location.startsWith('https') ? https : http;
+          rProto.get(res.headers.location, { timeout: 15000 }, (r2) => { r2.pipe(file); file.on('finish', () => { file.close(); resolve(`Téléchargé: ${toolInput.save_path}`); }); }).on('error', () => resolve('Erreur téléchargement.'));
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(`Téléchargé: ${toolInput.save_path} (${fs.statSync(savePath).size} bytes)`); });
+      }).on('error', () => resolve('Erreur téléchargement.')).on('timeout', function() { this.destroy(); resolve('Timeout.'); });
+    });
+  }
+
+  if (toolName === 'read_project_analytics' && toolInput.project_id && db) {
+    const pid = toolInput.project_id;
+    const views = db.prepare("SELECT COUNT(*) as c FROM analytics WHERE project_id=? AND event_type='pageview'").get(pid)?.c || 0;
+    const visitors = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','-30 days')").get(pid)?.c || 0;
+    const topPages = db.prepare("SELECT json_extract(event_data, '$.page') as page, COUNT(*) as count FROM analytics WHERE project_id=? AND event_type='pageview' AND event_data IS NOT NULL GROUP BY page ORDER BY count DESC LIMIT 5").all(pid);
+    return Promise.resolve(`Analytics projet ${pid}:\nVues totales: ${views}\nVisiteurs (30j): ${visitors}\nPages populaires:\n${topPages.map(p => `  ${p.page}: ${p.count} vues`).join('\n') || '  Aucune donnée'}`);
+  }
+
+  if (toolName === 'get_table_schema' && toolInput.project_id) {
+    const projDir = path.join(DOCKER_PROJECTS_DIR, String(toolInput.project_id));
+    const serverJsPath = path.join(projDir, 'server.js');
+    if (!fs.existsSync(serverJsPath)) return Promise.resolve('server.js introuvable.');
+    const code = fs.readFileSync(serverJsPath, 'utf8');
+    const tables = code.match(/CREATE TABLE[^;]+;/gi) || [];
+    if (tables.length === 0) return Promise.resolve('Aucune table SQLite trouvée dans server.js.');
+    return Promise.resolve(`Schema SQLite (${tables.length} tables):\n\n${tables.join('\n\n')}`);
+  }
+
+  if (toolName === 'enable_stripe' && toolInput.project_id && db) {
+    const keyName = toolInput.stripe_key_name || 'STRIPE_SECRET_KEY';
+    try {
+      const existing = db.prepare('SELECT id FROM project_api_keys WHERE project_id=? AND env_name=?').get(toolInput.project_id, keyName);
+      if (existing) return Promise.resolve(`Stripe déjà configuré (${keyName}). Utilisez l'interface admin pour modifier la clé.`);
+      db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(toolInput.project_id, keyName, encryptValue('sk_test_CONFIGURE_ME'), 'stripe');
+      return Promise.resolve(`Stripe activé. Variable ${keyName} créée. L'admin doit configurer la vraie clé via l'interface. Utilise process.env.${keyName} dans server.js.`);
+    } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
   }
 
   return Promise.resolve(null);
@@ -1470,7 +1714,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -1576,8 +1820,13 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
               (async () => {
                 try {
                   const toolResults = [];
+                  // Inject project directory for file-based tools
+                  const projDir = trackingInfo?.projectId ? path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId)) : null;
                   for (const tc of parsed.serverToolCalls) {
-                    const result = await executeServerTool(tc.name, tc.input);
+                    const input = { ...tc.input };
+                    if (projDir) input._projectDir = projDir;
+                    if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
+                    const result = await executeServerTool(tc.name, input);
                     toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
                     console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
                   }
