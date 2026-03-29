@@ -1091,19 +1091,35 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000) {
         'Content-Length': Buffer.byteLength(payload)
       }
     };
+    const timeoutMs = Math.max(maxTokens * 5, 120000); // ~5ms per token, min 2 min
     anthropicRequest(payload, opts, (apiRes) => {
+      if (apiRes.statusCode !== 200) {
+        let errBody = '';
+        apiRes.on('data', c => errBody += c);
+        apiRes.on('end', () => {
+          console.error(`[callClaudeAPI] HTTP ${apiRes.statusCode}: ${errBody.substring(0, 300)}`);
+          reject(new Error(`API HTTP ${apiRes.statusCode}`));
+        });
+        return;
+      }
       let data = '';
       apiRes.on('data', c => data += c);
       apiRes.on('end', () => {
         try {
           const r = JSON.parse(data);
-          if (r.content?.[0]?.text) resolve(r.content[0].text);
+          if (r.content?.[0]?.text) {
+            console.log(`[callClaudeAPI] OK: ${r.content[0].text.length} chars, usage: ${JSON.stringify(r.usage || {})}`);
+            resolve(r.content[0].text);
+          }
           else if (r.error) reject(new Error(r.error.message));
           else reject(new Error('Réponse API vide'));
         } catch (e) { reject(e); }
       });
       apiRes.on('error', reject);
-    }, reject, null);
+    }, (e) => {
+      console.error(`[callClaudeAPI] Request error: ${e.message}`);
+      reject(e);
+    }, null);
   });
 }
 
@@ -1266,16 +1282,46 @@ Les pages font fetch('/api/...') pour les données dynamiques.`;
     job.progress = allCode.length;
     console.log(`[MultiTurn] UI: ${uiCode.length} chars, total: ${allCode.length} chars`);
   } catch (e) {
-    console.error(`[MultiTurn] UI generation failed: ${e.message}`);
-    // Infrastructure is still valid — mark as partial success
-    console.log(`[MultiTurn] Falling back to infrastructure-only (${allCode.length} chars)`);
+    console.error(`[MultiTurn] Phase 3 UI failed: ${e.message}`);
+    console.log(`[MultiTurn] Retrying Phase 3 with smaller scope...`);
+
+    // Retry with just App.jsx + 2 key components (smaller request)
+    try {
+      job.progressMessage = 'Nouvelle tentative composants...';
+      const retryPrompt = `Génère src/App.jsx et les composants principaux pour ce projet.
+Brief: ${brief}
+Nom: ${plan.projectName}
+
+Génère ces fichiers avec ### markers :
+### src/App.jsx — BrowserRouter avec route "/" vers Home
+### src/components/Header.jsx — header responsive avec navigation
+### src/components/Footer.jsx — footer avec copyright
+### src/pages/Home.jsx — page d'accueil complète avec hero, sections principales
+
+Chaque fichier : export default function, TailwindCSS, lucide-react pour icônes.
+Contenu professionnel et réaliste, zéro lorem ipsum.`;
+
+      const retryCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: retryPrompt }], 32000);
+      allCode = mergeModifiedCode(allCode, retryCode);
+      writeGeneratedFiles(projectDir, retryCode);
+      job.code = allCode;
+      job.progress = allCode.length;
+      console.log(`[MultiTurn] Retry UI: ${retryCode.length} chars, total: ${allCode.length} chars`);
+    } catch (retryErr) {
+      console.error(`[MultiTurn] Retry also failed: ${retryErr.message}`);
+      // Still have infrastructure — fill defaults and continue
+    }
   }
 
   // ── Finalize ──
-  writeDefaultReactProject(projectDir); // fill any missing files
+  writeDefaultReactProject(projectDir); // fill any missing files (App.jsx, etc.)
+  // Re-read all files to get the complete picture including defaults
+  const finalFiles = readProjectFilesRecursive(projectDir);
+  allCode = formatProjectCode(finalFiles);
+  job.code = allCode;
   job.status = 'done';
   job.progressMessage = 'Projet React généré avec succès !';
-  console.log(`[MultiTurn] Complete: ${allCode.length} chars total`);
+  console.log(`[MultiTurn] Complete: ${Object.keys(finalFiles).length} files, ${allCode.length} chars total`);
 }
 
 // Write ### marked code sections to files in the project directory
