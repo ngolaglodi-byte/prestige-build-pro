@@ -2409,11 +2409,21 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   try {
     const containerName = getContainerName(projectId);
     const { execSync } = require('child_process');
+    // Push src/ (all components, pages, styles)
     execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+    // Push index.html (may have custom title)
+    if (fs.existsSync(path.join(projectDir, 'index.html'))) {
+      execSync(`docker cp ${projectDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+    }
+    // Push server.js if syntax-valid, then restart Express
     if (fs.existsSync(path.join(projectDir, 'server.js'))) {
       const { spawnSync } = require('child_process');
       if (spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { timeout: 5000 }).status === 0) {
         execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+        // Restart Express to pick up new routes/tables
+        try {
+          execSync(`docker exec ${containerName} sh -c "kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo \\$! > /tmp/express.pid"`, { timeout: 10000 });
+        } catch {}
       }
     }
     console.log(`[Gen] Final files pushed to container`);
@@ -3017,19 +3027,21 @@ function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
 
-  // Route: modifications go through API (with full code context), new generation through API fallback
+  // Route: NEW projects go through multi-turn generation, MODIFICATIONS go through streaming API
   if (job.project_id) {
-    const projectDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-    const serverJsPath = path.join(projectDir, 'server.js');
-    const isModification = fs.existsSync(serverJsPath);
+    // Check if the project has ALREADY been generated (has real code in DB)
+    // launchTemplateContainer writes default files to disk, so we can't use fs.existsSync
+    const existingProject = db.prepare('SELECT generated_code, status FROM projects WHERE id=?').get(job.project_id);
+    const hasGeneratedCode = existingProject?.generated_code && existingProject.generated_code.length > 500;
+    const isModification = hasGeneratedCode && existingProject.status === 'ready';
 
     if (isModification) {
-      // Modifications: ALWAYS use API path — sends full code context + CHAT_SYSTEM_PROMPT
-      // Claude Code CLI cannot run as root (--dangerously-skip-permissions fails)
-      console.log(`[generateClaude] Modification for project ${job.project_id} — using API with full code context`);
+      // Modifications: streaming API with full code context + CHAT_SYSTEM_PROMPT
+      console.log(`[generateClaude] Modification for project ${job.project_id} — using streaming API`);
       // Don't return here — fall through to the API streaming path below
     } else {
-      // New generation: use API fallback (reliable, no root issue)
+      // NEW generation: multi-turn pipeline (infra → pages → components)
+      console.log(`[generateClaude] New generation for project ${job.project_id} — using multi-turn pipeline`);
       const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
       generateViaAPI(job.project_id, effectiveBrief, jobId);
       return;
@@ -3273,6 +3285,39 @@ Règles d'intégration automatique :
             job.code = await validateAndFixCode(job.project_id, job.code);
           }
         } catch (e) { console.error('[Claude API] Post-process error:', e.message); }
+
+        // CRITICAL: Push final processed files to running container
+        // During streaming, raw files were pushed. But post-processing (auto-fix, validate)
+        // may have changed them on disk. Push the FINAL versions now.
+        if (job.project_id) {
+          try {
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+            const containerName = getContainerName(job.project_id);
+            // Auto-fix relative imports before final push
+            validateJsxFiles(projDir);
+            // Push all src files
+            if (fs.existsSync(path.join(projDir, 'src'))) {
+              execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+            }
+            // Push server.js if valid
+            if (fs.existsSync(path.join(projDir, 'server.js'))) {
+              const { spawnSync } = require('child_process');
+              if (spawnSync('node', ['--check', path.join(projDir, 'server.js')], { timeout: 5000 }).status === 0) {
+                execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+              }
+            }
+            // Update DB with final code
+            const finalFiles = readProjectFilesRecursive(projDir);
+            const finalCode = formatProjectCode(finalFiles);
+            db.prepare("UPDATE projects SET generated_code=?,build_status='done',build_url=?,status='ready',updated_at=datetime('now') WHERE id=?")
+              .run(finalCode, `/run/${job.project_id}/`, job.project_id);
+            job.code = finalCode;
+            console.log(`[Stream] Final files pushed to container ${containerName}`);
+          } catch (pushErr) {
+            console.warn(`[Stream] Final container push failed: ${pushErr.message}`);
+          }
+        }
+
         job.status = 'done';
       } else if (job.status === 'running') {
         job.status = 'error';
@@ -4449,8 +4494,8 @@ async function launchTemplateContainer(projectId) {
       `NODE_OPTIONS=--max-old-space-size=256`
     ],
     Cmd: ['sh', '-c', [
-      // Start Express
-      'node server.js &',
+      // Start Express (save PID for later restart)
+      'node server.js & echo $! > /tmp/express.pid',
       // Start Vite with correct base path
       `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
       // Keep alive
