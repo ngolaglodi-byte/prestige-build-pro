@@ -2337,7 +2337,69 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
     console.log(`[Gen] Vite build check: OK`);
   }
 
-  // ── Finalize ──
+  // ── Finalize: write canonical files + ensure everything is clean ──
+  // Write canonical files that the AI must NEVER control
+  const canonicalToWrite = {
+    'package.json': DEFAULT_PACKAGE_JSON,
+    'vite.config.js': DEFAULT_VITE_CONFIG,
+    'index.html': DEFAULT_INDEX_HTML,
+    'src/main.tsx': DEFAULT_MAIN_JSX,
+  };
+  // Preserve AI's title in index.html if present
+  const aiIndexPath = path.join(projectDir, 'index.html');
+  if (fs.existsSync(aiIndexPath)) {
+    try {
+      const aiHtml = fs.readFileSync(aiIndexPath, 'utf8');
+      const titleMatch = aiHtml.match(/<title>([^<]+)<\/title>/);
+      if (titleMatch) {
+        canonicalToWrite['index.html'] = DEFAULT_INDEX_HTML.replace(/<title>[^<]*<\/title>/, `<title>${titleMatch[1]}</title>`);
+      }
+    } catch {}
+  }
+  // Preserve AI's extra deps in package.json
+  const aiPkgPath = path.join(projectDir, 'package.json');
+  if (fs.existsSync(aiPkgPath)) {
+    try {
+      const aiPkg = JSON.parse(fs.readFileSync(aiPkgPath, 'utf8'));
+      const canonical = JSON.parse(DEFAULT_PACKAGE_JSON);
+      if (aiPkg.name) canonical.name = aiPkg.name;
+      if (aiPkg.dependencies) {
+        for (const [k, v] of Object.entries(aiPkg.dependencies)) {
+          if (!canonical.dependencies[k]) canonical.dependencies[k] = v;
+        }
+      }
+      canonicalToWrite['package.json'] = JSON.stringify(canonical, null, 2);
+    } catch {}
+  }
+  for (const [fn, content] of Object.entries(canonicalToWrite)) {
+    const fp = path.join(projectDir, fn);
+    const fpDir = path.dirname(fp);
+    if (!fs.existsSync(fpDir)) fs.mkdirSync(fpDir, { recursive: true });
+    fs.writeFileSync(fp, content);
+  }
+  // Write tsconfig.json
+  fs.writeFileSync(path.join(projectDir, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { target: "ES2020", useDefineForClassFields: true, lib: ["ES2020", "DOM", "DOM.Iterable"],
+      module: "ESNext", skipLibCheck: true, moduleResolution: "bundler", allowImportingTsExtensions: true,
+      isolatedModules: true, moduleDetection: "force", noEmit: true, jsx: "react-jsx",
+      strict: true, noUnusedLocals: false, noUnusedParameters: false, allowJs: true,
+      paths: { "@/*": ["./src/*"] } },
+    include: ["src"]
+  }, null, 2));
+  // Delete files that shouldn't exist (postcss.config.js, tailwind.config.js — TailwindCSS 4 doesn't need them)
+  for (const junk of ['postcss.config.js', 'postcss.config.cjs', 'tailwind.config.js', 'tailwind.config.ts', 'vite.config.ts']) {
+    const jp = path.join(projectDir, junk);
+    if (fs.existsSync(jp)) { fs.unlinkSync(jp); console.log(`[Gen] Removed unnecessary: ${junk}`); }
+  }
+  console.log(`[Gen] Canonical files written`);
+
+  // Write UI component library + utils + hooks
+  writeDefaultReactProject(projectDir);
+
+  // Auto-fix relative imports in all generated files
+  validateJsxFiles(projectDir);
+
+  // Read final state from disk
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
   job.code = allCode;
