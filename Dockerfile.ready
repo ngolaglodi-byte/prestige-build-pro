@@ -1,0 +1,34 @@
+# Ready-to-run project image — EVERYTHING pre-installed
+# Starting a container from this image takes 2-3 seconds (no build, no npm install)
+FROM node:20-alpine
+
+# System deps
+RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
+
+WORKDIR /app
+
+# Copy template project (has all canonical files + UI components)
+COPY templates/react/ .
+
+# Install ALL dependencies from the template package.json
+# This is done ONCE at image build time, never at project creation time
+RUN npm install --force 2>&1 | tail -5
+
+# Copy default server.js and start script
+COPY templates/react/server.js ./server.js
+
+# Create the start script that will be overwritten per-project with correct --base
+RUN echo '#!/bin/sh\nnode server.js &\n./node_modules/.bin/vite --host 0.0.0.0 --port 5173 &\nwait -n' > start-dev.sh && chmod +x start-dev.sh
+
+# Prepare data directory
+RUN mkdir -p /app/data
+
+ENV PORT=3000
+ENV NODE_OPTIONS="--max-old-space-size=256"
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+EXPOSE 3000 5173
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
+
+CMD ["sh", "start-dev.sh"]

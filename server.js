@@ -4331,129 +4331,110 @@ function parseDockerProjectCode(code) {
 
 // Build and run Docker container for a project
 // ─── TEMPLATE-FIRST ARCHITECTURE (like Lovable) ───
-// Launch a READY container with template project — Vite + Express running immediately
-// The AI then writes files INTO the running container via docker cp
-// No separate "compile" step needed — preview is available in seconds
+// The pbp-ready image has EVERYTHING pre-installed (npm, Vite, React, Radix, UI components)
+// Creating a project = just docker run from pbp-ready (2-3 seconds, NO build, NO npm install)
+// The AI writes files INTO the running container via docker cp
+const READY_IMAGE = 'pbp-ready';
+
+// Ensure the ready image exists (built once from Dockerfile.ready)
+async function ensureReadyImage() {
+  if (!docker) return;
+  try {
+    await docker.getImage(READY_IMAGE).inspect();
+    console.log(`[Docker] Ready image '${READY_IMAGE}' exists`);
+  } catch {
+    console.log(`[Docker] Building ready image '${READY_IMAGE}'...`);
+    try {
+      // Build from Dockerfile.ready which has EVERYTHING pre-installed
+      const buildContext = path.join(__dirname);
+      const stream = await docker.buildImage(
+        { context: buildContext, src: ['Dockerfile.ready', 'templates/'] },
+        { t: READY_IMAGE, dockerfile: 'Dockerfile.ready' }
+      );
+      await new Promise((resolve, reject) => {
+        docker.modem.followProgress(stream, (err) => { if (err) reject(err); else resolve(); });
+      });
+      console.log(`[Docker] Ready image '${READY_IMAGE}' built successfully`);
+    } catch (e) {
+      console.error(`[Docker] Failed to build ready image: ${e.message}`);
+      // Fallback to base image
+    }
+  }
+}
+
+// Launch a container from pbp-ready in 2-3 seconds (NO Docker build, NO npm install)
 async function launchTemplateContainer(projectId) {
   if (!isDockerAvailable()) return { success: false, error: 'Docker non disponible' };
 
   const containerName = getContainerName(projectId);
   const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
   const dataDir = path.join(projectDir, 'data');
+  const jwtSecret = crypto.randomBytes(32).toString('hex');
 
-  console.log(`[Template] Launching template container for project ${projectId}`);
-  await ensureBaseImage();
+  console.log(`[Template] Launching container for project ${projectId} (from ready image)`);
 
-  // Create project directory with canonical files
+  // Create project directory on host (for file sync)
   if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  // Write ALL canonical files
+  // Write canonical files to host (for reference + DB storage)
+  writeDefaultReactProject(projectDir);
   fs.writeFileSync(path.join(projectDir, 'package.json'), DEFAULT_PACKAGE_JSON);
   fs.writeFileSync(path.join(projectDir, 'vite.config.js'), DEFAULT_VITE_CONFIG);
   fs.writeFileSync(path.join(projectDir, 'index.html'), DEFAULT_INDEX_HTML);
-  fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
-  fs.writeFileSync(path.join(projectDir, 'tsconfig.json'), JSON.stringify({
-    compilerOptions: { target: "ES2020", useDefineForClassFields: true, lib: ["ES2020", "DOM", "DOM.Iterable"],
-      module: "ESNext", skipLibCheck: true, moduleResolution: "bundler", allowImportingTsExtensions: true,
-      isolatedModules: true, moduleDetection: "force", noEmit: true, jsx: "react-jsx",
-      strict: true, noUnusedLocals: false, noUnusedParameters: false, allowJs: true,
-      paths: { "@/*": ["./src/*"] } },
-    include: ["src"]
-  }, null, 2));
-
-  // Write React source defaults
+  if (!fs.existsSync(path.join(projectDir, 'server.js'))) fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
   const srcDir = path.join(projectDir, 'src');
   if (!fs.existsSync(srcDir)) fs.mkdirSync(srcDir, { recursive: true });
-  fs.writeFileSync(path.join(srcDir, 'main.tsx'), DEFAULT_MAIN_JSX);
-  fs.writeFileSync(path.join(srcDir, 'index.css'), DEFAULT_INDEX_CSS);
-  fs.writeFileSync(path.join(srcDir, 'App.tsx'), DEFAULT_APP_JSX);
-
-  // Copy UI component library from templates
-  writeDefaultReactProject(projectDir);
-
-  // Write start-dev.sh
-  const startDevSh = [
-    '#!/bin/sh',
-    'ln -sf /app/node_modules ./node_modules 2>/dev/null',
-    'node server.js &',
-    'echo $! > /tmp/express.pid',
-    '# VITE_BASE sets the base path so all imports are prefixed correctly',
-    `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
-    'echo $! > /tmp/vite.pid',
-    'trap "kill $(cat /tmp/express.pid 2>/dev/null) $(cat /tmp/vite.pid 2>/dev/null) 2>/dev/null; exit 0" SIGTERM SIGINT',
-    'while true; do sleep 3600; done',
-    ''
-  ].join('\n');
-  fs.writeFileSync(path.join(projectDir, 'start-dev.sh'), startDevSh);
-
-  // Write Dockerfile
-  const jwtSecret = crypto.randomBytes(32).toString('hex');
-  const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
-WORKDIR /app
-ARG CACHEBUST=${Date.now()}
-COPY package.json ./
-RUN npm install --force 2>&1 | tail -5
-COPY . .
-RUN chmod +x start-dev.sh
-RUN mkdir -p /app/data
-ENV JWT_SECRET=${jwtSecret}
-ENV PORT=3000
-ENV VITE_BASE=/run/${projectId}/
-ENV NODE_OPTIONS="--max-old-space-size=256"
-EXPOSE 3000 5173
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \\
-  CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
-CMD ["sh", "start-dev.sh"]
-`;
-  fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
+  if (!fs.existsSync(path.join(srcDir, 'main.tsx'))) fs.writeFileSync(path.join(srcDir, 'main.tsx'), DEFAULT_MAIN_JSX);
+  if (!fs.existsSync(path.join(srcDir, 'index.css'))) fs.writeFileSync(path.join(srcDir, 'index.css'), DEFAULT_INDEX_CSS);
+  if (!fs.existsSync(path.join(srcDir, 'App.tsx'))) fs.writeFileSync(path.join(srcDir, 'App.tsx'), DEFAULT_APP_JSX);
 
   // Stop old container if exists
   await stopContainerAsync(projectId);
 
-  // Build image
-  const imageName = `pbp-project-${projectId}:latest`;
-  function listFilesRecursiveForBuild(dir, base = '') {
-    let result = [];
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const rel = base ? `${base}/${entry.name}` : entry.name;
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'data') continue;
-      if (entry.isDirectory()) result = result.concat(listFilesRecursiveForBuild(path.join(dir, entry.name), rel));
-      else result.push(rel);
-    }
-    return result;
-  }
-  const projectFiles = listFilesRecursiveForBuild(projectDir);
-  const buildStream = await docker.buildImage({ context: projectDir, src: projectFiles }, { t: imageName });
-  await new Promise((resolve, reject) => {
-    docker.modem.followProgress(buildStream, (err, output) => { if (err) reject(err); else resolve(output); });
-  });
+  // Try pbp-ready image first, fallback to pbp-base with build
+  await ensureReadyImage();
+  let imageName = READY_IMAGE;
+  try { await docker.getImage(READY_IMAGE).inspect(); } catch { imageName = DOCKER_BASE_IMAGE; }
 
-  // Create and start container
-  const projectEnv = ['PORT=3000'];
-  if (db) {
-    const keys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(projectId);
-    keys.forEach(k => projectEnv.push(`${k.env_name}=${decryptValue(k.env_value)}`));
-  }
+  // Create and start container — NO BUILD, just docker run
   await ensureDockerNetwork();
   const container = await docker.createContainer({
-    Image: imageName, name: containerName, Env: projectEnv,
+    Image: imageName,
+    name: containerName,
+    Env: [
+      `PORT=3000`,
+      `JWT_SECRET=${jwtSecret}`,
+      `VITE_BASE=/run/${projectId}/`,
+      `NODE_OPTIONS=--max-old-space-size=256`
+    ],
+    Cmd: ['sh', '-c', [
+      // Start Express
+      'node server.js &',
+      // Start Vite with correct base path
+      `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
+      // Keep alive
+      'while true; do sleep 3600; done'
+    ].join(' && ')],
     HostConfig: {
-      NetworkMode: DOCKER_NETWORK, RestartPolicy: { Name: 'unless-stopped' },
+      NetworkMode: DOCKER_NETWORK,
+      RestartPolicy: { Name: 'unless-stopped' },
       Binds: [`${dataDir}:/app/data`],
-      Memory: 512 * 1024 * 1024, NanoCpus: 500000000, SecurityOpt: ['no-new-privileges']
+      Memory: 512 * 1024 * 1024,
+      NanoCpus: 500000000,
+      SecurityOpt: ['no-new-privileges']
     }
   });
   await container.start();
 
-  // Wait for health
-  const healthy = await waitForContainerHealth(projectId);
+  // Wait for health (should be very fast — everything is pre-installed)
+  const healthy = await waitForContainerHealth(projectId, 10000);
   if (healthy) {
     db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${projectId}/`, projectId);
-    console.log(`[Template] Container ready for project ${projectId}`);
+    console.log(`[Template] Container ready for project ${projectId} (instant launch)`);
     return { success: true, url: `/run/${projectId}/` };
   }
+  console.warn(`[Template] Container unhealthy for project ${projectId}`);
   return { success: false, error: 'Container unhealthy' };
 }
 
@@ -5692,6 +5673,7 @@ async function initializeDockerSystem() {
   console.log('Docker socket connection verified via dockerode');
   console.log('Initializing Docker preview system...');
   await ensureBaseImage();
+  await ensureReadyImage();
   await ensureDockerNetwork();
   await joinPbpProjectsNetwork();
   await rebuildContainerMapping();

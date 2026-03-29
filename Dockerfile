@@ -10,6 +10,7 @@ COPY server.js .
 COPY src/ ./src/
 COPY public/ ./public/
 COPY templates/ ./templates/
+COPY Dockerfile.ready ./Dockerfile.ready
 COPY scripts/ ./scripts/
 RUN mkdir -p /data /tmp/previews /tmp/pb-builds
 ENV PORT=3000
