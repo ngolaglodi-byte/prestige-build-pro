@@ -496,6 +496,8 @@ try {
     CREATE TABLE IF NOT EXISTS project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version_number INTEGER NOT NULL, generated_code TEXT, screenshot_url TEXT, created_by INTEGER, created_at TEXT DEFAULT (datetime('now')), message TEXT, FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, error_type TEXT NOT NULL, error_message TEXT, docker_logs TEXT, correction_attempt INTEGER DEFAULT 1, corrected INTEGER DEFAULT 0, corrected_code TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, project_id INTEGER, operation TEXT NOT NULL, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(owner_id) REFERENCES users(id));
+    CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT DEFAULT 'editor', invited_by INTEGER, joined_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(workspace_id) REFERENCES workspaces(id), FOREIGN KEY(user_id) REFERENCES users(id), UNIQUE(workspace_id, user_id));
   `);
   const bcrypt = require('bcryptjs');
   const ADMIN_EMAIL = 'admin@prestige-build.dev';
@@ -517,9 +519,11 @@ try {
 try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) { /* already exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAULT 50'); } catch(e) { /* already exists */ }
 try { db.exec('ALTER TABLE users ADD COLUMN monthly_generation_limit INTEGER DEFAULT 500'); } catch(e) { /* already exists */ }
+try { db.exec('ALTER TABLE projects ADD COLUMN workspace_id INTEGER'); } catch(e) { /* already exists */ }
 
 // ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
-const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName}>>
+const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName, connectedAt}>>
+const MAX_COLLABORATORS_PER_PROJECT = 20;
 
 // ─── JOBS MAP FOR POLLING-BASED GENERATION ───
 const generationJobs = new Map(); // Map<job_id, {status, code, error, progress, project_id, user_id}>
@@ -2535,12 +2539,28 @@ function saveProjectVersion(projectId, code, userId, message) {
 function notifyProjectClients(projectId, event, data, excludeUserId = null) {
   const clients = projectSSEClients.get(projectId);
   if (!clients) return;
+  const dead = [];
   clients.forEach(client => {
     if (excludeUserId && client.userId === excludeUserId) return;
     try {
-      client.res.write(`data: ${JSON.stringify({ type: event, ...data })}\n\n`);
-    } catch(e) {}
+      client.res.write(`data: ${JSON.stringify({ type: event, ...data, timestamp: Date.now() })}\n\n`);
+    } catch(e) { dead.push(client); }
   });
+  // Clean dead connections
+  dead.forEach(c => clients.delete(c));
+}
+
+// Get list of users currently connected to a project
+function getProjectCollaborators(projectId) {
+  const clients = projectSSEClients.get(projectId);
+  if (!clients || clients.size === 0) return [];
+  const seen = new Map();
+  clients.forEach(c => {
+    if (!seen.has(c.userId)) {
+      seen.set(c.userId, { userId: c.userId, userName: c.userName, connectedAt: c.connectedAt });
+    }
+  });
+  return Array.from(seen.values());
 }
 
 // ─── INJECT TRACKING SCRIPT INTO GENERATED CODE ───
@@ -6184,14 +6204,67 @@ const server = http.createServer(async (req, res) => {
       WHERE project_id = ? AND event_type = 'time_spent'
     `).get(projectId);
     
+    // Visitors today / this week / this month
+    const visitorsToday = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now')").get(projectId)?.c || 0;
+    const visitorsWeek = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','-7 days')").get(projectId)?.c || 0;
+    const visitorsMonth = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','start of month')").get(projectId)?.c || 0;
+
+    // Device breakdown (from user_agent)
+    const allUa = db.prepare("SELECT user_agent FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','-30 days')").all(projectId);
+    let mobile = 0, desktop = 0;
+    allUa.forEach(r => {
+      if (/mobile|android|iphone|ipad/i.test(r.user_agent || '')) mobile++; else desktop++;
+    });
+
+    // Referrer sources (from event_data.referrer)
+    const referrers = db.prepare(`
+      SELECT json_extract(event_data, '$.referrer') as ref, COUNT(*) as count
+      FROM analytics WHERE project_id=? AND event_type='pageview' AND event_data LIKE '%referrer%'
+      GROUP BY ref ORDER BY count DESC LIMIT 10
+    `).all(projectId);
+
+    // Bounce rate estimate (visitors with only 1 pageview)
+    const totalVisitors = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','-30 days')").get(projectId)?.c || 0;
+    const singlePageVisitors = db.prepare(`
+      SELECT COUNT(*) as c FROM (
+        SELECT ip_address, COUNT(*) as views FROM analytics
+        WHERE project_id=? AND event_type='pageview' AND created_at >= date('now','-30 days')
+        GROUP BY ip_address HAVING views = 1
+      )
+    `).get(projectId)?.c || 0;
+    const bounceRate = totalVisitors > 0 ? Math.round((singlePageVisitors / totalVisitors) * 100) : 0;
+
     json(res, 200, {
-      totalViews,
-      totalClicks,
-      totalForms,
+      totalViews, totalClicks, totalForms,
       avgTimeSpent: Math.round(avgTime?.avg_seconds || 0),
-      viewsByDay,
-      topPages,
-      topClicks
+      visitors: { today: visitorsToday, week: visitorsWeek, month: visitorsMonth },
+      devices: { mobile, desktop, mobilePercent: (mobile + desktop) > 0 ? Math.round((mobile / (mobile + desktop)) * 100) : 0 },
+      bounceRate,
+      viewsByDay, topPages, topClicks, referrers
+    });
+    return;
+  }
+
+  // ─── ADMIN: GLOBAL ANALYTICS (all published sites) ───
+  if (url === '/api/admin/analytics' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const totalPageviews = db.prepare("SELECT COUNT(*) as c FROM analytics WHERE event_type='pageview'").get()?.c || 0;
+    const todayPageviews = db.prepare("SELECT COUNT(*) as c FROM analytics WHERE event_type='pageview' AND created_at >= date('now')").get()?.c || 0;
+    const uniqueVisitorsMonth = db.prepare("SELECT COUNT(DISTINCT ip_address) as c FROM analytics WHERE event_type='pageview' AND created_at >= date('now','start of month')").get()?.c || 0;
+    const topProjects = db.prepare(`
+      SELECT p.title, p.id, COUNT(*) as views
+      FROM analytics a JOIN projects p ON a.project_id=p.id
+      WHERE a.event_type='pageview' AND a.created_at >= date('now','-30 days')
+      GROUP BY a.project_id ORDER BY views DESC LIMIT 10
+    `).all();
+    const dailyTrend = db.prepare(`
+      SELECT DATE(created_at) as date, COUNT(*) as views, COUNT(DISTINCT ip_address) as visitors
+      FROM analytics WHERE event_type='pageview' AND created_at >= date('now','-30 days')
+      GROUP BY DATE(created_at) ORDER BY date DESC
+    `).all();
+    json(res, 200, {
+      total: { pageviews: totalPageviews, todayPageviews, uniqueVisitorsMonth },
+      topProjects, dailyTrend
     });
     return;
   }
@@ -6210,18 +6283,25 @@ const server = http.createServer(async (req, res) => {
       'Access-Control-Allow-Origin': '*'
     });
     
-    // Register this client
+    // Register this client (with collaborator limit)
     if (!projectSSEClients.has(projectId)) {
       projectSSEClients.set(projectId, new Set());
     }
-    const clientInfo = { res, userId: user.id, userName: user.name };
-    projectSSEClients.get(projectId).add(clientInfo);
-    
+    const clients = projectSSEClients.get(projectId);
+    if (clients.size >= MAX_COLLABORATORS_PER_PROJECT) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'Maximum de collaborateurs atteint (20).' })}\n\n`);
+      res.end();
+      return;
+    }
+    const clientInfo = { res, userId: user.id, userName: user.name, connectedAt: new Date().toISOString() };
+    clients.add(clientInfo);
+
     // Notify others that this user joined
     notifyProjectClients(projectId, 'user_joined', { userName: user.name, userId: user.id }, user.id);
-    
-    // Send initial connection confirmation
-    res.write(`data: ${JSON.stringify({ type: 'connected', userId: user.id, userName: user.name })}\n\n`);
+
+    // Send initial connection confirmation + current collaborators list
+    const collaborators = getProjectCollaborators(projectId);
+    res.write(`data: ${JSON.stringify({ type: 'connected', userId: user.id, userName: user.name, collaborators })}\n\n`);
     
     // Heartbeat every 30 seconds
     const heartbeat = setInterval(() => {
@@ -6241,6 +6321,100 @@ const server = http.createServer(async (req, res) => {
     });
     
     return; // Keep connection open
+  }
+
+  // ─── WORKSPACES ───
+  if (url === '/api/workspaces' && req.method === 'GET') {
+    // List workspaces the user belongs to (as owner or member)
+    const owned = db.prepare('SELECT * FROM workspaces WHERE owner_id=? ORDER BY created_at DESC').all(user.id);
+    const memberOf = db.prepare(`SELECT w.* FROM workspaces w JOIN workspace_members wm ON w.id=wm.workspace_id WHERE wm.user_id=? ORDER BY w.created_at DESC`).all(user.id);
+    const all = [...owned, ...memberOf.filter(w => !owned.find(o => o.id === w.id))];
+    // Add member count and role
+    const result = all.map(w => {
+      const members = db.prepare('SELECT wm.*, u.email, u.name FROM workspace_members wm JOIN users u ON wm.user_id=u.id WHERE wm.workspace_id=?').all(w.id);
+      const myRole = w.owner_id === user.id ? 'owner' : (members.find(m => m.user_id === user.id)?.role || 'viewer');
+      const projectCount = db.prepare('SELECT COUNT(*) as c FROM projects WHERE workspace_id=?').get(w.id)?.c || 0;
+      return { ...w, myRole, memberCount: members.length + 1, projectCount };
+    });
+    json(res, 200, result);
+    return;
+  }
+  if (url === '/api/workspaces' && req.method === 'POST') {
+    const { name, description } = await getBody(req);
+    if (!name || typeof name !== 'string' || name.trim().length < 2) { json(res, 400, { error: 'Nom requis (min 2 caractères).' }); return; }
+    const result = db.prepare('INSERT INTO workspaces (name, description, owner_id) VALUES (?,?,?)').run(name.trim(), description || '', user.id);
+    json(res, 201, { id: result.lastInsertRowid, name: name.trim() });
+    return;
+  }
+  if (url.match(/^\/api\/workspaces\/\d+$/) && req.method === 'DELETE') {
+    const wid = parseInt(url.split('/')[3]);
+    const w = db.prepare('SELECT * FROM workspaces WHERE id=?').get(wid);
+    if (!w) { json(res, 404, { error: 'Workspace introuvable.' }); return; }
+    if (w.owner_id !== user.id && user.role !== 'admin') { json(res, 403, { error: 'Seul le propriétaire peut supprimer.' }); return; }
+    db.prepare('DELETE FROM workspace_members WHERE workspace_id=?').run(wid);
+    db.prepare('UPDATE projects SET workspace_id=NULL WHERE workspace_id=?').run(wid);
+    db.prepare('DELETE FROM workspaces WHERE id=?').run(wid);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  // ─── WORKSPACE MEMBERS ───
+  if (url.match(/^\/api\/workspaces\/\d+\/members$/) && req.method === 'GET') {
+    const wid = parseInt(url.split('/')[3]);
+    const w = db.prepare('SELECT * FROM workspaces WHERE id=?').get(wid);
+    if (!w) { json(res, 404, { error: 'Workspace introuvable.' }); return; }
+    const owner = db.prepare('SELECT id,email,name FROM users WHERE id=?').get(w.owner_id);
+    const members = db.prepare('SELECT wm.role, wm.joined_at, u.id, u.email, u.name FROM workspace_members wm JOIN users u ON wm.user_id=u.id WHERE wm.workspace_id=?').all(wid);
+    json(res, 200, { owner: { ...owner, role: 'owner' }, members });
+    return;
+  }
+  if (url.match(/^\/api\/workspaces\/\d+\/members$/) && req.method === 'POST') {
+    const wid = parseInt(url.split('/')[3]);
+    const w = db.prepare('SELECT * FROM workspaces WHERE id=?').get(wid);
+    if (!w) { json(res, 404, { error: 'Workspace introuvable.' }); return; }
+    if (w.owner_id !== user.id && user.role !== 'admin') { json(res, 403, { error: 'Seul le propriétaire peut inviter.' }); return; }
+    const { email, role } = await getBody(req);
+    if (!email) { json(res, 400, { error: 'Email requis.' }); return; }
+    const invitee = db.prepare('SELECT id FROM users WHERE email=?').get(email.trim().toLowerCase());
+    if (!invitee) { json(res, 404, { error: 'Utilisateur introuvable.' }); return; }
+    const validRoles = ['editor', 'viewer'];
+    const memberRole = validRoles.includes(role) ? role : 'editor';
+    try {
+      db.prepare('INSERT INTO workspace_members (workspace_id, user_id, role, invited_by) VALUES (?,?,?,?)').run(wid, invitee.id, memberRole, user.id);
+      db.prepare('INSERT INTO notifications (user_id, message, type) VALUES (?,?,?)').run(invitee.id, `Vous avez été invité au workspace "${w.name}" par ${user.name}`, 'info');
+      json(res, 201, { ok: true, userId: invitee.id, role: memberRole });
+    } catch (e) {
+      json(res, 409, { error: 'Déjà membre de ce workspace.' });
+    }
+    return;
+  }
+  if (url.match(/^\/api\/workspaces\/\d+\/members\/\d+$/) && req.method === 'DELETE') {
+    const parts = url.split('/');
+    const wid = parseInt(parts[3]);
+    const uid = parseInt(parts[5]);
+    const w = db.prepare('SELECT * FROM workspaces WHERE id=?').get(wid);
+    if (!w) { json(res, 404, { error: 'Workspace introuvable.' }); return; }
+    if (w.owner_id !== user.id && user.role !== 'admin' && user.id !== uid) {
+      json(res, 403, { error: 'Accès refusé.' }); return;
+    }
+    db.prepare('DELETE FROM workspace_members WHERE workspace_id=? AND user_id=?').run(wid, uid);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  // ─── COLLABORATORS: who's online on a project ───
+  if (url.match(/^\/api\/projects\/\d+\/collaborators$/) && req.method==='GET') {
+    const projectId = parseInt(url.split('/')[3]);
+    json(res, 200, { collaborators: getProjectCollaborators(projectId) });
+    return;
+  }
+
+  // ─── TYPING INDICATOR: broadcast that user is typing ───
+  if (url.match(/^\/api\/projects\/\d+\/typing$/) && req.method==='POST') {
+    const projectId = parseInt(url.split('/')[3]);
+    notifyProjectClients(projectId, 'user_typing', { userName: user.name, userId: user.id }, user.id);
+    json(res, 200, { ok: true });
+    return;
   }
 
   // ─── STATS ───
