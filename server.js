@@ -1758,8 +1758,29 @@ function executeServerTool(toolName, toolInput) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       const section = toolInput.dev ? 'devDependencies' : 'dependencies';
       if (!pkg[section]) pkg[section] = {};
+      // Check if already installed
+      if (pkg[section][toolInput.package_name]) {
+        return Promise.resolve(`Déjà installé: ${toolInput.package_name}@${pkg[section][toolInput.package_name]}`);
+      }
       pkg[section][toolInput.package_name] = toolInput.version || 'latest';
       fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+      // Install in the running container (like Lovable's lov-add-dependency)
+      if (toolInput.project_id) {
+        try {
+          const containerName = getContainerName(toolInput.project_id);
+          const { execSync } = require('child_process');
+          // Copy updated package.json into container
+          execSync(`docker cp ${pkgPath} ${containerName}:/app/package.json`, { timeout: 10000 });
+          // Run npm install inside the container
+          const version = toolInput.version || 'latest';
+          execSync(`docker exec ${containerName} npm install ${toolInput.package_name}@${version} --force 2>&1 | tail -3`, { timeout: 60000, encoding: 'utf8' });
+          console.log(`[Tool] Installed ${toolInput.package_name}@${version} in container ${containerName}`);
+          return Promise.resolve(`Installé: ${toolInput.package_name}@${version} (disponible immédiatement)`);
+        } catch (installErr) {
+          console.warn(`[Tool] Container install failed: ${installErr.message}`);
+          return Promise.resolve(`Ajouté au package.json: ${toolInput.package_name}. Rebuild nécessaire pour l'installer.`);
+        }
+      }
       return Promise.resolve(`Ajouté: ${toolInput.package_name}@${toolInput.version || 'latest'} dans ${section}`);
     } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
   }
@@ -1773,7 +1794,18 @@ function executeServerTool(toolName, toolInput) {
       for (const section of ['dependencies', 'devDependencies']) {
         if (pkg[section]?.[toolInput.package_name]) { delete pkg[section][toolInput.package_name]; removed = true; }
       }
-      if (removed) { fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2)); return Promise.resolve(`Supprimé: ${toolInput.package_name}`); }
+      if (removed) {
+        fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+        // Uninstall from running container
+        if (toolInput.project_id) {
+          try {
+            const containerName = getContainerName(toolInput.project_id);
+            const { execSync } = require('child_process');
+            execSync(`docker exec ${containerName} npm uninstall ${toolInput.package_name} 2>&1 | tail -2`, { timeout: 30000 });
+          } catch { /* container might not be running */ }
+        }
+        return Promise.resolve(`Supprimé: ${toolInput.package_name}`);
+      }
       return Promise.resolve(`Package non trouvé: ${toolInput.package_name}`);
     } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
   }
