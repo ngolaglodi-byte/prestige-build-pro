@@ -2186,6 +2186,8 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
     const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
     allCode = infraCode;
     writeGeneratedFiles(projectDir, infraCode);
+    // Push to running container — Vite HMR updates preview in real-time
+    try { await writeFilesToContainer(projectId, infraCode); } catch(e) { console.warn(`[Gen] Container push failed (will retry at finalize): ${e.message}`); }
     job.code = allCode;
     job.progress = allCode.length;
     savePartialToDb();
@@ -2236,8 +2238,10 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   if (pagesResult.status === 'fulfilled') {
     allCode = mergeModifiedCode(allCode, pagesResult.value);
     writeGeneratedFiles(projectDir, pagesResult.value);
+    try { await writeFilesToContainer(projectId, pagesResult.value); } catch(e) {}
     job.code = allCode;
     job.progress = allCode.length;
+    job.progressMessage = 'Pages ajoutées au preview...';
     console.log(`[Gen] Pages OK: +${pagesResult.value.length} chars`);
   } else {
     console.error(`[Gen] Pages failed: ${pagesResult.reason?.message}`);
@@ -2247,8 +2251,10 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   if (compsResult.status === 'fulfilled') {
     allCode = mergeModifiedCode(allCode, compsResult.value);
     writeGeneratedFiles(projectDir, compsResult.value);
+    try { await writeFilesToContainer(projectId, compsResult.value); } catch(e) {}
     job.code = allCode;
     job.progress = allCode.length;
+    job.progressMessage = 'Composants ajoutés au preview...';
     console.log(`[Gen] Components OK: +${compsResult.value.length} chars`);
   } else {
     console.error(`[Gen] Components failed: ${compsResult.reason?.message}`);
@@ -2399,11 +2405,29 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   // Auto-fix relative imports in all generated files
   validateJsxFiles(projectDir);
 
-  // Read final state from disk
+  // Push ALL final files to running container
+  try {
+    const containerName = getContainerName(projectId);
+    const { execSync } = require('child_process');
+    execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+    if (fs.existsSync(path.join(projectDir, 'server.js'))) {
+      const { spawnSync } = require('child_process');
+      if (spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { timeout: 5000 }).status === 0) {
+        execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+      }
+    }
+    console.log(`[Gen] Final files pushed to container`);
+  } catch(e) { console.warn(`[Gen] Final container push: ${e.message}`); }
+
+  // Read final state from disk and save to DB
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
   job.code = allCode;
   savePartialToDb();
+
+  // Mark build as done (no separate compile step needed)
+  db.prepare("UPDATE projects SET build_status='done',build_url=?,status='ready' WHERE id=?").run(`/run/${projectId}/`, projectId);
+
   job.status = 'done';
   const totalSec = ((Date.now() - startTime) / 1000).toFixed(0);
   job.progressMessage = `Projet React généré en ${totalSec}s !`;
@@ -4306,6 +4330,167 @@ function parseDockerProjectCode(code) {
 }
 
 // Build and run Docker container for a project
+// ─── TEMPLATE-FIRST ARCHITECTURE (like Lovable) ───
+// Launch a READY container with template project — Vite + Express running immediately
+// The AI then writes files INTO the running container via docker cp
+// No separate "compile" step needed — preview is available in seconds
+async function launchTemplateContainer(projectId) {
+  if (!isDockerAvailable()) return { success: false, error: 'Docker non disponible' };
+
+  const containerName = getContainerName(projectId);
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  const dataDir = path.join(projectDir, 'data');
+
+  console.log(`[Template] Launching template container for project ${projectId}`);
+  await ensureBaseImage();
+
+  // Create project directory with canonical files
+  if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+  // Write ALL canonical files
+  fs.writeFileSync(path.join(projectDir, 'package.json'), DEFAULT_PACKAGE_JSON);
+  fs.writeFileSync(path.join(projectDir, 'vite.config.js'), DEFAULT_VITE_CONFIG);
+  fs.writeFileSync(path.join(projectDir, 'index.html'), DEFAULT_INDEX_HTML);
+  fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
+  fs.writeFileSync(path.join(projectDir, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { target: "ES2020", useDefineForClassFields: true, lib: ["ES2020", "DOM", "DOM.Iterable"],
+      module: "ESNext", skipLibCheck: true, moduleResolution: "bundler", allowImportingTsExtensions: true,
+      isolatedModules: true, moduleDetection: "force", noEmit: true, jsx: "react-jsx",
+      strict: true, noUnusedLocals: false, noUnusedParameters: false, allowJs: true,
+      paths: { "@/*": ["./src/*"] } },
+    include: ["src"]
+  }, null, 2));
+
+  // Write React source defaults
+  const srcDir = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDir)) fs.mkdirSync(srcDir, { recursive: true });
+  fs.writeFileSync(path.join(srcDir, 'main.tsx'), DEFAULT_MAIN_JSX);
+  fs.writeFileSync(path.join(srcDir, 'index.css'), DEFAULT_INDEX_CSS);
+  fs.writeFileSync(path.join(srcDir, 'App.tsx'), DEFAULT_APP_JSX);
+
+  // Copy UI component library from templates
+  writeDefaultReactProject(projectDir);
+
+  // Write start-dev.sh
+  const startDevSh = [
+    '#!/bin/sh',
+    'ln -sf /app/node_modules ./node_modules 2>/dev/null',
+    'node server.js &',
+    'echo $! > /tmp/express.pid',
+    '# VITE_BASE sets the base path so all imports are prefixed correctly',
+    `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
+    'echo $! > /tmp/vite.pid',
+    'trap "kill $(cat /tmp/express.pid 2>/dev/null) $(cat /tmp/vite.pid 2>/dev/null) 2>/dev/null; exit 0" SIGTERM SIGINT',
+    'while true; do sleep 3600; done',
+    ''
+  ].join('\n');
+  fs.writeFileSync(path.join(projectDir, 'start-dev.sh'), startDevSh);
+
+  // Write Dockerfile
+  const jwtSecret = crypto.randomBytes(32).toString('hex');
+  const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
+WORKDIR /app
+ARG CACHEBUST=${Date.now()}
+COPY package.json ./
+RUN npm install --force 2>&1 | tail -5
+COPY . .
+RUN chmod +x start-dev.sh
+RUN mkdir -p /app/data
+ENV JWT_SECRET=${jwtSecret}
+ENV PORT=3000
+ENV VITE_BASE=/run/${projectId}/
+ENV NODE_OPTIONS="--max-old-space-size=256"
+EXPOSE 3000 5173
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \\
+  CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
+CMD ["sh", "start-dev.sh"]
+`;
+  fs.writeFileSync(path.join(projectDir, 'Dockerfile'), dockerfile);
+
+  // Stop old container if exists
+  await stopContainerAsync(projectId);
+
+  // Build image
+  const imageName = `pbp-project-${projectId}:latest`;
+  function listFilesRecursiveForBuild(dir, base = '') {
+    let result = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const rel = base ? `${base}/${entry.name}` : entry.name;
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'data') continue;
+      if (entry.isDirectory()) result = result.concat(listFilesRecursiveForBuild(path.join(dir, entry.name), rel));
+      else result.push(rel);
+    }
+    return result;
+  }
+  const projectFiles = listFilesRecursiveForBuild(projectDir);
+  const buildStream = await docker.buildImage({ context: projectDir, src: projectFiles }, { t: imageName });
+  await new Promise((resolve, reject) => {
+    docker.modem.followProgress(buildStream, (err, output) => { if (err) reject(err); else resolve(output); });
+  });
+
+  // Create and start container
+  const projectEnv = ['PORT=3000'];
+  if (db) {
+    const keys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(projectId);
+    keys.forEach(k => projectEnv.push(`${k.env_name}=${decryptValue(k.env_value)}`));
+  }
+  await ensureDockerNetwork();
+  const container = await docker.createContainer({
+    Image: imageName, name: containerName, Env: projectEnv,
+    HostConfig: {
+      NetworkMode: DOCKER_NETWORK, RestartPolicy: { Name: 'unless-stopped' },
+      Binds: [`${dataDir}:/app/data`],
+      Memory: 512 * 1024 * 1024, NanoCpus: 500000000, SecurityOpt: ['no-new-privileges']
+    }
+  });
+  await container.start();
+
+  // Wait for health
+  const healthy = await waitForContainerHealth(projectId);
+  if (healthy) {
+    db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${projectId}/`, projectId);
+    console.log(`[Template] Container ready for project ${projectId}`);
+    return { success: true, url: `/run/${projectId}/` };
+  }
+  return { success: false, error: 'Container unhealthy' };
+}
+
+// Write generated files INTO a RUNNING container (no rebuild needed)
+async function writeFilesToContainer(projectId, code) {
+  const containerName = getContainerName(projectId);
+  const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+  const { execSync } = require('child_process');
+
+  // Write files to disk first
+  writeGeneratedFiles(projectDir, code);
+
+  // Auto-fix relative imports
+  validateJsxFiles(projectDir);
+
+  // Copy into running container
+  if (fs.existsSync(path.join(projectDir, 'src'))) {
+    execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+  }
+  if (fs.existsSync(path.join(projectDir, 'server.js'))) {
+    // Validate syntax before copying
+    const { spawnSync } = require('child_process');
+    const check = spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { encoding: 'utf8', timeout: 5000 });
+    if (check.status === 0) {
+      execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+    }
+  }
+
+  // Update DB code
+  const allFiles = readProjectFilesRecursive(projectDir);
+  const allCode = formatProjectCode(allFiles);
+  db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now'),status='ready' WHERE id=?").run(allCode, projectId);
+
+  console.log(`[Template] Files written to container ${containerName}`);
+  return allCode;
+}
+
 async function buildDockerProject(projectId, code, onProgress) {
   const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
   const srcDir = path.join(projectDir, 'src');
@@ -6406,7 +6591,22 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/projects' && req.method==='POST') {
     const {title,client_name,project_type,brief,subdomain,domain,apis}=await getBody(req);
     const info=db.prepare("INSERT INTO projects (user_id,title,client_name,project_type,brief,subdomain,domain,apis,status) VALUES (?,?,?,?,?,?,?,?,'draft')").run(user.id,title,client_name,project_type,brief,subdomain,domain,JSON.stringify(apis||[]));
-    json(res,200,{id:info.lastInsertRowid,title,status:'draft'}); return;
+    const projectId = info.lastInsertRowid;
+
+    // TEMPLATE-FIRST: Launch container IMMEDIATELY with template project
+    // Preview is available in seconds, before any AI generation
+    if (isDockerAvailable()) {
+      launchTemplateContainer(projectId).then(result => {
+        if (result.success) {
+          console.log(`[Template] Project ${projectId} container ready at ${result.url}`);
+          db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(user.id, `Projet "${title}" prêt — preview disponible !`, 'success');
+        } else {
+          console.warn(`[Template] Project ${projectId} container failed: ${result.error}`);
+        }
+      }).catch(err => console.error(`[Template] Launch error: ${err.message}`));
+    }
+
+    json(res,200,{id:projectId,title,status:'draft',preview:`/run/${projectId}/`}); return;
   }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='GET') {
     const id=parseInt(url.split('/').pop());
