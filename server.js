@@ -4300,7 +4300,7 @@ async function buildDockerProject(projectId, code, onProgress) {
       'index.html': DEFAULT_INDEX_HTML,
       'src/main.tsx': DEFAULT_MAIN_JSX,
       'src/index.css': DEFAULT_INDEX_CSS,
-      'src/App.jsx': DEFAULT_APP_JSX,
+      'src/App.tsx': DEFAULT_APP_JSX,
     };
     for (const [fn, defaultContent] of Object.entries(essentialFiles)) {
       const fp = path.join(projectDir, fn);
@@ -4343,7 +4343,7 @@ async function buildDockerProject(projectId, code, onProgress) {
     const dockerfile = `FROM ${DOCKER_BASE_IMAGE}
 WORKDIR /app
 COPY package.json ./
-RUN npm install --prefer-offline 2>/dev/null || true
+RUN npm install --legacy-peer-deps 2>&1 | tail -5
 COPY vite.config.js ./
 COPY index.html ./
 COPY server.js ./
