@@ -5910,8 +5910,44 @@ const server = http.createServer(async (req, res) => {
 
       const elapsed = Date.now() - startTime;
       db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${project_id}/`, project_id);
-      console.log(`[HMR] ${containerName} updated in ${elapsed}ms — Vite HMR handles the rest`);
-      json(res, 200, { hot: true, url: `/run/${project_id}/`, elapsed });
+      console.log(`[HMR] ${containerName} updated in ${elapsed}ms`);
+
+      // Check Vite logs for errors AFTER hot-reload (like Lovable's real-time detection)
+      // Wait 2s for Vite to process the changed files
+      await new Promise(r => setTimeout(r, 2000));
+      const postHmrLogs = await getContainerLogsAsync(project_id, 30);
+      const hmrErrors = postHmrLogs.split('\n').filter(l =>
+        /Failed to resolve|error TS|SyntaxError|Cannot find module|expected|Transform failed/i.test(l) &&
+        !/✅|Prêt|Ready|watching|hmr update/i.test(l)
+      );
+
+      if (hmrErrors.length > 0) {
+        console.warn(`[HMR] Vite errors after hot-reload: ${hmrErrors.length}`);
+        hmrErrors.forEach(e => console.warn(`  ${e.trim().substring(0, 100)}`));
+
+        // Auto-fix: send errors to Claude (free — auto-correct operation)
+        try {
+          const fixPrompt = `Après la modification, Vite affiche ces erreurs:\n\n${hmrErrors.join('\n').substring(0, 2000)}\n\nCorrige les fichiers en cause. Imports: @/ alias, fichiers UI en lowercase.`;
+          const fixCode = await callClaudeAPI(
+            [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige.' }],
+            [{ role: 'user', content: fixPrompt }],
+            16000,
+            { userId: user.id, projectId: project_id, operation: 'auto-correct' },
+            { useTools: true }
+          );
+          if (fixCode) {
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
+            writeGeneratedFiles(projDir, fixCode);
+            execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+            console.log(`[HMR] Auto-fixed Vite errors and re-applied`);
+          }
+        } catch (fixErr) {
+          console.warn(`[HMR] Auto-fix failed: ${fixErr.message}`);
+        }
+        json(res, 200, { hot: true, url: `/run/${project_id}/`, elapsed, viteErrors: hmrErrors.length, autoFixed: true });
+      } else {
+        json(res, 200, { hot: true, url: `/run/${project_id}/`, elapsed, viteErrors: 0 });
+      }
     } catch (e) {
       console.error(`[HMR] Error: ${e.message}`);
       json(res, 200, { hot: false, reason: e.message });
