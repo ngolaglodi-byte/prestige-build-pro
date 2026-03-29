@@ -39,6 +39,9 @@ for (const key of REQUIRED_ENV) {
 process.on('uncaughtException', (err) => {
   console.error(`[FATAL] Erreur non gérée: ${err.message}`);
   console.error(err.stack);
+  // Exit so Docker/Coolify can restart us in a clean state
+  // Staying alive after uncaughtException = corrupted state
+  setTimeout(() => process.exit(1), 1000);
 });
 process.on('unhandledRejection', (err) => {
   console.error(`[FATAL] Promise rejetée: ${err?.message || err}`);
@@ -612,6 +615,11 @@ let db;
 try {
   const Database = require('better-sqlite3');
   db = new Database(DB_PATH);
+  // SQLite hardening — prevents corruption and concurrent access errors
+  db.pragma('journal_mode = WAL');       // Write-Ahead Logging — safe concurrent reads + crash protection
+  db.pragma('busy_timeout = 5000');      // Wait 5s if DB is locked instead of throwing SQLITE_BUSY
+  db.pragma('synchronous = NORMAL');     // Good balance of safety vs performance with WAL
+  db.pragma('foreign_keys = ON');        // Enforce foreign key constraints
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT NOT NULL, role TEXT DEFAULT 'agent', lang TEXT DEFAULT 'fr', created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, client_name TEXT, project_type TEXT, brief TEXT, generated_code TEXT, status TEXT DEFAULT 'draft', is_published INTEGER DEFAULT 0, subdomain TEXT, domain TEXT, apis TEXT, notes TEXT, build_id TEXT, build_status TEXT DEFAULT 'none', build_url TEXT, version INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(user_id) REFERENCES users(id));
