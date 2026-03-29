@@ -5034,22 +5034,24 @@ async function proxyToContainer(req, res, projectId, targetPath) {
     res.writeHead(proxyRes.statusCode, headers);
 
     if (isHtml) {
-      // Check if this is a React/Vite project (has @vite/client or react-refresh)
       let body = '';
       proxyRes.on('data', chunk => body += chunk.toString());
       proxyRes.on('end', () => {
         try {
-          // React/Vite projects: serve HTML as-is — Vite handles all routing
-          const isViteProject = body.includes('@vite/client') || body.includes('@react-refresh') || body.includes('type="module" src="/src/');
-          if (isViteProject) {
-            res.end(body);
-            return;
-          }
-
-          // Vanilla HTML projects: inject <base> + fetch patch
           const pid = Number(projectId);
-          const baseTag = `<base href="/run/${pid}/">`;
-          const proxyScript = `<script>(function(){var B='/run/${pid}/';` +
+          const prefix = `/run/${pid}`;
+
+          // Rewrite absolute paths in Vite HTML so they route through the proxy
+          // /@vite/client → /run/59/@vite/client
+          // /src/main.tsx → /run/59/src/main.tsx
+          // /node_modules/.vite/... → /run/59/node_modules/.vite/...
+          body = body.replace(/((?:src|href|from)\s*=\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+          // Also fix import() and import ... from "/..." in inline scripts
+          body = body.replace(/(from\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+          body = body.replace(/(import\s*\(\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+
+          const baseTag = `<base href="${prefix}/">`;
+          const proxyScript = `<script>(function(){var B='${prefix}/';` +
             `var _f=window.fetch;window.fetch=function(u,o){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _f.call(this,u,o);};` +
             `var _x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){if(typeof u==='string'&&u.startsWith('/'))u=u.substring(1);return _x.call(this,m,u);};` +
             // Intercept window.location changes that would navigate to Prestige
@@ -5083,7 +5085,25 @@ async function proxyToContainer(req, res, projectId, targetPath) {
       });
       proxyRes.on('error', () => { try { res.end(); } catch(e) {} });
     } else {
-      proxyRes.pipe(res);
+      // For JS/TS modules: rewrite absolute imports so they route through proxy
+      const ct = (headers['content-type'] || '');
+      const isJs = ct.includes('javascript') || ct.includes('typescript');
+      if (isJs) {
+        delete headers['content-length'];
+        delete headers['content-encoding'];
+        let jsBody = '';
+        proxyRes.on('data', chunk => jsBody += chunk.toString());
+        proxyRes.on('end', () => {
+          // Rewrite: from "/node_modules/..." → from "/run/59/node_modules/..."
+          // Rewrite: from "/@vite/..." → from "/run/59/@vite/..."
+          const prefix = `/run/${projectId}`;
+          jsBody = jsBody.replace(/(from\s+["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+          jsBody = jsBody.replace(/(import\s*\(\s*["'])(\/(?!run\/))/g, `$1${prefix}$2`);
+          res.end(jsBody);
+        });
+      } else {
+        proxyRes.pipe(res);
+      }
     }
   });
 
