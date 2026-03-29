@@ -1076,6 +1076,37 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 // ─── API FALLBACK: Generate project files via direct Anthropic API ───
 // Used when Claude Code CLI is unavailable, times out, or errors out.
 // Streams from the API, parses ### markers, writes files to project dir.
+// ─── MULTI-TURN API CALL HELPER ───
+// Makes a non-streaming API call and returns the text response
+function callClaudeAPI(systemBlocks, messages, maxTokens = 16000) {
+  return new Promise((resolve, reject) => {
+    const model = 'claude-sonnet-4-20250514';
+    const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
+    const payload = JSON.stringify(apiPayload);
+    const opts = {
+      hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31',
+        'Content-Length': Buffer.byteLength(payload)
+      }
+    };
+    anthropicRequest(payload, opts, (apiRes) => {
+      let data = '';
+      apiRes.on('data', c => data += c);
+      apiRes.on('end', () => {
+        try {
+          const r = JSON.parse(data);
+          if (r.content?.[0]?.text) resolve(r.content[0].text);
+          else if (r.error) reject(new Error(r.error.message));
+          else reject(new Error('Réponse API vide'));
+        } catch (e) { reject(e); }
+      });
+      apiRes.on('error', reject);
+    }, reject, null);
+  });
+}
+
 function generateViaAPI(projectId, brief, jobId) {
   const job = generationJobs.get(jobId);
   if (!job) return;
@@ -1092,117 +1123,159 @@ function generateViaAPI(projectId, brief, jobId) {
   if (!fs.existsSync(srcDirApi)) fs.mkdirSync(srcDirApi, { recursive: true });
 
   job.status = 'running';
-  job.progressMessage = 'Génération via API Anthropic...';
-  console.log(`[API Fallback] Starting generation for project ${projectId}`);
+  job.progressMessage = 'Analyse du brief...';
+  console.log(`[MultiTurn] Starting multi-turn generation for project ${projectId}`);
 
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
-  const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.';
-  const systemPrompt = sectorProfile ? `${baseSystemPrompt}\n\n${sectorProfile}` : baseSystemPrompt;
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  const model = 'claude-sonnet-4-20250514';
-  console.log(`[API Fallback] model: ${model}, max_tokens: ${maxTokens}`);
+  const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel.';
 
-  const userPrompt = `Génère une application React + Vite + TailwindCSS complète basée sur ce brief:\n\n${brief}\n\nGénère tous les fichiers du projet React: package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css, src/App.jsx, src/components/*.jsx, src/pages/*.jsx. Utilise le format ### filename pour chaque fichier.\nIMPORTANT: À la fin de server.js, ajoute un commentaire // CREDENTIALS: email=admin@[nom].com password=[MotDePasse] avec les identifiants admin du projet.`;
+  // Cached system prompt blocks (reused across all turns)
+  const systemBlocks = [
+    { type: 'text', text: baseSystemPrompt, cache_control: { type: 'ephemeral' } }
+  ];
+  if (sectorProfile) {
+    systemBlocks.push({ type: 'text', text: sectorProfile });
+  }
 
-  // Web search always available
-  const apiPayload = {
-    model: model,
-    max_tokens: maxTokens,
-    system: systemPrompt,
-    stream: true,
-    messages: [{ role: 'user', content: userPrompt }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
-  };
-  const payload = JSON.stringify(apiPayload);
-
-  const opts = {
-    hostname: 'api.anthropic.com',
-    path: '/v1/messages',
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'web-search-2025-03-05',
-      'Content-Length': Buffer.byteLength(payload)
+  // ─── MULTI-TURN GENERATION ───
+  // Phase 1: Plan (file list) → Phase 2: Infrastructure → Phase 3: Components+Pages
+  // Each phase builds on the previous, preventing truncation
+  generateMultiTurn(projectId, brief, jobId, job, projectDir, systemBlocks).catch(err => {
+    console.error(`[MultiTurn] Fatal error: ${err.message}`);
+    if (job.status === 'running') {
+      job.status = 'error';
+      job.error = `Erreur de génération: ${err.message}`;
     }
-  };
+  });
+}
 
-  let accumulatedCode = '';
-  const MAX_CODE_SIZE = 2 * 1024 * 1024; // 2MB safety limit
+async function generateMultiTurn(projectId, brief, jobId, job, projectDir, systemBlocks) {
+  let allCode = '';
 
-  anthropicRequest(payload, opts, (apiRes) => {
-    if (apiRes.statusCode !== 200) {
-      let errorBody = '';
-      apiRes.on('data', chunk => { errorBody += chunk.toString(); });
-      apiRes.on('end', () => {
-        console.error(`[API Fallback] API returned ${apiRes.statusCode}: ${errorBody.substring(0, 500)}`);
-        job.status = 'error';
-        job.error = `Erreur API (${apiRes.statusCode}). Réessayez.`;
-      });
-      return;
-    }
+  // ── PHASE 1: Plan ──
+  job.progressMessage = 'Prestige AI analyse le brief...';
+  console.log(`[MultiTurn] Phase 1: Planning`);
 
-    // Proper SSE parsing with buffer for chunk boundary handling
-    let sseBuffer = '';
-    apiRes.on('data', chunk => {
-      sseBuffer += chunk.toString();
-      const lines = sseBuffer.split('\n');
-      sseBuffer = lines.pop() || ''; // keep incomplete last line in buffer
+  const planPrompt = `Analyse ce brief et retourne UNIQUEMENT un plan JSON (pas de code) :
 
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (!data || data === '[DONE]') continue;
-        try {
-          const d = JSON.parse(data);
-          if (d.type === 'content_block_delta' && d.delta?.text) {
-            accumulatedCode += d.delta.text;
-            if (accumulatedCode.length > MAX_CODE_SIZE) {
-              job.status = 'error';
-              job.error = 'Code généré trop volumineux. Simplifiez le brief.';
-              apiRes.destroy();
-              return;
-            }
-            job.code = accumulatedCode;
-            job.progress = accumulatedCode.length;
-            const text = d.delta.text;
-            if (text.includes('package.json')) job.progressMessage = 'Génération du package.json...';
-            else if (text.includes('server.js')) job.progressMessage = 'Génération du backend Express...';
-            else if (text.includes('App.jsx')) job.progressMessage = 'Génération des composants React...';
-            else if (text.includes('index.html')) job.progressMessage = 'Génération du point d\'entrée...';
-            else if (text.includes('components/')) job.progressMessage = 'Génération des composants...';
-            else if (text.includes('pages/')) job.progressMessage = 'Génération des pages...';
-          }
-          if (d.type === 'message_stop') {
-            try {
-              writeGeneratedFiles(projectDir, accumulatedCode);
-              job.status = 'done';
-              job.progressMessage = 'Projet React généré avec succès !';
-            } catch (writeErr) {
-              console.error(`[API Fallback] File write error: ${writeErr.message}`);
-              job.status = 'done';
-              job.progressMessage = 'Projet généré (écriture partielle).';
-            }
-          }
-          if (d.type === 'error') {
-            console.error(`[API Fallback] Stream error: ${JSON.stringify(d.error)}`);
-            job.status = 'error';
-            job.error = d.error?.message || 'Erreur API stream.';
-          }
-        } catch (parseErr) {
-          // Log malformed SSE events instead of silently swallowing
-          if (data.length > 10) {
-            console.warn(`[API Fallback] Malformed SSE: ${data.substring(0, 80)}`);
-          }
-        }
-      }
-    });
-    apiRes.on('error', e => { job.status = 'error'; job.error = `Erreur stream: ${e.message}`; });
-  }, (e) => {
+Brief: ${brief}
+
+Retourne ce JSON exact (rien d'autre) :
+{
+  "projectName": "nom-du-projet",
+  "components": ["Header", "Footer", "HeroSection", ...],
+  "pages": ["Home", "About", ...],
+  "apiRoutes": ["/api/auth/login", "/api/items", ...],
+  "dbTables": ["users", "items", ...],
+  "adminEmail": "admin@project.com"
+}`;
+
+  let plan;
+  try {
+    const planText = await callClaudeAPI(systemBlocks, [{ role: 'user', content: planPrompt }], 2000);
+    // Extract JSON from response (might have text around it)
+    const jsonMatch = planText.match(/\{[\s\S]*\}/);
+    plan = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+    console.log(`[MultiTurn] Plan: ${plan?.components?.length || 0} components, ${plan?.pages?.length || 0} pages`);
+  } catch (e) {
+    console.warn(`[MultiTurn] Plan parsing failed: ${e.message}, using defaults`);
+    plan = null;
+  }
+
+  // Fallback plan if parsing failed
+  if (!plan || !plan.components) {
+    plan = {
+      projectName: 'project',
+      components: ['Header', 'Footer', 'HeroSection'],
+      pages: ['Home', 'Contact'],
+      apiRoutes: ['/api/auth/login', '/health'],
+      dbTables: ['users'],
+      adminEmail: 'admin@project.com'
+    };
+  }
+
+  // ── PHASE 2: Infrastructure files ──
+  job.progressMessage = 'Génération de l\'infrastructure...';
+  console.log(`[MultiTurn] Phase 2: Infrastructure (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css)`);
+
+  const infraPrompt = `Génère les fichiers d'infrastructure pour ce projet React+Vite+TailwindCSS.
+
+Brief: ${brief}
+Nom du projet: ${plan.projectName}
+Tables SQLite: ${plan.dbTables.join(', ')}
+Routes API: ${plan.apiRoutes.join(', ')}
+Email admin: ${plan.adminEmail}
+
+Génère EXACTEMENT ces 6 fichiers avec ### markers :
+### package.json
+### vite.config.js
+### index.html
+### server.js
+### src/main.jsx
+### src/index.css
+
+Le server.js doit avoir TOUTES les tables et routes API. C'est le backend COMPLET.
+À la fin de server.js : // CREDENTIALS: email=${plan.adminEmail} password=[MotDePasse fort]`;
+
+  try {
+    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000);
+    allCode = infraCode;
+    writeGeneratedFiles(projectDir, infraCode);
+    job.code = allCode;
+    job.progress = allCode.length;
+    console.log(`[MultiTurn] Infrastructure: ${infraCode.length} chars`);
+  } catch (e) {
+    console.error(`[MultiTurn] Infrastructure failed: ${e.message}`);
     job.status = 'error';
-    job.error = e.message;
-  }, job);
+    job.error = `Erreur génération infrastructure: ${e.message}`;
+    return;
+  }
+
+  // ── PHASE 3: App.jsx + Components + Pages ──
+  job.progressMessage = 'Génération des composants React...';
+  const componentsList = plan.components.map(c => `src/components/${c}.jsx`).join(', ');
+  const pagesList = plan.pages.map(p => `src/pages/${p}.jsx`).join(', ');
+  console.log(`[MultiTurn] Phase 3: Components (${plan.components.length}) + Pages (${plan.pages.length})`);
+
+  const uiPrompt = `Génère src/App.jsx et tous les composants et pages React pour ce projet.
+
+Brief: ${brief}
+Nom: ${plan.projectName}
+
+Fichiers d'infrastructure déjà générés (NE PAS les retourner) :
+- package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css
+
+Génère MAINTENANT ces fichiers avec ### markers :
+### src/App.jsx — BrowserRouter avec routes vers toutes les pages
+${plan.components.map(c => `### src/components/${c}.jsx`).join('\n')}
+${plan.pages.map(p => `### src/pages/${p}.jsx`).join('\n')}
+
+Chaque composant : export default function, TailwindCSS, icônes lucide-react, responsive.
+Chaque page : contenu riche et réaliste, zéro lorem ipsum, données de démo.
+Les pages font fetch('/api/...') pour les données dynamiques.`;
+
+  try {
+    const uiCode = await callClaudeAPI(systemBlocks, [
+      { role: 'user', content: infraPrompt },
+      { role: 'assistant', content: 'Infrastructure générée. Les 6 fichiers (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css) sont prêts.' },
+      { role: 'user', content: uiPrompt }
+    ], 64000);
+    allCode = mergeModifiedCode(allCode, uiCode);
+    writeGeneratedFiles(projectDir, uiCode);
+    job.code = allCode;
+    job.progress = allCode.length;
+    console.log(`[MultiTurn] UI: ${uiCode.length} chars, total: ${allCode.length} chars`);
+  } catch (e) {
+    console.error(`[MultiTurn] UI generation failed: ${e.message}`);
+    // Infrastructure is still valid — mark as partial success
+    console.log(`[MultiTurn] Falling back to infrastructure-only (${allCode.length} chars)`);
+  }
+
+  // ── Finalize ──
+  writeDefaultReactProject(projectDir); // fill any missing files
+  job.status = 'done';
+  job.progressMessage = 'Projet React généré avec succès !';
+  console.log(`[MultiTurn] Complete: ${allCode.length} chars total`);
 }
 
 // Write ### marked code sections to files in the project directory
@@ -1363,7 +1436,112 @@ function buildProjectStructure(code) {
   return structure;
 }
 
+// ─── DIFF-BASED MODIFICATION SUPPORT ───
+// Apply SEARCH/REPLACE diffs to existing files (like Claude Code's edit format)
+// Format: ### DIFF filename\n<<<< SEARCH\nold code\n==== REPLACE\nnew code\n>>>>
+function applyDiffs(existingCode, diffCode) {
+  const existingFiles = {};
+  // Parse existing files
+  existingCode.split(/### /).filter(s => s.trim()).forEach(s => {
+    const nl = s.indexOf('\n');
+    if (nl === -1) return;
+    const fn = s.substring(0, nl).trim();
+    if (fn && !fn.startsWith('DIFF ')) existingFiles[fn] = s.substring(nl + 1).trim();
+  });
+
+  // Find DIFF blocks in the new code
+  const diffPattern = /### DIFF ([^\n]+)\n([\s\S]*?)(?=### (?:DIFF )?|$)/g;
+  let match;
+  let applied = 0;
+  let failed = 0;
+
+  while ((match = diffPattern.exec(diffCode)) !== null) {
+    const filename = match[1].trim();
+    const diffBody = match[2];
+    if (!existingFiles[filename]) {
+      console.warn(`[Diff] File not found for diff: ${filename}`);
+      failed++;
+      continue;
+    }
+
+    // Parse all SEARCH/REPLACE blocks in this diff
+    const searchReplacePattern = /<<<< SEARCH\n([\s\S]*?)\n==== REPLACE\n([\s\S]*?)\n>>>>/g;
+    let srMatch;
+    let fileContent = existingFiles[filename];
+    let fileApplied = 0;
+
+    while ((srMatch = searchReplacePattern.exec(diffBody)) !== null) {
+      const searchText = srMatch[1];
+      const replaceText = srMatch[2];
+      if (fileContent.includes(searchText)) {
+        fileContent = fileContent.replace(searchText, replaceText);
+        fileApplied++;
+      } else {
+        // Try with trimmed whitespace (common issue)
+        const trimmedSearch = searchText.trim();
+        if (trimmedSearch && fileContent.includes(trimmedSearch)) {
+          fileContent = fileContent.replace(trimmedSearch, replaceText.trim());
+          fileApplied++;
+        } else {
+          console.warn(`[Diff] SEARCH block not found in ${filename}: "${searchText.substring(0, 50)}..."`);
+          failed++;
+        }
+      }
+    }
+
+    if (fileApplied > 0) {
+      existingFiles[filename] = fileContent;
+      applied += fileApplied;
+      console.log(`[Diff] Applied ${fileApplied} change(s) to ${filename}`);
+    }
+  }
+
+  console.log(`[Diff] Total: ${applied} applied, ${failed} failed`);
+
+  // Rebuild code string
+  return formatProjectCodeFromMap(existingFiles);
+}
+
+// Helper: rebuild ### code string from file map
+function formatProjectCodeFromMap(files) {
+  const fileOrder = [
+    'package.json', 'vite.config.js', 'index.html', 'server.js',
+    'src/main.jsx', 'src/index.css', 'src/App.jsx'
+  ];
+  let result = '';
+  const written = new Set();
+  for (const fn of fileOrder) {
+    if (files[fn]) { result += (result ? '\n\n' : '') + `### ${fn}\n${files[fn]}`; written.add(fn); }
+  }
+  Object.keys(files).filter(fn => !written.has(fn)).sort((a, b) => {
+    const order = (f) => f.startsWith('src/components/') ? 0 : f.startsWith('src/pages/') ? 1 : 2;
+    return order(a) - order(b) || a.localeCompare(b);
+  }).forEach(fn => { result += (result ? '\n\n' : '') + `### ${fn}\n${files[fn]}`; });
+  return result;
+}
+
 function mergeModifiedCode(existingCode, newCode) {
+  // Check if newCode contains DIFF blocks — apply diffs instead of full merge
+  if (newCode.includes('### DIFF ')) {
+    // Extract full-file sections (### filename) and diff sections (### DIFF filename) separately
+    const fullFileParts = newCode.replace(/### DIFF [^\n]+\n[\s\S]*?(?=### (?:DIFF )?|$)/g, '').trim();
+    let result = existingCode;
+
+    // Apply diffs first
+    result = applyDiffs(result, newCode);
+
+    // Then merge any full-file replacements
+    if (fullFileParts.includes('### ')) {
+      result = mergeFullFiles(result, fullFileParts);
+    }
+    return result;
+  }
+
+  // No diffs — standard full-file merge
+  return mergeFullFiles(existingCode, newCode);
+}
+
+function mergeFullFiles(existingCode, newCode) {
   const existingFiles = {};
   const newFiles = {};
   // Parse existing
@@ -1543,10 +1721,15 @@ Règles d'intégration automatique :
 - Mailchimp disponible → ajoute formulaire newsletter`;
   }
 
-  const systemPrompt = sectorProfile 
-    ? `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}\n\n${sectorProfile}` 
-    : `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`;
-  
+  // Build system prompt with Anthropic Prompt Caching
+  // Base prompt is identical across calls — cache for 5 min to save ~60% input tokens
+  const systemBlocks = [
+    { type: 'text', text: `${baseSystemPrompt}${contentGenPrompt}${apiIntegrationPrompt}`, cache_control: { type: 'ephemeral' } }
+  ];
+  if (sectorProfile) {
+    systemBlocks.push({ type: 'text', text: sectorProfile });
+  }
+
   // For modifications: always Sonnet (smarter for surgical edits). For new gen: based on complexity.
   const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
   const model = 'claude-sonnet-4-20250514';
@@ -1555,11 +1738,11 @@ Règles d'intégration automatique :
   job.status = 'running';
   job.progressMessage = 'Prestige AI travaille sur votre demande...';
 
-  const apiPayload = { model, max_tokens: maxTokens, system: systemPrompt, stream: true, messages,
+  const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
     tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
   };
   const payload = JSON.stringify(apiPayload);
-  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
+  const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
   
   anthropicRequest(payload, opts, (apiRes) => {
     let buffer = '';
