@@ -396,7 +396,24 @@ STRUCTURE index.html OBLIGATOIRE (racine du projet, PAS dans public/) :
 
 STRUCTURE src/index.css OBLIGATOIRE :
 @import "tailwindcss";
-(+ custom styles si nécessaire)
+
+:root {
+  --color-primary: #XXXX;       /* couleur principale — adaptée au secteur */
+  --color-primary-hover: #XXXX;
+  --color-secondary: #XXXX;
+  --color-accent: #XXXX;
+  --color-background: #ffffff;
+  --color-surface: #f8fafc;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-border: #e2e8f0;
+}
+
+DESIGN TOKENS OBLIGATOIRES :
+- Définir TOUTES les couleurs dans :root en CSS custom properties
+- Utiliser ces tokens dans Tailwind via style={{ color: 'var(--color-primary)' }} OU en classe utilitaire
+- Pour changer le thème entier, modifier seulement :root dans index.css
+- Jamais de couleurs hex en dur dans les composants — toujours des tokens ou Tailwind sémantique
 
 STRUCTURE src/main.jsx OBLIGATOIRE :
 import React from 'react';

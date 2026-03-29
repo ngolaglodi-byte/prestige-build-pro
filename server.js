@@ -411,6 +411,28 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 `;
 
 const DEFAULT_INDEX_CSS = `@import "tailwindcss";
+
+/* Design System Tokens — customize these for the project theme */
+:root {
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-secondary: #64748b;
+  --color-accent: #f59e0b;
+  --color-background: #ffffff;
+  --color-surface: #f8fafc;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-border: #e2e8f0;
+  --color-success: #16a34a;
+  --color-error: #dc2626;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+}
 `;
 
 const DEFAULT_APP_JSX = `import React from 'react';
@@ -1536,6 +1558,13 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
     savePartialToDb();
   }
 
+  // ── Quick JSX validation ──
+  const jsxErrors = validateJsxFiles(projectDir);
+  if (jsxErrors.length > 0) {
+    console.warn(`[Gen] JSX issues found: ${jsxErrors.length}`);
+    for (const err of jsxErrors) console.warn(`  ${err.file}: ${err.issue}`);
+  }
+
   // ── Finalize ──
   const finalFiles = readProjectFilesRecursive(projectDir);
   allCode = formatProjectCode(finalFiles);
@@ -1592,6 +1621,59 @@ function findMissingImports(projectDir) {
     }
   }
   return missing;
+}
+
+// Quick JSX validation — catch common errors before Vite build
+function validateJsxFiles(projectDir) {
+  const errors = [];
+  const srcDir = path.join(projectDir, 'src');
+  if (!fs.existsSync(srcDir)) return errors;
+
+  const jsxFiles = [];
+  function scanDir(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) scanDir(path.join(dir, entry.name));
+      else if (entry.name.endsWith('.jsx') || entry.name.endsWith('.js')) jsxFiles.push(path.join(dir, entry.name));
+    }
+  }
+  scanDir(srcDir);
+
+  for (const file of jsxFiles) {
+    const content = fs.readFileSync(file, 'utf8');
+    const rel = path.relative(projectDir, file);
+
+    // Must have export
+    if (!content.includes('export')) {
+      errors.push({ file: rel, issue: 'no export statement' });
+    }
+    // Must not have SUGGESTIONS: text
+    if (/^SUGGESTIONS:/m.test(content)) {
+      // Auto-fix: remove the line
+      const fixed = content.replace(/\n*SUGGESTIONS:[\s\S]*$/m, '').trim();
+      fs.writeFileSync(file, fixed);
+      errors.push({ file: rel, issue: 'SUGGESTIONS artifact removed' });
+    }
+    // Must not have markdown backticks
+    if (/^```/m.test(content)) {
+      const fixed = content.replace(/^```.*$/gm, '').trim();
+      fs.writeFileSync(file, fixed);
+      errors.push({ file: rel, issue: 'markdown backticks removed' });
+    }
+    // Check for unclosed JSX (very basic — count < vs />)
+    const openTags = (content.match(/<[A-Z]\w*/g) || []).length;
+    const closeTags = (content.match(/<\/[A-Z]\w*/g) || []).length;
+    const selfClose = (content.match(/\/>/g) || []).length;
+    if (openTags > closeTags + selfClose + 3) {
+      errors.push({ file: rel, issue: `possible unclosed JSX (${openTags} open, ${closeTags} close, ${selfClose} self-close)` });
+    }
+    // Check for duplicate default exports
+    const defaultExports = (content.match(/export default/g) || []).length;
+    if (defaultExports > 1) {
+      errors.push({ file: rel, issue: `${defaultExports} default exports (should be 1)` });
+    }
+  }
+  return errors;
 }
 
 // Write ### marked code sections to files in the project directory
@@ -2734,37 +2816,46 @@ function savePreviewFiles(projectId, code) {
 }
 
 // Inject error console script
+// ─── CLIENT-SIDE LOG STORAGE (ring buffer per project) ───
+const clientLogs = new Map(); // projectId → [{ level, message, timestamp }]
+const CLIENT_LOG_MAX = 100;
+
+function addClientLog(projectId, level, message) {
+  if (!projectId) return;
+  const key = String(projectId);
+  if (!clientLogs.has(key)) clientLogs.set(key, []);
+  const logs = clientLogs.get(key);
+  logs.push({ level, message: String(message).substring(0, 500), timestamp: new Date().toISOString() });
+  if (logs.length > CLIENT_LOG_MAX) logs.shift();
+}
+
 function injectErrorConsole(html) {
   const errorScript = `
 <script>
 (function() {
-  const errors = [];
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  
-  function notifyParent(type, msg) {
-    try {
-      window.parent.postMessage({ type: 'preview-console', level: type, message: String(msg) }, '*');
-    } catch(e) {}
+  var _log = console.log, _warn = console.warn, _err = console.error;
+  var _fetch = window.fetch;
+
+  function send(level, msg) {
+    try { window.parent.postMessage({ type: 'preview-console', level: level, message: String(msg).substring(0, 500) }, '*'); } catch(e) {}
   }
-  
-  console.error = function(...args) {
-    notifyParent('error', args.join(' '));
-    originalError.apply(console, args);
-  };
-  
-  console.warn = function(...args) {
-    notifyParent('warn', args.join(' '));
-    originalWarn.apply(console, args);
-  };
-  
-  window.onerror = function(msg, url, line, col, error) {
-    notifyParent('error', msg + ' (line ' + line + ')');
-    return false;
-  };
-  
-  window.onunhandledrejection = function(e) {
-    notifyParent('error', 'Promise rejected: ' + (e.reason?.message || e.reason || 'Unknown'));
+
+  console.log = function() { var m = [].slice.call(arguments).join(' '); send('log', m); _log.apply(console, arguments); };
+  console.warn = function() { var m = [].slice.call(arguments).join(' '); send('warn', m); _warn.apply(console, arguments); };
+  console.error = function() { var m = [].slice.call(arguments).join(' '); send('error', m); _err.apply(console, arguments); };
+
+  window.onerror = function(msg, url, line) { send('error', msg + ' (line ' + line + ')'); return false; };
+  window.onunhandledrejection = function(e) { send('error', 'Promise: ' + (e.reason && e.reason.message || e.reason || 'Unknown')); };
+
+  // Intercept fetch to capture network errors (4xx/5xx)
+  window.fetch = function(url, opts) {
+    return _fetch.apply(this, arguments).then(function(res) {
+      if (!res.ok) { send('network', res.status + ' ' + (opts && opts.method || 'GET') + ' ' + url); }
+      return res;
+    }).catch(function(err) {
+      send('network', 'FAILED ' + (opts && opts.method || 'GET') + ' ' + url + ': ' + err.message);
+      throw err;
+    });
   };
 })();
 </script>`;
@@ -3652,7 +3743,15 @@ function detectErrorType(logs, errorMessage = '') {
   if (combined.includes('timeout') || combined.includes('timed out')) {
     return ERROR_TYPES.TIMEOUT;
   }
-  
+
+  // Vite / React build errors
+  if (combined.includes('vite') || combined.includes('esbuild') ||
+      combined.includes('failed to resolve import') || combined.includes('expected ";"') ||
+      combined.includes('jsx') && combined.includes('error') ||
+      combined.includes('transform failed') || combined.includes('build failed')) {
+    return ERROR_TYPES.SYNTAX;
+  }
+
   return ERROR_TYPES.UNKNOWN;
 }
 
@@ -3781,8 +3880,19 @@ async function callClaudeForCorrection(originalCode, errorLogs, errorType) {
   }
   
   // Build a focused correction prompt with full project context
-  // Extract file list from code so AI understands the project structure
   const fileList = (originalCode.match(/### ([^\n]+)/g) || []).map(m => m.replace('### ', ''));
+
+  // Include client-side logs if available (frontend console errors, network failures)
+  // These help the AI understand runtime errors, not just build errors
+  const projIdMatch = originalCode.match(/project[_-]?id[:\s]+(\d+)/i);
+  let clientLogContext = '';
+  if (projIdMatch) {
+    const cLogs = clientLogs.get(projIdMatch[1]) || [];
+    const errorLogs2 = cLogs.filter(l => l.level === 'error' || l.level === 'network').slice(-10);
+    if (errorLogs2.length > 0) {
+      clientLogContext = `\n\nERREURS FRONTEND (console navigateur):\n${errorLogs2.map(l => `[${l.level}] ${l.message}`).join('\n')}`;
+    }
+  }
 
   // Identify which file likely caused the error
   const errorFileHints = [];
@@ -3800,8 +3910,9 @@ ${fileList.map(f => `  - ${f}`).join('\n')}
 
 ${errorFileHints.length ? `FICHIER(S) PROBABLEMENT EN CAUSE: ${errorFileHints.filter(Boolean).join(', ')}` : ''}
 
-LOGS D'ERREUR:
+LOGS D'ERREUR (serveur/build):
 ${errorLogs.substring(0, 3000)}
+${clientLogContext}
 
 CODE COMPLET DU PROJET:
 ${originalCode}
@@ -5471,6 +5582,23 @@ const server = http.createServer(async (req, res) => {
         timestamp: e.created_at
       }))
     });
+    return;
+  }
+
+  // ─── CLIENT-SIDE LOGS (from preview iframe) ───
+  if (url.match(/^\/api\/projects\/\d+\/client-logs$/) && req.method==='POST') {
+    const id = parseInt(url.split('/')[3]);
+    const { level, message: logMsg } = await getBody(req);
+    if (level && logMsg) addClientLog(id, level, logMsg);
+    json(res, 200, { ok: true });
+    return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/client-logs$/) && req.method==='GET') {
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(id);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const logs = clientLogs.get(String(id)) || [];
+    json(res, 200, { logs, count: logs.length });
     return;
   }
 
