@@ -87,26 +87,66 @@ const API_MAX_RETRIES = 5;
 const API_QUEUE = [];
 let apiRunning = false;
 
+// Human-readable error messages for each API status code
+const API_ERROR_MESSAGES = {
+  400: 'Requête invalide. Le brief contient peut-être des caractères non supportés.',
+  401: 'Clé API Anthropic invalide ou expirée. Contactez l\'administrateur.',
+  402: 'Crédit API épuisé. Le compte Anthropic doit être rechargé. Contactez l\'administrateur.',
+  403: 'Accès API refusé. Vérifiez les permissions de la clé API.',
+  404: 'Modèle API non trouvé. Contactez l\'administrateur.',
+  413: 'Le brief est trop long. Réduisez la taille de votre demande.',
+  429: 'API surchargée. Réessai automatique en cours...',
+  500: 'Erreur interne du serveur Anthropic. Réessayez dans quelques minutes.',
+  529: 'Serveur Anthropic surchargé. Réessai automatique en cours...'
+};
+
 function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 0) {
   const r = https.request(opts, apiRes => {
-    if (apiRes.statusCode === 429 || apiRes.statusCode === 529) {
-      // Rate limited or overloaded — wait and retry
+    const status = apiRes.statusCode;
+
+    // Retryable errors: 429 (rate limit) and 529 (overloaded)
+    if (status === 429 || status === 529) {
       let body = '';
       apiRes.on('data', c => body += c);
       apiRes.on('end', () => {
         const retryAfter = parseInt(apiRes.headers['retry-after'] || '60');
         const wait = Math.min(retryAfter, 120) * 1000;
         if (retryCount < API_MAX_RETRIES) {
-          console.log(`[API] Rate limited (${apiRes.statusCode}), retry ${retryCount + 1}/${API_MAX_RETRIES} in ${wait / 1000}s`);
+          console.log(`[API] ${status} rate limited, retry ${retryCount + 1}/${API_MAX_RETRIES} in ${wait / 1000}s`);
           if (job) job.progressMessage = `File d'attente API... (tentative ${retryCount + 1}/${API_MAX_RETRIES})`;
           setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), wait);
         } else {
           console.error(`[API] Rate limit exhausted after ${API_MAX_RETRIES} retries`);
-          onError(new Error('Limite API atteinte. Réessayez dans quelques minutes.'));
+          onError(new Error(API_ERROR_MESSAGES[status] || 'Limite API atteinte.'));
         }
       });
       return;
     }
+
+    // Non-retryable errors: 400, 401, 402, 403, 404, 413, 500
+    if (status >= 400 && status !== 200) {
+      let body = '';
+      apiRes.on('data', c => body += c);
+      apiRes.on('end', () => {
+        const friendlyMsg = API_ERROR_MESSAGES[status] || `Erreur API (${status}).`;
+        console.error(`[API] HTTP ${status}: ${body.substring(0, 300)}`);
+
+        // Special handling for billing/quota (402)
+        if (status === 402) {
+          console.error('[API] ⚠️ BILLING ISSUE — Anthropic account needs funding');
+          if (job) job.progressMessage = '⚠️ Crédit API épuisé';
+        }
+
+        // Special handling for bad API key (401)
+        if (status === 401) {
+          console.error('[API] ⚠️ INVALID API KEY — check ANTHROPIC_API_KEY env var');
+        }
+
+        onError(new Error(friendlyMsg));
+      });
+      return;
+    }
+
     onResponse(apiRes);
   });
   r.on('error', e => {
@@ -114,15 +154,68 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
       console.log(`[API] Network error, retrying in 5s: ${e.message}`);
       setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), 5000);
     } else {
-      onError(e);
+      onError(new Error('Erreur réseau. Vérifiez la connexion internet du serveur.'));
     }
   });
   r.setTimeout(CLAUDE_CODE_TIMEOUT_MS, () => {
     r.destroy();
-    onError(new Error('Délai dépassé pour la génération API.'));
+    onError(new Error('Délai dépassé (5 min). Le brief est peut-être trop complexe — essayez en le simplifiant.'));
   });
   r.write(payload);
   r.end();
+}
+
+// ─── TOKEN USAGE TRACKING ───
+// Pricing per million tokens (Claude Sonnet 4)
+const TOKEN_PRICING = {
+  'claude-sonnet-4-20250514': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
+  'default': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 }
+};
+
+function trackTokenUsage(userId, projectId, operation, model, usage) {
+  if (!db || !usage) return;
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const cacheRead = usage.cache_read_input_tokens || usage.cache_creation_input_tokens || 0;
+  const cacheWrite = usage.cache_creation_input_tokens || 0;
+
+  const pricing = TOKEN_PRICING[model] || TOKEN_PRICING['default'];
+  const costUsd = (
+    (inputTokens / 1_000_000) * pricing.input +
+    (outputTokens / 1_000_000) * pricing.output +
+    (cacheRead / 1_000_000) * pricing.cache_read +
+    (cacheWrite / 1_000_000) * pricing.cache_write
+  );
+
+  try {
+    db.prepare('INSERT INTO token_usage (user_id, project_id, operation, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(userId || null, projectId || null, operation, model, inputTokens, outputTokens, cacheRead, cacheWrite, Math.round(costUsd * 100000) / 100000);
+    console.log(`[Tokens] ${operation}: ${inputTokens}in + ${outputTokens}out = $${costUsd.toFixed(4)} (user:${userId} proj:${projectId})`);
+  } catch (e) {
+    console.error('[Tokens] Track error:', e.message);
+  }
+}
+
+// Check if user has exceeded their generation quota
+function checkUserQuota(userId) {
+  if (!db) return { allowed: true };
+  const user = db.prepare('SELECT role, daily_generation_limit, monthly_generation_limit FROM users WHERE id=?').get(userId);
+  if (!user) return { allowed: false, reason: 'Utilisateur non trouvé.' };
+  if (user.role === 'admin') return { allowed: true }; // admin = illimité
+
+  const dailyLimit = user.daily_generation_limit || 50;
+  const monthlyLimit = user.monthly_generation_limit || 500;
+
+  const todayCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation IN ('generate','modify') AND created_at >= date('now')").get(userId)?.c || 0;
+  const monthCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation IN ('generate','modify') AND created_at >= date('now','start of month')").get(userId)?.c || 0;
+
+  if (todayCount >= dailyLimit) {
+    return { allowed: false, reason: `Limite quotidienne atteinte (${dailyLimit} générations/jour). Réessayez demain.`, daily: todayCount, dailyLimit };
+  }
+  if (monthCount >= monthlyLimit) {
+    return { allowed: false, reason: `Limite mensuelle atteinte (${monthlyLimit} générations/mois). Contactez l'administrateur.`, monthly: monthCount, monthlyLimit };
+  }
+  return { allowed: true, daily: todayCount, dailyLimit, monthly: monthCount, monthlyLimit, remaining: dailyLimit - todayCount };
 }
 
 // Preview system constants
@@ -367,6 +460,7 @@ try {
     CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version_number INTEGER NOT NULL, generated_code TEXT, screenshot_url TEXT, created_by INTEGER, created_at TEXT DEFAULT (datetime('now')), message TEXT, FOREIGN KEY(project_id) REFERENCES projects(id));
     CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, error_type TEXT NOT NULL, error_message TEXT, docker_logs TEXT, correction_attempt INTEGER DEFAULT 1, corrected INTEGER DEFAULT 0, corrected_code TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
+    CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, project_id INTEGER, operation TEXT NOT NULL, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
   `);
   const bcrypt = require('bcryptjs');
   const ADMIN_EMAIL = 'admin@prestige-build.dev';
@@ -384,8 +478,10 @@ try {
   console.log(`[DB] ${allUsers.length} user(s): ${allUsers.map(u => u.email + ' (' + u.role + ')').join(', ')}`);
 } catch(e) { console.error('DB:', e.message); }
 
-// Add github_repo column to projects if missing
+// Add missing columns (safe — ALTER TABLE errors silently if column exists)
 try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) { /* already exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAULT 50'); } catch(e) { /* already exists */ }
+try { db.exec('ALTER TABLE users ADD COLUMN monthly_generation_limit INTEGER DEFAULT 500'); } catch(e) { /* already exists */ }
 
 // ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
 const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName}>>
@@ -1078,7 +1174,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 // Streams from the API, parses ### markers, writes files to project dir.
 // ─── MULTI-TURN API CALL HELPER ───
 // Makes a non-streaming API call and returns the text response
-function callClaudeAPI(systemBlocks, messages, maxTokens = 16000) {
+function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo = null) {
   return new Promise((resolve, reject) => {
     const model = 'claude-sonnet-4-20250514';
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
@@ -1109,6 +1205,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000) {
           const r = JSON.parse(data);
           if (r.content?.[0]?.text) {
             console.log(`[callClaudeAPI] OK: ${r.content[0].text.length} chars, usage: ${JSON.stringify(r.usage || {})}`);
+            // Track token usage if tracking info provided
+            if (trackingInfo && r.usage) {
+              trackTokenUsage(trackingInfo.userId, trackingInfo.projectId, trackingInfo.operation, model, r.usage);
+            }
             resolve(r.content[0].text);
           }
           else if (r.error) reject(new Error(r.error.message));
@@ -1188,7 +1288,8 @@ Retourne ce JSON exact (rien d'autre) :
 
   let plan;
   try {
-    const planText = await callClaudeAPI(systemBlocks, [{ role: 'user', content: planPrompt }], 2000);
+    const tracking = { userId: job.user_id, projectId, operation: 'generate-plan' };
+    const planText = await callClaudeAPI(systemBlocks, [{ role: 'user', content: planPrompt }], 2000, tracking);
     // Extract JSON from response (might have text around it)
     const jsonMatch = planText.match(/\{[\s\S]*\}/);
     plan = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
@@ -1234,7 +1335,7 @@ Le server.js doit avoir TOUTES les tables et routes API. C'est le backend COMPLE
 À la fin de server.js : // CREDENTIALS: email=${plan.adminEmail} password=[MotDePasse fort]`;
 
   try {
-    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000);
+    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000, { userId: job.user_id, projectId, operation: 'generate' });
     allCode = infraCode;
     writeGeneratedFiles(projectDir, infraCode);
     job.code = allCode;
@@ -1275,7 +1376,7 @@ Les pages font fetch('/api/...') pour les données dynamiques.`;
       { role: 'user', content: infraPrompt },
       { role: 'assistant', content: 'Infrastructure générée. Les 6 fichiers (package.json, vite.config.js, index.html, server.js, src/main.jsx, src/index.css) sont prêts.' },
       { role: 'user', content: uiPrompt }
-    ], 64000);
+    ], 64000, { userId: job.user_id, projectId, operation: 'generate' });
     allCode = mergeModifiedCode(allCode, uiCode);
     writeGeneratedFiles(projectDir, uiCode);
     job.code = allCode;
@@ -1301,7 +1402,7 @@ Génère ces fichiers avec ### markers :
 Chaque fichier : export default function, TailwindCSS, lucide-react pour icônes.
 Contenu professionnel et réaliste, zéro lorem ipsum.`;
 
-      const retryCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: retryPrompt }], 32000);
+      const retryCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: retryPrompt }], 32000, { userId: job.user_id, projectId, operation: 'generate' });
       allCode = mergeModifiedCode(allCode, retryCode);
       writeGeneratedFiles(projectDir, retryCode);
       job.code = allCode;
@@ -4434,8 +4535,16 @@ const server = http.createServer(async (req, res) => {
   // ─── GENERATE START (POLLING) ───
   if (url==='/api/generate/start' && req.method==='POST') {
     const {project_id, message}=await getBody(req);
+
+    // Check user quota before starting generation
+    const quota = checkUserQuota(user.id);
+    if (!quota.allowed) {
+      json(res, 429, { error: quota.reason, quota: { daily: quota.daily, dailyLimit: quota.dailyLimit, monthly: quota.monthly, monthlyLimit: quota.monthlyLimit } });
+      return;
+    }
+
     const jobId = crypto.randomUUID();
-    
+
     // Initialize job in Map
     generationJobs.set(jobId, {
       status: 'pending',
@@ -5137,6 +5246,37 @@ const server = http.createServer(async (req, res) => {
   if (url==='/api/apikeys/names' && req.method==='GET') { json(res,200,db.prepare('SELECT name,service,description FROM api_keys').all()); return; }
   if (url==='/api/apikeys' && req.method==='POST') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} const {name,service,key_value,description}=await getBody(req); const i=db.prepare('INSERT INTO api_keys (name,service,key_value,description) VALUES (?,?,?,?)').run(name,service,key_value,description); json(res,200,{id:i.lastInsertRowid}); return; }
   if (url.match(/^\/api\/apikeys\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM api_keys WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+
+  // ─── USER USAGE / QUOTA (accessible by any authenticated user) ───
+  if (url === '/api/usage' && req.method === 'GET') {
+    const quota = checkUserQuota(user.id);
+    const todayTokens = db.prepare("SELECT COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out, COALESCE(SUM(cost_usd),0) as cost FROM token_usage WHERE user_id=? AND created_at >= date('now')").get(user.id);
+    const monthTokens = db.prepare("SELECT COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out, COALESCE(SUM(cost_usd),0) as cost FROM token_usage WHERE user_id=? AND created_at >= date('now','start of month')").get(user.id);
+    json(res, 200, {
+      quota: { daily: quota.daily || 0, dailyLimit: quota.dailyLimit || 50, monthly: quota.monthly || 0, monthlyLimit: quota.monthlyLimit || 500, remaining: quota.remaining || 0 },
+      today: { input_tokens: todayTokens.inp, output_tokens: todayTokens.out, cost_usd: Math.round(todayTokens.cost * 10000) / 10000 },
+      month: { input_tokens: monthTokens.inp, output_tokens: monthTokens.out, cost_usd: Math.round(monthTokens.cost * 10000) / 10000 }
+    });
+    return;
+  }
+
+  // ─── ADMIN: USAGE DASHBOARD ───
+  if (url === '/api/admin/usage' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const today = db.prepare("SELECT COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out, COALESCE(SUM(cost_usd),0) as cost, COUNT(*) as calls FROM token_usage WHERE created_at >= date('now')").get();
+    const month = db.prepare("SELECT COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out, COALESCE(SUM(cost_usd),0) as cost, COUNT(*) as calls FROM token_usage WHERE created_at >= date('now','start of month')").get();
+    const byUser = db.prepare("SELECT u.email, u.name, COUNT(*) as calls, COALESCE(SUM(t.input_tokens),0) as inp, COALESCE(SUM(t.output_tokens),0) as out, COALESCE(SUM(t.cost_usd),0) as cost FROM token_usage t LEFT JOIN users u ON t.user_id=u.id WHERE t.created_at >= date('now','start of month') GROUP BY t.user_id ORDER BY cost DESC").all();
+    const byProject = db.prepare("SELECT p.title, t.project_id, COUNT(*) as calls, COALESCE(SUM(t.input_tokens),0) as inp, COALESCE(SUM(t.output_tokens),0) as out, COALESCE(SUM(t.cost_usd),0) as cost FROM token_usage t LEFT JOIN projects p ON t.project_id=p.id WHERE t.created_at >= date('now','start of month') AND t.project_id IS NOT NULL GROUP BY t.project_id ORDER BY cost DESC LIMIT 20").all();
+    const recentCalls = db.prepare("SELECT t.*, u.email FROM token_usage t LEFT JOIN users u ON t.user_id=u.id ORDER BY t.id DESC LIMIT 50").all();
+    json(res, 200, {
+      today: { input_tokens: today.inp, output_tokens: today.out, cost_usd: Math.round(today.cost * 10000) / 10000, api_calls: today.calls },
+      month: { input_tokens: month.inp, output_tokens: month.out, cost_usd: Math.round(month.cost * 10000) / 10000, api_calls: month.calls },
+      by_user: byUser.map(u => ({ ...u, cost: Math.round(u.cost * 10000) / 10000 })),
+      by_project: byProject.map(p => ({ ...p, cost: Math.round(p.cost * 10000) / 10000 })),
+      recent: recentCalls.slice(0, 20)
+    });
+    return;
+  }
 
   // ─── ADMIN SYSTEM STATS ───
   if (url === '/api/admin/system' && req.method === 'GET') {
