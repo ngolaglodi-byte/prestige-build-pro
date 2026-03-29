@@ -3143,12 +3143,52 @@ Règles d'intégration automatique :
             currentToolJson += d.delta.partial_json;
           }
 
-          // Tool use end — parse and store
+          // Tool use end — parse, store, and IMMEDIATELY write to container (like Lovable)
           if (d.type === 'content_block_stop' && currentToolId) {
             try {
               const input = JSON.parse(currentToolJson);
               toolBlocks.push({ name: currentToolName, id: currentToolId, input });
-              if (currentToolName === 'write_file' && input.path) {
+
+              // REAL-TIME: Write file to container IMMEDIATELY as each tool call completes
+              // This makes the preview update progressively (like Lovable)
+              if (currentToolName === 'write_file' && input.path && input.content && job.project_id) {
+                job.progressMessage = `${input.path}`;
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                const cleanContent = cleanGeneratedContent(input.content);
+                // Skip canonical files
+                if (!PROTECTED_FILES.has(input.path) && !input.path.startsWith('src/components/ui/') && !input.path.startsWith('src/lib/') && !input.path.startsWith('src/hooks/') && cleanContent) {
+                  // Write to disk
+                  const filePath = path.join(projDir, input.path);
+                  const fileDir = path.dirname(filePath);
+                  if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+                  fs.writeFileSync(filePath, cleanContent);
+                  // Push to running container — Vite HMR picks it up instantly
+                  try {
+                    const containerName = getContainerName(job.project_id);
+                    const { execSync } = require('child_process');
+                    execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
+                    console.log(`[Stream] Live push: ${input.path} → container`);
+                  } catch { /* container might not be ready yet */ }
+                }
+              } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
+                job.progressMessage = `Modifie: ${input.path}`;
+                // Apply edit immediately
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                const filePath = path.join(projDir, input.path);
+                if (fs.existsSync(filePath)) {
+                  let content = fs.readFileSync(filePath, 'utf8');
+                  if (content.includes(input.search)) {
+                    content = content.replace(input.search, input.replace || '');
+                    fs.writeFileSync(filePath, content);
+                    try {
+                      const containerName = getContainerName(job.project_id);
+                      const { execSync } = require('child_process');
+                      execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
+                      console.log(`[Stream] Live edit: ${input.path} → container`);
+                    } catch {}
+                  }
+                }
+              } else if (currentToolName === 'write_file' && input.path) {
                 job.progressMessage = `Fichier: ${input.path}`;
               }
             } catch (parseErr) {
