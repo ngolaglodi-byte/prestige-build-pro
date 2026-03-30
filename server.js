@@ -2214,7 +2214,32 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
 
 Génère SEULEMENT ces 2 fichiers :
 ### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/index.css — NE PAS inclure @import "tailwindcss" ni @theme (déjà fourni). Génère SEULEMENT :root { --color-primary-val: [couleur secteur]; --color-primary-hover; --color-secondary-val; --color-accent-val; --color-bg; --color-surface; --color-text; --color-text-muted-val; --color-border-val; --color-error-val; --color-success-val; --color-warning-val; }
+### src/index.css — COMMENCE par @import "tailwindcss"; puis le bloc @theme puis :root. Voici le FORMAT EXACT :
+@import "tailwindcss";
+@theme {
+  --color-background: var(--color-bg, #ffffff);
+  --color-foreground: var(--color-text, #0f172a);
+  --color-card: var(--color-surface, #f8fafc);
+  --color-card-foreground: var(--color-text, #0f172a);
+  --color-popover: var(--color-surface, #f8fafc);
+  --color-popover-foreground: var(--color-text, #0f172a);
+  --color-primary: var(--color-primary-val, #2563eb);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-secondary-val, #f1f5f9);
+  --color-secondary-foreground: var(--color-text, #0f172a);
+  --color-muted: var(--color-surface, #f8fafc);
+  --color-muted-foreground: var(--color-text-muted-val, #64748b);
+  --color-accent: var(--color-surface, #f8fafc);
+  --color-accent-foreground: var(--color-text, #0f172a);
+  --color-destructive: var(--color-error-val, #dc2626);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--color-border-val, #e2e8f0);
+  --color-input: var(--color-border-val, #e2e8f0);
+  --color-ring: var(--color-primary-val, #2563eb);
+  --radius-sm: 0.375rem; --radius-md: 0.5rem; --radius-lg: 0.75rem; --radius-xl: 1rem;
+}
+:root { --color-primary-val: [COULEUR SECTEUR]; --color-primary-hover: [hover]; --color-bg: #ffffff; --color-surface: #f8fafc; --color-text: #0f172a; --color-text-muted-val: #64748b; --color-border-val: #e2e8f0; --color-secondary-val: [couleur]; --color-accent-val: [couleur]; --color-error-val: #dc2626; --color-success-val: #16a34a; --color-warning-val: #f59e0b; }
+Puis styles body, animations, scrollbar.
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
@@ -2247,29 +2272,54 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
   const phase2Start = Date.now();
   console.log(`[Gen] Phase 2+3: Pages + Components IN PARALLEL`);
 
-  const pagesPrompt = `Génère App.jsx et les pages React.
+  const pagesPrompt = `Génère App.tsx et les pages React pour ce projet.
 
 Brief: ${brief}
 
-Génère ces fichiers avec ### markers :
-### src/App.tsx — import BrowserRouter,Routes,Route. Import Header,Footer,Home,About,Contact (ou pages adaptées au brief). Layout: <Header/> + <Routes> + <Footer/>
-### src/pages/Home.tsx — page d'accueil COMPLÈTE: hero section, sections principales, contenu réaliste en français, fetch('/api/...') pour données dynamiques
-### src/pages/About.tsx — page à propos, histoire, équipe, valeurs
-### src/pages/Contact.tsx — formulaire contact complet avec validation useState, carte/adresse
+COULEURS : utilise UNIQUEMENT les classes Tailwind du @theme :
+  bg-primary, text-primary-foreground, bg-secondary, text-secondary-foreground,
+  bg-muted, text-muted-foreground, bg-card, text-card-foreground, border-border,
+  bg-background, text-foreground, bg-destructive, text-destructive-foreground.
+  JAMAIS de var() dans className. JAMAIS de hex en dur. JAMAIS de bg-gray-*.
 
-Chaque fichier : export default function, TailwindCSS classes, lucide-react icônes, responsive.
-Contenu PRO français, zéro lorem ipsum. Images: picsum.photos.`;
+CONTENU : tout le contenu est EN DUR dans le JSX (const data = [...]).
+  JAMAIS de fetch('/api/...') pour afficher du contenu sur les pages.
+  fetch() UNIQUEMENT pour les formulaires (submit contact, réservation).
+
+Génère ces fichiers :
+### src/App.tsx — BrowserRouter, Routes, Route. Import Header, Footer, et toutes les pages. Layout: <Header/> + <main className="flex-1"><Routes>...</Routes></main> + <Footer/>
+
+### src/pages/Home.tsx — Page d'accueil COMPLÈTE avec TOUTES ces sections visibles en scrollant :
+  1. Hero plein écran : grand titre, sous-titre, 2 boutons CTA (<Button asChild><Link to="...">)
+  2. Services/produits : 3-6 cartes avec icônes lucide-react (données EN DUR dans un const)
+  3. À propos résumé : texte + image picsum.photos
+  4. Témoignages : 3 avis clients (données EN DUR) avec étoiles Star de lucide-react
+  5. CTA final : titre + bouton réservation/contact
+  MINIMUM 200 lignes. Contenu réaliste français. Pas de loading state, pas de fetch.
+
+### src/pages/About.tsx — histoire, équipe (3 personnes EN DUR), valeurs. Contenu statique.
+### src/pages/Contact.tsx — formulaire contact (useState pour les champs, fetch POST /api/contact sur submit). Adresse, téléphone, email, horaires EN DUR.
+
+Chaque page : export default function, responsive, lucide-react, contenu PRO français.`;
 
   const compsPrompt = `Génère les composants React réutilisables.
 
 Brief: ${brief}
 
-Génère ces fichiers avec ### markers :
-### src/components/Header.tsx — header sticky responsive, logo, nav desktop + menu hamburger mobile (useState), liens: Accueil, À propos, Contact
-### src/components/Footer.tsx — footer professionnel, copyright 2024, liens rapides, coordonnées
-### src/components/HeroSection.tsx — hero plein écran, titre accrocheur, sous-titre, CTA button, image de fond picsum.photos
+COULEURS : bg-primary, text-primary-foreground, bg-muted, text-muted-foreground, border-border, etc.
+JAMAIS de var() dans className. JAMAIS de hex en dur.
 
-Chaque composant : export default function, TailwindCSS, lucide-react. Design pro, responsive.`;
+### src/components/Header.tsx — header sticky responsive:
+  - Logo (texte) + navigation desktop (liens avec <Link to="...">)
+  - Menu hamburger mobile (useState pour open/close, Menu/X icons de lucide-react)
+  - <Button asChild><Link to="/contact">Contact</Link></Button> à droite
+  - Fond bg-background, bordure border-b border-border
+
+### src/components/Footer.tsx — footer professionnel:
+  - 3-4 colonnes : liens rapides, horaires, coordonnées, réseaux sociaux
+  - Copyright 2024. Texte text-muted-foreground. Fond bg-muted.
+
+Chaque composant : export default function, responsive, lucide-react.`;
 
   // Launch BOTH in parallel — they don't depend on each other
   const [pagesResult, compsResult] = await Promise.allSettled([

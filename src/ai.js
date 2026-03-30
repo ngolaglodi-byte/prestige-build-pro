@@ -392,15 +392,55 @@ COMMENCER SIMPLE — ajouter de la complexité seulement quand nécessaire.
 Ne construis que ce qui est explicitement demandé. Pas de features "bonus".
 
 ═══════════════════════════════════════════════
+ PAGE D'ACCUEIL — RÈGLES CRITIQUES
+═══════════════════════════════════════════════
+
+La Home.tsx DOIT afficher un site COMPLET et professionnel quand on scrolle :
+1. Hero section plein écran avec titre, sous-titre, CTA
+2. Section services/produits (3-6 cartes) avec CONTENU EN DUR
+3. Section à propos courte avec image
+4. Section témoignages (3 avis) avec CONTENU EN DUR
+5. Section CTA finale avec bouton
+
+RÈGLE CRITIQUE : Le contenu des pages est EN DUR dans le JSX.
+  CORRECT : const services = [{name: "Coupe femme", price: "45€"}, ...]
+  INTERDIT : fetch('/api/services') → les API ne sont pas toujours prêtes
+
+Les données de démo (services, produits, témoignages, équipe) sont des CONSTANTES
+définies EN HAUT du composant, PAS des useState + useEffect + fetch.
+Réserve fetch() UNIQUEMENT pour les formulaires (contact, réservation, login).
+
+Les boutons de navigation utilisent <Link to="/page"> de react-router-dom.
+Les boutons CTA utilisent <Button asChild><Link to="/page">Texte</Link></Button>.
+JAMAIS de onClick={() => window.location} ou de href="#section".
+
+═══════════════════════════════════════════════
  DESIGN SYSTEM — Couleurs, tokens, composants
 ═══════════════════════════════════════════════
 
-TOKENS CSS (définis dans src/index.css :root) :
-- TOUTES les couleurs en CSS custom properties (--color-primary, --color-secondary, etc.)
-- JAMAIS de couleurs hex en dur dans les composants
-- JAMAIS de classes Tailwind de couleur directe (text-blue-600, bg-gray-100)
-- TOUJOURS utiliser les tokens : bg-[var(--color-primary)], text-[var(--color-text)]
-- Pour changer le thème → modifier UNIQUEMENT :root dans index.css
+TOKENS CSS EXACTS (définis par @theme dans index.css — utilise UNIQUEMENT ceux-ci) :
+- bg-background, text-foreground — fond principal et texte
+- bg-card, text-card-foreground — cartes
+- bg-primary, text-primary-foreground — boutons principaux, accents
+- bg-secondary, text-secondary-foreground — boutons secondaires
+- bg-muted, text-muted-foreground — texte discret, fonds subtils
+- bg-accent, text-accent-foreground — hover, fonds alternatifs
+- bg-destructive, text-destructive-foreground — erreurs, danger
+- border-border — bordures
+- ring-ring — focus ring
+- bg-popover, text-popover-foreground — popovers, dropdowns
+
+EXEMPLES CORRECTS :
+  className="bg-primary text-primary-foreground" — bouton principal
+  className="text-muted-foreground" — texte gris discret
+  className="border border-border" — bordure standard
+  className="bg-card rounded-lg shadow-sm" — carte
+
+INTERDIT :
+  JAMAIS de hex en dur : text-[#2563eb], bg-[#f8fafc]
+  JAMAIS de var() dans className : bg-[var(--color-primary)]
+  JAMAIS de couleurs Tailwind directes : text-blue-600, bg-gray-100
+  JAMAIS de tokens inventes : --color-text-light, --color-primary-dark (N'EXISTENT PAS)
 
 COMPOSANTS UI — Utilise le PATH ALIAS @/ pour TOUS les imports :
 
