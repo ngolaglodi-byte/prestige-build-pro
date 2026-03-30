@@ -437,7 +437,7 @@ if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 }
 
-db.exec(\\\`
+db.exec(\`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -446,7 +446,7 @@ db.exec(\\\`
     role TEXT DEFAULT 'user',
     created_at TEXT DEFAULT (datetime('now'))
   );
-\\\`);
+\`);
 
 const adminExists = db.prepare('SELECT id FROM users WHERE email = ?').get('admin@project.com');
 if (!adminExists) {
@@ -481,7 +481,7 @@ app.get(/.*/, (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(\\\`Server running on port \\\${PORT}\\\`));
+app.listen(PORT, () => console.log(\`Server running on port \${PORT}\`));
 
 // CREDENTIALS: email=admin@project.com password=Admin2024!
 `;
@@ -1736,7 +1736,7 @@ function executeServerTool(toolName, toolInput) {
         if (toolInput.file_glob && !entry.name.match(new RegExp(toolInput.file_glob.replace(/\*/g, '.*')))) continue;
         try {
           const content = fs.readFileSync(fp, 'utf8');
-          const regex = new RegExp(toolInput.pattern, 'gi');
+          const regex = new RegExp(toolInput.pattern, 'i');
           content.split('\n').forEach((line, i) => {
             if (regex.test(line)) {
               results.push(`${path.relative(toolInput._projectDir, fp)}:${i + 1}: ${line.trim()}`);
@@ -2050,7 +2050,7 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
 
             // Execute server-side tools (fetch_website, read_console_logs, security_check)
             // and return results to Claude in a follow-up call if needed
-            if (serverCalls > 0) {
+            if (serverCalls > 0 && (opts._depth || 0) < 5) {
               (async () => {
                 try {
                   const toolResults = [];
@@ -2064,12 +2064,12 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                     toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
                     console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
                   }
-                  // Continue conversation with tool results
+                  // Continue conversation with tool results (all in one user message per Anthropic API spec)
                   const followUp = await callClaudeAPI(systemBlocks, [
                     ...messages,
                     { role: 'assistant', content: r.content },
-                    ...toolResults.map(tr => ({ role: 'user', content: [tr] }))
-                  ], maxTokens, trackingInfo, opts);
+                    { role: 'user', content: toolResults }
+                  ], maxTokens, trackingInfo, { ...opts, _depth: (opts._depth || 0) + 1 });
                   resolve(followUp);
                 } catch (e) {
                   // Server tool failed — still return what we have
@@ -2449,7 +2449,7 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
         execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
         // Restart Express to pick up new routes/tables
         try {
-          execSync(`docker exec ${containerName} sh -c "kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo \\$! > /tmp/express.pid"`, { timeout: 10000 });
+          execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 });
         } catch {}
       }
     }
@@ -2623,20 +2623,20 @@ function validateJsxFiles(projectDir) {
     // Auto-fix relative imports → @/ alias (the AI sometimes generates ../ despite the prompt)
     if (/from ['"]\.\.\//.test(content) || /from ['"]\.\/components/.test(content) || /from ['"]\.\/pages/.test(content)) {
       let fixed = content;
-      // ../components/ → @/components/
-      fixed = fixed.replace(/from ['"]\.\.\/components\//g, "from '@/components/");
-      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/components\//g, "from '@/components/");
+      // ../components/ → @/components/ (preserve original quote style)
+      fixed = fixed.replace(/from (['"])\.\.\/components\//g, "from $1@/components/");
+      fixed = fixed.replace(/from (['"])\.\.\/\.\.\/components\//g, "from $1@/components/");
       // ../pages/ → @/pages/
-      fixed = fixed.replace(/from ['"]\.\.\/pages\//g, "from '@/pages/");
+      fixed = fixed.replace(/from (['"])\.\.\/pages\//g, "from $1@/pages/");
       // ../lib/ → @/lib/
-      fixed = fixed.replace(/from ['"]\.\.\/lib\//g, "from '@/lib/");
-      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/lib\//g, "from '@/lib/");
+      fixed = fixed.replace(/from (['"])\.\.\/lib\//g, "from $1@/lib/");
+      fixed = fixed.replace(/from (['"])\.\.\/\.\.\/lib\//g, "from $1@/lib/");
       // ../hooks/ → @/hooks/
-      fixed = fixed.replace(/from ['"]\.\.\/hooks\//g, "from '@/hooks/");
-      fixed = fixed.replace(/from ['"]\.\.\/\.\.\/hooks\//g, "from '@/hooks/");
+      fixed = fixed.replace(/from (['"])\.\.\/hooks\//g, "from $1@/hooks/");
+      fixed = fixed.replace(/from (['"])\.\.\/\.\.\/hooks\//g, "from $1@/hooks/");
       // ./components/ → @/components/ (from App.tsx)
-      fixed = fixed.replace(/from ['"]\.\/components\//g, "from '@/components/");
-      fixed = fixed.replace(/from ['"]\.\/pages\//g, "from '@/pages/");
+      fixed = fixed.replace(/from (['"])\.\/components\//g, "from $1@/components/");
+      fixed = fixed.replace(/from (['"])\.\/pages\//g, "from $1@/pages/");
       if (fixed !== content) {
         fs.writeFileSync(file, fixed);
         errors.push({ file: rel, issue: 'relative imports converted to @/' });
@@ -2707,7 +2707,7 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
     }
 
     // 2) Validate essential React files exist
-    const essentialFiles = ['index.html', 'src/main.tsx', 'src/App.jsx', 'vite.config.js'];
+    const essentialFiles = ['index.html', 'src/main.tsx', 'src/App.tsx', 'vite.config.js'];
     let missingFiles = [];
     for (const f of essentialFiles) {
       if (!fs.existsSync(path.join(projDir, f))) missingFiles.push(f);
@@ -4529,9 +4529,9 @@ async function launchTemplateContainer(projectId) {
       'node server.js & echo $! > /tmp/express.pid',
       // Start Vite with correct base path
       `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
-      // Keep alive
+      // Keep alive (use ; so this always runs even if Vite/Express crash)
       'while true; do sleep 3600; done'
-    ].join(' && ')],
+    ].join('; ')],
     HostConfig: {
       NetworkMode: DOCKER_NETWORK,
       RestartPolicy: { Name: 'unless-stopped' },
@@ -6201,7 +6201,12 @@ const server = http.createServer(async (req, res) => {
       job.finalized = true;
       if (activeGenerations > 0) activeGenerations--;
     }
-    
+    // Also decrement counter on error (prevents counter leak blocking all future generations)
+    if (job.status === 'error' && !job.finalized) {
+      job.finalized = true;
+      if (activeGenerations > 0) activeGenerations--;
+    }
+
     // Return user-friendly message from Claude Code progress
     const progressMessage = job.progressMessage || (job.status === 'pending' ? 'En attente...' : 
       job.status === 'running' ? 'Génération en cours...' : 
@@ -6396,7 +6401,7 @@ const server = http.createServer(async (req, res) => {
         const container = docker.getContainer(containerName);
         // Kill and restart only the Express process, not Vite
         try {
-          execSync(`docker exec ${containerName} sh -c "kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid"`, { timeout: 10000 });
+          execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 });
         } catch {
           // Fallback: full container restart
           await container.restart({ t: 2 });

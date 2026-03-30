@@ -697,7 +697,7 @@ async function api(url, method = 'GET', body = null) {
   return r.json();
 }
 
-function escapeHtml(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+function escapeHtml(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
 function formatDate(d) { if (!d) return ''; return new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }); }
 function statusLabel(s) { const m = { draft: 'Brouillon', ready: 'Prêt', published: 'Publié', error: 'Erreur', generating: 'Génération...' }; return m[s] || s || 'Brouillon'; }
 function statusClass(s) { return 'badge-' + (s || 'draft'); }
@@ -1300,9 +1300,9 @@ function toggleFullscreen() {
 
 window.addEventListener('message', (e) => {
   if (e.data && e.data.type === 'preview-console' && e.data.level === 'error') {
-    const console = document.getElementById('error-console');
+    const errorPanel = document.getElementById('error-console');
     const content = document.getElementById('error-console-content');
-    console.classList.add('active');
+    errorPanel.classList.add('active');
     // Show user-friendly error messages
     let message = e.data.message;
     if (message.includes('fetch') || message.includes('network') || message.includes('Failed to load')) {
