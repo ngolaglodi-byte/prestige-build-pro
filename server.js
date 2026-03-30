@@ -129,7 +129,7 @@ cache.startCleanup();
 
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env['GPT-4_Mini'] || process.env.GPT4_MINI_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
 const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
