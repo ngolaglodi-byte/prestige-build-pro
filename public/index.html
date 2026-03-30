@@ -1514,7 +1514,7 @@ async function autoCompile() {
     return;
   }
 
-  // WebContainer: Vite HMR already updated the preview — just ensure it's visible
+  // WebContainer: if URL is ready, just show it
   if (window._wcUrl) {
     const frame = document.getElementById('preview-frame');
     if (frame.style.display === 'none') {
@@ -1525,6 +1525,28 @@ async function autoCompile() {
     document.getElementById('preview-status').className = 'preview-status live';
     document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
     return;
+  }
+
+  // WebContainer is booting but Vite not ready yet — wait for it (max 60s)
+  // Don't fall through to Docker while WC is still starting
+  if (window._wcAvailable) {
+    const loading = document.getElementById('preview-loading');
+    loading.querySelector('span').textContent = 'Vite démarre...';
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      if (window._wcUrl) {
+        const frame = document.getElementById('preview-frame');
+        frame.src = window._wcUrl;
+        frame.style.display = 'block';
+        loading.style.display = 'none';
+        document.getElementById('preview-status').className = 'preview-status live';
+        document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
+        return;
+      }
+      loading.querySelector('span').textContent = 'Vite démarre... (' + (i+1) + 's)';
+    }
+    // WC failed after 60s — fall through to Docker
+    loading.querySelector('span').textContent = 'WebContainer timeout — Docker...';
   }
 
   // Docker fallback: re-fetch project to get current build_status
