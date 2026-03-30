@@ -3036,6 +3036,11 @@ function writeGeneratedFiles(projectDir, code) {
     content = cleanGeneratedContent(content);
     if (!content) continue;
 
+    // Ensure index.css always has @import "tailwindcss" (AI sometimes omits it)
+    if (filename === 'src/index.css' && !content.includes('@import "tailwindcss"')) {
+      content = '@import "tailwindcss";\n\n' + content;
+    }
+
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });

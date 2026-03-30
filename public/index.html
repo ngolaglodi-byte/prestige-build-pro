@@ -654,10 +654,10 @@ try {
       console.log('[WC] Vite ready:', url);
       window._wcUrl = url;
       wcReady = true;
-      // If preview is visible, show it immediately
+      // ALWAYS take control of the preview iframe — override Docker /run/ URL if set
       const frame = document.getElementById('preview-frame');
       const loading = document.getElementById('preview-loading');
-      if (frame && loading && document.getElementById('workspace-view').classList.contains('active')) {
+      if (frame && loading) {
         frame.src = url;
         frame.style.display = 'block';
         loading.style.display = 'none';
@@ -696,6 +696,11 @@ try {
     const parts = p.split('/');
     if (parts.length > 1) {
       try { await wc.fs.mkdir(parts.slice(0, -1).join('/'), { recursive: true }); } catch {}
+    }
+    // Ensure index.css always has @import "tailwindcss" at the top
+    // The AI sometimes generates index.css without it, breaking all styles
+    if (p === 'src/index.css' && !content.includes('@import "tailwindcss"')) {
+      content = '@import "tailwindcss";\n\n' + content;
     }
     await wc.fs.writeFile(p, content);
   };
