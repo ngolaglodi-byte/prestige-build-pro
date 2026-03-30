@@ -518,7 +518,7 @@ button.card { padding: 0; }
               <button class="btn btn-ghost" id="toggle-code-btn" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
             </div>
           </div>
-          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" credentialless></iframe></div></div>
+          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
         </div>
         <aside class="workspace-code" id="code-panel">
           <div class="code-header"><span class="code-title">Code généré</span><button class="btn btn-ghost btn-icon" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
@@ -637,124 +637,9 @@ button.card { padding: 0; }
   <div class="presentation-header"><div class="presentation-title" id="presentation-title">Présentation</div><button class="btn btn-secondary" onclick="closePresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fermer</button></div>
   <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" credentialless></iframe></div></div>
 </div>
-<script type="module">
-// === WEBCONTAINER ENGINE (Lovable-style in-browser preview) ===
-// Pre-warms at login so preview is INSTANT when user opens a project
-try {
-  const { WebContainer } = await import('https://esm.sh/@webcontainer/api@1.5.1');
-
-  let wc = null, wcReady = false;
-
-  // Called at login — boots WC + npm install in background while user browses dashboard
-  window.wcPrewarm = async function() {
-    if (wc) return;
-    console.log('[WC] Pre-warming...');
-    wc = await WebContainer.boot();
-    wc.on('server-ready', (port, url) => {
-      console.log('[WC] Vite ready:', url);
-      window._wcUrl = url;
-      wcReady = true;
-      // ALWAYS take control of the preview iframe — override Docker /run/ URL if set
-      const frame = document.getElementById('preview-frame');
-      const loading = document.getElementById('preview-loading');
-      if (frame && loading) {
-        frame.src = url;
-        frame.style.display = 'block';
-        loading.style.display = 'none';
-        document.getElementById('preview-status').className = 'preview-status live';
-        document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
-      }
-    });
-
-    // Mount template + install deps (runs in background)
-    const t = localStorage.getItem('token');
-    const res = await fetch('/api/template-tree', { headers: { 'Authorization': 'Bearer ' + t } });
-    if (!res.ok) throw new Error('Template tree: HTTP ' + res.status);
-    const tree = await res.json();
-    if (tree.error) throw new Error('Template tree: ' + tree.error);
-    await wc.mount(tree);
-    console.log('[WC] Template mounted');
-
-    const inst = await wc.spawn('npm', ['install']);
-    inst.output.pipeTo(new WritableStream({ write(d) { console.log('[npm]', d); } }));
-    const code = await inst.exit;
-    if (code !== 0) {
-      const r = await wc.spawn('npm', ['install', '--force']);
-      r.output.pipeTo(new WritableStream({ write() {} }));
-      await r.exit;
-    }
-    console.log('[WC] Dependencies installed');
-
-    // Start Vite — server-ready event will fire when ready
-    // Capture Vite errors for auto-correction (like Lovable)
-    window._wcViteErrors = [];
-    const dev = await wc.spawn('npm', ['run', 'dev']);
-    dev.output.pipeTo(new WritableStream({
-      write(d) {
-        console.log('[vite]', d);
-        // Capture Vite compilation errors
-        if (d && (d.includes('error') || d.includes('Error') || d.includes('failed to resolve') || d.includes('Cannot find'))) {
-          window._wcViteErrors.push(d);
-          // Keep only last 10 errors
-          if (window._wcViteErrors.length > 10) window._wcViteErrors.shift();
-        }
-      }
-    }));
-    console.log('[WC] Vite starting...');
-  };
-
-  window.wcWriteFile = async function(p, content) {
-    if (!wc) return;
-    const parts = p.split('/');
-    if (parts.length > 1) {
-      try { await wc.fs.mkdir(parts.slice(0, -1).join('/'), { recursive: true }); } catch {}
-    }
-    // Ensure index.css always has @import "tailwindcss" at the top
-    // The AI sometimes generates index.css without it, breaking all styles
-    if (p === 'src/index.css' && !content.includes('@import "tailwindcss"')) {
-      content = '@import "tailwindcss";\n\n' + content;
-    }
-    await wc.fs.writeFile(p, content);
-  };
-
-  window.wcEditFile = async function(p, search, replace) {
-    if (!wc) return;
-    try {
-      const c = await wc.fs.readFile(p, 'utf-8');
-      if (c.includes(search)) await wc.fs.writeFile(p, c.replace(search, replace));
-    } catch {}
-  };
-
-  window.wcLoadProject = async function(code) {
-    if (!wc || !code) return;
-    const skip = new Set(['package.json','vite.config.js','tsconfig.json','index.html','src/main.tsx']);
-    for (const section of code.split(/^### /m).filter(s => s.trim())) {
-      const nl = section.indexOf('\n');
-      if (nl === -1) continue;
-      const fn = section.substring(0, nl).trim();
-      const ct = section.substring(nl + 1).trim();
-      if (!fn || !ct || skip.has(fn) || fn.startsWith('src/components/ui/')) continue;
-      await window.wcWriteFile(fn, ct);
-    }
-  };
-
-  window.wcTeardown = function() {
-    if (wc) { try { wc.teardown(); } catch {} }
-    wc = null; wcReady = false;
-    window._wcUrl = null;
-  };
-
-  window._wcAvailable = true;
-  console.log('[WC] WebContainer API loaded');
-} catch(e) {
-  console.warn('[WC] Not available:', e.message);
-  window._wcAvailable = false;
-  window.wcPrewarm = async () => {};
-  window.wcWriteFile = async () => {};
-  window.wcEditFile = async () => {};
-  window.wcLoadProject = async () => {};
-  window.wcTeardown = () => {};
-}
+<script>
+// Prestige Build Pro — Architecture Lovable (Docker containers, 1 par projet)
+// Pas de WebContainer. Preview via /run/{id}/ proxy → container Vite:5173
 </script>
 <script>
 // === IFRAME ISOLATION ===
@@ -866,11 +751,6 @@ async function showApp() {
   document.getElementById('stat-agents-card').style.display = currentUser.role === 'admin' ? 'block' : 'none';
   await loadStats();
   await loadProjects();
-  // Pre-warm WebContainer in background (npm install while user browses dashboard)
-  // By the time they create a project, everything is ready — instant preview
-  if (window._wcAvailable) {
-    wcPrewarm().catch(e => console.warn('[WC] Prewarm failed:', e.message));
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1052,50 +932,21 @@ async function openWorkspace(id) {
     document.getElementById('code-editor').textContent = generatedCode;
   }
 
-  // Preview: WebContainer was pre-warmed at login — just load project files if any
-  const _loading = document.getElementById('preview-loading');
-  const _frame = document.getElementById('preview-frame');
-  _loading.style.display = 'flex';
-  _frame.style.display = 'none';
-  _loading.querySelector('.preview-loading-text').textContent = 'Préparation de votre espace...';
-
-  if (window._wcUrl) {
-    // WC already ready — show preview immediately
-    if (currentProject.generated_code) {
-      await wcLoadProject(currentProject.generated_code);
-    }
-    _frame.src = window._wcUrl;
-    _frame.style.display = 'block';
-    _loading.style.display = 'none';
-    document.getElementById('preview-status').className = 'preview-status live';
-    document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
-  } else if (window._wcAvailable) {
-    // WC booting (npm install still running from login) — show animation, it'll auto-show when ready
-    _loading.querySelector('.preview-loading-text').textContent = 'Initialisation de l\'environnement...';
-    document.getElementById('preview-sub').textContent = 'Le preview apparaîtra automatiquement';
-    // If project has code, load it when WC becomes ready
-    if (currentProject.generated_code) {
-      const waitAndLoad = async () => {
-        for (let i = 0; i < 120; i++) {
-          if (window._wcUrl) {
-            await wcLoadProject(currentProject.generated_code);
-            return;
-          }
-          await new Promise(r => setTimeout(r, 500));
-        }
-      };
-      waitAndLoad().catch(() => {});
-    }
-  } else if (currentProject.build_status === 'done') {
-    // Docker fallback
+  // Preview: Docker container proxy (like Lovable's fly.io VMs)
+  if (currentProject.build_status === 'done') {
     loadDockerPreview(`/run/${currentProject.id}/`);
+  } else {
+    const _loading = document.getElementById('preview-loading');
+    _loading.style.display = 'flex';
+    document.getElementById('preview-frame').style.display = 'none';
+    _loading.querySelector('.preview-loading-text').textContent = 'Le serveur se prépare...';
+    document.getElementById('preview-sub').textContent = 'Le preview apparaîtra après la génération';
   }
 }
 
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
-  // Don't teardown WC — reuse same instance for next project (already warmed)
   document.getElementById('workspace-view').classList.remove('active');
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
@@ -1369,7 +1220,7 @@ async function generateFromImage(prompt) {
 
 function setGeneratingState(generating) {
   // Only update the status bar — NOT the preview loading area
-  // The preview loading shows WebContainer/Docker status, not generation status
+  // Only update status bar, not the preview iframe
   const status = document.getElementById('preview-status');
   if (generating) {
     status.className = 'preview-status generating';
@@ -1411,17 +1262,8 @@ function loadPreview(url) {
 
 async function refreshPreviewWithCode() {
   if (!currentProject || !generatedCode) return;
-  // WebContainer: write code to WC, Vite HMR handles the rest
-  if (window._wcUrl) {
-    await wcLoadProject(generatedCode);
-    return;
-  }
   try {
-    await fetch('/api/preview/' + currentProject.id + '/refresh', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: generatedCode })
-    });
+    await api('/api/preview/' + currentProject.id + '/refresh', 'POST', { code: generatedCode });
     loadPreview();
   } catch (e) { console.error(e); }
 }
@@ -1544,82 +1386,28 @@ async function autoCompile() {
     return;
   }
 
-  // WebContainer: load all generated files then show preview
-  if (window._wcUrl) {
-    // Write ALL generated files to WC (ensures nothing is missing after finalization)
-    if (currentProject.generated_code) {
-      await wcLoadProject(currentProject.generated_code);
-    }
-    // Wait 2s for Vite to recompile, then check for errors
-    window._wcViteErrors = [];
-    await new Promise(r => setTimeout(r, 2000));
-
-    // If Vite has compilation errors, auto-send them for correction (like Lovable)
-    if (window._wcViteErrors.length > 0 && currentProject) {
-      const errors = window._wcViteErrors.join('\n');
-      console.log('[WC] Vite errors detected, sending for auto-correction:', errors);
-      addChatMessage('assistant', 'Correction automatique des erreurs...');
-      sendChatMessage('Le build Vite a échoué avec ces erreurs:\n' + errors + '\n\nCorrige les fichiers en cause.');
-      return; // sendChatMessage will call autoCompile again when done
-    }
-
-    const frame = document.getElementById('preview-frame');
-    frame.src = window._wcUrl;
-    frame.style.display = 'block';
-    document.getElementById('preview-loading').style.display = 'none';
-    document.getElementById('preview-status').className = 'preview-status live';
-    document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
-    return;
-  }
-
-  // WebContainer booting — wait up to 90s (npm install + Vite startup)
-  if (window._wcAvailable) {
-    const loading = document.getElementById('preview-loading');
-    loading.querySelector('.preview-loading-text').textContent = 'Finalisation du preview...';
-    for (let i = 0; i < 90; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      if (window._wcUrl) {
-        const frame = document.getElementById('preview-frame');
-        frame.src = window._wcUrl;
-        frame.style.display = 'block';
-        loading.style.display = 'none';
-        document.getElementById('preview-status').className = 'preview-status live';
-        document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
-        return;
-      }
-    }
-  }
-
-  // Docker fallback: re-fetch project to get current build_status
+  // Refresh project status
   try {
     const fresh = await api('/api/projects/' + currentProject.id);
     currentProject.build_status = fresh.build_status;
     currentProject.build_url = fresh.build_url;
   } catch(e) {}
 
+  // Try hot-reload first (instant, no rebuild)
   if (currentProject.build_status === 'done') {
     try {
-      const status = document.getElementById('preview-status');
-      const loading = document.getElementById('preview-loading');
-      status.className = 'preview-status generating';
-      status.innerHTML = '<span>Mise à jour rapide...</span>';
-      loading.style.display = 'flex';
-      loading.querySelector('span').textContent = 'Application des modifications...';
-      document.getElementById('preview-frame').style.display = 'none';
-
       const r = await api('/api/hot-reload', 'POST', { project_id: currentProject.id });
       if (r.hot) {
-        console.log('[AUTOCOMPILE] Hot reload succeeded');
-        loadDockerPreview(r.url);
+        console.log('[AUTOCOMPILE] Hot reload OK');
+        loadDockerPreview(r.url || `/run/${currentProject.id}/`);
         return;
       }
-      console.log('[AUTOCOMPILE] Hot reload failed:', r.reason, '— falling back to full build');
     } catch (e) {
-      console.log('[AUTOCOMPILE] Hot reload error:', e.message, '— falling back to full build');
+      console.log('[AUTOCOMPILE] Hot reload failed:', e.message);
     }
   }
 
-  // Full Docker rebuild
+  // Full compile as fallback
   await compileProject();
 }
 
@@ -1942,9 +1730,8 @@ async function restoreVersion(versionId) {
     currentProject = await api('/api/projects/' + currentProject.id);
     generatedCode = currentProject.generated_code;
     document.getElementById('code-editor').textContent = generatedCode;
-    // WebContainer: reload project files, Vite HMR handles update
-    if (window._wcUrl) { await wcLoadProject(generatedCode); }
-    else { loadPreview(); }
+    // Reload preview: WC if available, Docker otherwise
+    loadPreview();
     loadVersionHistory();
     alert('Version restaurée!');
   } catch (e) { alert('Erreur: ' + e.message); }
@@ -1977,8 +1764,7 @@ async function loadHistoryModalContent() {
 function openPresentationMode() {
   if (!currentProject) return;
   document.getElementById('presentation-title').textContent = currentProject.title || 'Présentation';
-  // Use WebContainer URL if available, otherwise Docker
-  const presUrl = window._wcUrl || ('/run/' + currentProject.id + '/?token=' + encodeURIComponent(token));
+  const presUrl = '/run/' + currentProject.id + '/?token=' + encodeURIComponent(token);
   document.getElementById('presentation-frame').src = presUrl;
   document.getElementById('presentation-overlay').classList.add('active');
 }
@@ -2092,14 +1878,7 @@ function connectProjectSSE(projectId) {
   projectSSE.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'code_updated' && !window._wcUrl) loadPreview();
-      // Real-time file streaming to WebContainer (Vite HMR picks up changes)
-      if (data.type === 'file_written' && data.path && data.content) {
-        wcWriteFile(data.path, data.content).catch(() => {});
-      }
-      if (data.type === 'file_edited' && data.path) {
-        wcEditFile(data.path, data.search, data.replace || '').catch(() => {});
-      }
+      if (data.type === 'code_updated') loadPreview();
     } catch (err) {}
   };
   projectSSE.onerror = () => {

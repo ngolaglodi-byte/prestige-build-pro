@@ -2161,19 +2161,11 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
     } catch (e) { console.error('[Gen] DB save error:', e.message); }
   }
 
-  // ── CONTAINER CHECK — don't block, just check if it's ready ──
-  // Container was launched async by POST /api/projects.
-  // If not ready yet, generation proceeds anyway — files are written to disk.
-  // autoCompile/hot-reload after generation handles pushing to container.
-  const containerRunning = await isContainerRunningAsync(projectId);
-  if (containerRunning) {
-    console.log(`[Gen] Container already running for project ${projectId}`);
-  } else {
-    console.log(`[Gen] Container not ready yet for project ${projectId} — generation proceeds, files written to disk`);
-    // Launch container in background — don't wait
+  // ── CONTAINER: Launch isolated Docker container (like Lovable fly.io VMs) ──
+  if (!(await isContainerRunningAsync(projectId))) {
     launchTemplateContainer(projectId).then(r => {
-      if (r.success) console.log(`[Gen] Container started mid-generation for project ${projectId}`);
-      else console.warn(`[Gen] Container failed for project ${projectId}: ${r.error}`);
+      if (r.success) console.log(`[Gen] Container ready for project ${projectId}`);
+      else console.warn(`[Gen] Container launch failed: ${r.error}`);
     }).catch(e => console.error(`[Gen] Container launch error: ${e.message}`));
   }
 
@@ -2428,34 +2420,25 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   // Auto-fix relative imports in all generated files
   validateJsxFiles(projectDir);
 
-  // Push ALL final files to running container
-  // If container isn't running yet, launch it now (generation took 30-60s, more than enough)
+  // Push final files to Docker container
   if (!(await isContainerRunningAsync(projectId))) {
-    console.log(`[Gen] Container not running at finalize — launching now`);
-    try { await launchTemplateContainer(projectId); } catch(e) { console.error(`[Gen] Container launch at finalize: ${e.message}`); }
+    try { await launchTemplateContainer(projectId); } catch(e) {}
   }
   try {
     const containerName = getContainerName(projectId);
-    const { execSync } = require('child_process');
-    // Push src/ (all components, pages, styles)
-    execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
-    // Push index.html (may have custom title)
-    if (fs.existsSync(path.join(projectDir, 'index.html'))) {
+    if (fs.existsSync(path.join(projectDir, 'src')))
+      execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+    if (fs.existsSync(path.join(projectDir, 'index.html')))
       execSync(`docker cp ${projectDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
-    }
-    // Push server.js if syntax-valid, then restart Express
     if (fs.existsSync(path.join(projectDir, 'server.js'))) {
       const { spawnSync } = require('child_process');
       if (spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { timeout: 5000 }).status === 0) {
         execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-        // Restart Express to pick up new routes/tables
-        try {
-          execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 });
-        } catch {}
+        try { execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 }); } catch {}
       }
     }
-    console.log(`[Gen] Final files pushed to container`);
-  } catch(e) { console.warn(`[Gen] Final container push: ${e.message}`); }
+    console.log(`[Gen] Final files pushed to container ${containerName}`);
+  } catch(e) { console.warn(`[Gen] Container push: ${e.message}`); }
 
   // Read final state from disk and save to DB
   const finalFiles = readProjectFilesRecursive(projectDir);
@@ -2463,8 +2446,7 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   job.code = allCode;
   savePartialToDb();
 
-  // Mark build as done (no separate compile step needed)
-  db.prepare("UPDATE projects SET build_status='done',build_url=?,status='ready' WHERE id=?").run(`/run/${projectId}/`, projectId);
+  db.prepare("UPDATE projects SET build_status='done',build_url=?,status='ready',updated_at=datetime('now') WHERE id=?").run(`/run/${projectId}/`, projectId);
 
   job.status = 'done';
   const totalSec = ((Date.now() - startTime) / 1000).toFixed(0);
@@ -3208,23 +3190,20 @@ Règles d'intégration automatique :
                   console.log(`[Stream] SSE push: ${input.path}`);
                 }
 
-                // Write to disk + Docker only for non-protected files
+                // Write to disk + push to container in real-time (like Lovable)
                 if (!isProtected && cleanContent) {
                   const filePath = path.join(projDir, input.path);
                   const fileDir = path.dirname(filePath);
                   if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
                   fs.writeFileSync(filePath, cleanContent);
-                  try {
-                    const containerName = getContainerName(job.project_id);
-                    execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
-                  } catch {}
+                  try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
                 job.progressMessage = `Modifie: ${input.path}`;
                 // ALWAYS send edit to WebContainer via SSE
                 notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
                 console.log(`[Stream] SSE edit: ${input.path}`);
-                // Apply to disk + Docker for non-protected files
+                // Apply edit to disk + container
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 const filePath = path.join(projDir, input.path);
                 if (fs.existsSync(filePath)) {
@@ -3232,10 +3211,7 @@ Règles d'intégration automatique :
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
                     fs.writeFileSync(filePath, content);
-                    try {
-                      const containerName = getContainerName(job.project_id);
-                      execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
-                    } catch {}
+                    try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
                   }
                 }
               } else if (currentToolName === 'write_file' && input.path) {
@@ -3324,31 +3300,21 @@ Règles d'intégration automatique :
           }
         } catch (e) { console.error('[Claude API] Post-process error:', e.message); }
 
-        // CRITICAL: Push final processed files to running container
-        // During streaming, raw files were pushed. But post-processing (auto-fix, validate)
-        // may have changed them on disk. Push the FINAL versions now.
+        // Push final files to Docker container
         if (job.project_id) {
           try {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
             const containerName = getContainerName(job.project_id);
-            // Auto-fix relative imports before final push
             validateJsxFiles(projDir);
-            // Push all src files
-            if (fs.existsSync(path.join(projDir, 'src'))) {
-              execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
-            }
-            // Push index.html (may have custom title or meta tags)
-            if (fs.existsSync(path.join(projDir, 'index.html'))) {
-              execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
-            }
-            // Push server.js if valid
+            if (fs.existsSync(path.join(projDir, 'src')))
+              try { execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 }); } catch {}
+            if (fs.existsSync(path.join(projDir, 'index.html')))
+              try { execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 }); } catch {}
             if (fs.existsSync(path.join(projDir, 'server.js'))) {
               const { spawnSync } = require('child_process');
-              if (spawnSync('node', ['--check', path.join(projDir, 'server.js')], { timeout: 5000 }).status === 0) {
-                execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-              }
+              if (spawnSync('node', ['--check', path.join(projDir, 'server.js')], { timeout: 5000 }).status === 0)
+                try { execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 }); } catch {}
             }
-            // Update DB with final code
             const finalFiles = readProjectFilesRecursive(projDir);
             const finalCode = formatProjectCode(finalFiles);
             db.prepare("UPDATE projects SET generated_code=?,build_status='done',build_url=?,status='ready',updated_at=datetime('now') WHERE id=?")
@@ -3356,7 +3322,7 @@ Règles d'intégration automatique :
             job.code = finalCode;
             console.log(`[Stream] Final files pushed to container ${containerName}`);
           } catch (pushErr) {
-            console.warn(`[Stream] Final container push failed: ${pushErr.message}`);
+            console.warn(`[Stream] Final push failed: ${pushErr.message}`);
           }
         }
 
@@ -4539,14 +4505,7 @@ async function launchTemplateContainer(projectId) {
       `VITE_BASE=/run/${projectId}/`,
       `NODE_OPTIONS=--max-old-space-size=256`
     ],
-    Cmd: ['sh', '-c', [
-      // Start Express (save PID for later restart)
-      'node server.js & echo $! > /tmp/express.pid',
-      // Start Vite with correct base path
-      `./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" &`,
-      // Keep alive (use ; so this always runs even if Vite/Express crash)
-      'while true; do sleep 3600; done'
-    ].join('; ')],
+    Cmd: ['sh', '-c', `node server.js & echo $! > /tmp/express.pid && ./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" & while true; do sleep 3600; done`],
     HostConfig: {
       NetworkMode: DOCKER_NETWORK,
       RestartPolicy: { Name: 'unless-stopped' },
@@ -5823,9 +5782,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  // WebContainers require 'require-corp' for SharedArrayBuffer (credentialless not enough)
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // No COEP/COOP — not needed without WebContainer, and they block iframe CDN resources
 
   const url = req.url.split('?')[0];
 
@@ -6708,10 +6665,10 @@ const server = http.createServer(async (req, res) => {
     json(res,200,build); return;
   }
 
-  // ─── WEBCONTAINER: TEMPLATE FILE TREE ───
+  // ─── WEBCONTAINER: TEMPLATE FILE TREE (FULL-STACK) ───
+  // Returns the entire template project as a WebContainer-compatible file tree
+  // FULL-STACK: Express + sql.js (WASM SQLite) + Vite — like Lovable's cloud servers
   if (url === '/api/template-tree' && req.method === 'GET') {
-    // Returns the entire template project as a WebContainer-compatible file tree
-    // Format: { "file.tsx": { file: { contents: "..." } }, "dir": { directory: { ... } } }
     function buildFileTree(dir) {
       const tree = {};
       if (!fs.existsSync(dir)) return tree;
@@ -6730,22 +6687,106 @@ const server = http.createServer(async (req, res) => {
     }
     const templateDir = path.join(__dirname, 'templates', 'react');
     const tree = buildFileTree(templateDir);
-    // Override package.json for WebContainer (remove native addons)
+
+    // ── FULL-STACK PACKAGE.JSON ──
+    // Keep ALL backend deps EXCEPT better-sqlite3 (native) → replaced by sql.js (WASM)
     const wcPkg = JSON.parse(JSON.stringify(JSON.parse(fs.readFileSync(path.join(templateDir, 'package.json'), 'utf8'))));
-    // Remove ALL backend deps — WebContainer only needs frontend for Vite compilation
-    // This cuts npm install time from ~60s to ~20s
-    delete wcPkg.dependencies['better-sqlite3'];
-    delete wcPkg.dependencies['express'];
-    delete wcPkg.dependencies['bcryptjs'];
-    delete wcPkg.dependencies['jsonwebtoken'];
-    delete wcPkg.dependencies['cors'];
-    delete wcPkg.dependencies['helmet'];
-    delete wcPkg.dependencies['compression'];
-    wcPkg.scripts = { dev: 'vite --host 0.0.0.0 --port 5173' };
+    delete wcPkg.dependencies['better-sqlite3']; // native — can't compile in WC
+    wcPkg.dependencies['sql.js'] = '1.11.0';     // WASM SQLite — works in WC
+    wcPkg.scripts = {
+      dev: 'node _start.js & vite --host 0.0.0.0 --port 5173',
+      build: 'vite build',
+      start: 'node _start.js'
+    };
     tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
-    // Remove server.js (requires native better-sqlite3)
-    delete tree['server.js'];
-    // Override vite.config.js for WebContainer (no host binding, no proxy to Express)
+
+    // ── BETTER-SQLITE3 SHIM (sql.js wrapper with same API) ──
+    // The AI generates server.js with require('better-sqlite3')
+    // This shim makes it work transparently in WebContainer
+    tree['_better-sqlite3-shim.cjs'] = { file: { contents: `// better-sqlite3 compatibility shim using sql.js (WASM SQLite)
+// Loaded by _start.js BEFORE server.js — global.__SQL must be set
+const SQL = global.__SQL;
+if (!SQL) throw new Error('sql.js not initialized');
+
+class Statement {
+  constructor(db, sql) { this._db = db; this._sql = sql; }
+  run(...params) {
+    const p = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+    try { this._db.run(this._sql, p); } catch (e) { throw new Error('SQL: ' + e.message); }
+    const changes = this._db.getRowsModified();
+    let lastInsertRowid = 0;
+    try { const r = this._db.exec('SELECT last_insert_rowid() as id'); if (r[0]) lastInsertRowid = r[0].values[0][0]; } catch {}
+    return { changes, lastInsertRowid };
+  }
+  get(...params) {
+    const p = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+    try {
+      const stmt = this._db.prepare(this._sql);
+      if (p.length) stmt.bind(p);
+      if (stmt.step()) {
+        const cols = stmt.getColumnNames(), vals = stmt.get();
+        stmt.free();
+        const row = {}; cols.forEach((c, i) => row[c] = vals[i]); return row;
+      }
+      stmt.free(); return undefined;
+    } catch (e) { throw new Error('SQL: ' + e.message); }
+  }
+  all(...params) {
+    const p = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+    try {
+      const stmt = this._db.prepare(this._sql);
+      if (p.length) stmt.bind(p);
+      const results = [], cols = stmt.getColumnNames();
+      while (stmt.step()) { const vals = stmt.get(); const row = {}; cols.forEach((c, i) => row[c] = vals[i]); results.push(row); }
+      stmt.free(); return results;
+    } catch (e) { throw new Error('SQL: ' + e.message); }
+  }
+}
+
+class Database {
+  constructor(filename) { this._db = new SQL.Database(); }
+  prepare(sql) { return new Statement(this._db, sql); }
+  exec(sql) { try { this._db.exec(sql); } catch (e) { throw new Error('SQL exec: ' + e.message); } }
+  pragma(str) { try { this._db.exec('PRAGMA ' + str); } catch {} }
+  close() { try { this._db.close(); } catch {} }
+  transaction(fn) {
+    return (...args) => {
+      this.exec('BEGIN'); try { const r = fn(...args); this.exec('COMMIT'); return r; }
+      catch (e) { this.exec('ROLLBACK'); throw e; }
+    };
+  }
+}
+module.exports = Database;
+` } };
+
+    // ── STARTUP WRAPPER (initializes sql.js WASM before loading server.js) ──
+    tree['_start.js'] = { file: { contents: `// Full-stack startup: sql.js (WASM) → better-sqlite3 shim → server.js
+const initSqlJs = require('sql.js');
+const path = require('path');
+const fs = require('fs');
+
+initSqlJs().then(SQL => {
+  global.__SQL = SQL;
+  console.log('[WC] sql.js initialized (WASM SQLite ready)');
+
+  // Install shim: make require('better-sqlite3') use our sql.js wrapper
+  const shimPath = path.join(__dirname, 'node_modules', 'better-sqlite3');
+  try { fs.mkdirSync(shimPath, { recursive: true }); } catch {}
+  fs.copyFileSync(path.join(__dirname, '_better-sqlite3-shim.cjs'), path.join(shimPath, 'index.js'));
+  fs.writeFileSync(path.join(shimPath, 'package.json'), '{"name":"better-sqlite3","main":"index.js"}');
+
+  // Create data directory for SQLite
+  try { fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true }); } catch {}
+
+  // Now load server.js — its require('better-sqlite3') will find our shim
+  require('./server.js');
+}).catch(err => {
+  console.error('[WC] Failed to initialize sql.js:', err.message);
+  process.exit(1);
+});
+` } };
+
+    // ── VITE CONFIG (with proxy to Express backend) ──
     tree['vite.config.js'] = { file: { contents: `import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -6754,17 +6795,20 @@ import path from 'path';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
+    alias: { '@': path.resolve(__dirname, './src') },
   },
   server: {
     host: '0.0.0.0',
-    port: 5173
+    port: 5173,
+    proxy: {
+      '/api': 'http://localhost:3000',
+      '/health': 'http://localhost:3000'
+    }
   },
   build: { outDir: 'dist' }
 });
 ` } };
+
     json(res, 200, tree);
     return;
   }
@@ -6779,17 +6823,12 @@ export default defineConfig({
     const info=db.prepare("INSERT INTO projects (user_id,title,client_name,project_type,brief,subdomain,domain,apis,status) VALUES (?,?,?,?,?,?,?,?,'draft')").run(user.id,title,client_name,project_type,brief,subdomain,domain,JSON.stringify(apis||[]));
     const projectId = info.lastInsertRowid;
 
-    // TEMPLATE-FIRST: Launch container IMMEDIATELY with template project
-    // Preview is available in seconds, before any AI generation
+    // Launch isolated container (like Lovable fly.io — 1 container per project)
     if (isDockerAvailable()) {
       launchTemplateContainer(projectId).then(result => {
-        if (result.success) {
-          console.log(`[Template] Project ${projectId} container ready at ${result.url}`);
-          db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(user.id, `Projet "${title}" prêt — preview disponible !`, 'success');
-        } else {
-          console.warn(`[Template] Project ${projectId} container failed: ${result.error}`);
-        }
-      }).catch(err => console.error(`[Template] Launch error: ${err.message}`));
+        if (result.success) console.log(`[Container] Project ${projectId} ready`);
+        else console.warn(`[Container] Project ${projectId} failed: ${result.error}`);
+      }).catch(err => console.error(`[Container] Error: ${err.message}`));
     }
 
     json(res,200,{id:projectId,title,status:'draft',preview:`/run/${projectId}/`}); return;
