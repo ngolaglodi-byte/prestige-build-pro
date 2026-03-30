@@ -6730,7 +6730,7 @@ const server = http.createServer(async (req, res) => {
     // Override package.json for WebContainer (remove native addons)
     const wcPkg = JSON.parse(JSON.stringify(JSON.parse(fs.readFileSync(path.join(templateDir, 'package.json'), 'utf8'))));
     delete wcPkg.dependencies['better-sqlite3'];
-    wcPkg.scripts.dev = 'vite --port 5173';
+    wcPkg.scripts.dev = 'vite --host --port 5173';
     tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
     // Remove server.js (requires native better-sqlite3)
     delete tree['server.js'];
@@ -6748,6 +6748,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: true,
     port: 5173
   },
   build: { outDir: 'dist' }
