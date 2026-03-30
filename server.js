@@ -1064,8 +1064,8 @@ function writeDefaultReactProject(projectDir) {
 // Track active Claude Code processes per project
 const claudeCodeProcesses = new Map();
 
-// Timeout for Claude Code generation (5 minutes)
-const CLAUDE_CODE_TIMEOUT_MS = 5 * 60 * 1000;
+// Timeout for Claude API calls (10 minutes — complex projects need time)
+const CLAUDE_CODE_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Check if Claude Code CLI is available on this system
 let _claudeCodeAvailable = null;
@@ -2198,21 +2198,28 @@ Génère SEULEMENT ces 2 fichiers :
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
-  try {
-    const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
-    allCode = infraCode;
-    writeGeneratedFiles(projectDir, infraCode, projectId);
-    // Push to running container — Vite HMR updates preview in real-time
-    try { await writeFilesToContainer(projectId, infraCode); } catch(e) { console.warn(`[Gen] Container push failed (will retry at finalize): ${e.message}`); }
-    job.code = allCode;
-    job.progress = allCode.length;
-    savePartialToDb();
-    console.log(`[Gen] Phase 1 OK: ${infraCode.length} chars (${((Date.now()-startTime)/1000).toFixed(0)}s)`);
-  } catch (e) {
-    console.error(`[Gen] Phase 1 failed: ${e.message}`);
-    job.status = 'error';
-    job.error = `Erreur infrastructure: ${e.message}`;
-    return;
+  // Phase 1 with retry (network timeouts happen)
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
+      allCode = infraCode;
+      writeGeneratedFiles(projectDir, infraCode, projectId);
+      try { await writeFilesToContainer(projectId, infraCode); } catch(e) {}
+      job.code = allCode;
+      job.progress = allCode.length;
+      savePartialToDb();
+      console.log(`[Gen] Phase 1 OK: ${infraCode.length} chars (${((Date.now()-startTime)/1000).toFixed(0)}s)`);
+      break;
+    } catch (e) {
+      console.error(`[Gen] Phase 1 attempt ${attempt} failed: ${e.message}`);
+      if (attempt >= 2) {
+        job.status = 'error';
+        job.error = `Erreur infrastructure: ${e.message}`;
+        return;
+      }
+      job.progressMessage = 'Nouvelle tentative...';
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
 
   // ── PHASE 2+3 IN PARALLEL: Pages + Components at the same time ──
