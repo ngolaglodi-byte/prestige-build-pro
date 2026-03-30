@@ -3194,18 +3194,19 @@ Règles d'intégration automatique :
                 // Skip canonical files
                 const CANONICAL_TEMPLATES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
                 if (!PROTECTED_FILES.has(input.path) && !input.path.startsWith('src/components/ui/') && !CANONICAL_TEMPLATES.has(input.path) && cleanContent) {
-                  // Write to disk
+                  // Write to disk (for persistence/DB)
                   const filePath = path.join(projDir, input.path);
                   const fileDir = path.dirname(filePath);
                   if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
                   fs.writeFileSync(filePath, cleanContent);
-                  // Push to running container — Vite HMR picks it up instantly
+                  // Push to frontend via SSE → WebContainer picks it up via Vite HMR
+                  notifyProjectClients(job.project_id, 'file_written', { path: input.path, content: cleanContent });
+                  console.log(`[Stream] SSE push: ${input.path}`);
+                  // Also try Docker container (fallback for non-WebContainer clients)
                   try {
                     const containerName = getContainerName(job.project_id);
-                    const { execSync } = require('child_process');
                     execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
-                    console.log(`[Stream] Live push: ${input.path} → container`);
-                  } catch { /* container might not be ready yet */ }
+                  } catch { /* container might not be ready */ }
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
                 job.progressMessage = `Modifie: ${input.path}`;
@@ -3217,11 +3218,13 @@ Règles d'intégration automatique :
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
                     fs.writeFileSync(filePath, content);
+                    // Push edit to frontend via SSE → WebContainer
+                    notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
+                    console.log(`[Stream] SSE edit: ${input.path}`);
+                    // Also try Docker container (fallback)
                     try {
                       const containerName = getContainerName(job.project_id);
-                      const { execSync } = require('child_process');
                       execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
-                      console.log(`[Stream] Live edit: ${input.path} → container`);
                     } catch {}
                   }
                 }
@@ -5810,6 +5813,9 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // Required for WebContainers (SharedArrayBuffer needs cross-origin isolation)
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 
   const url = req.url.split('?')[0];
 
@@ -6690,6 +6696,37 @@ const server = http.createServer(async (req, res) => {
     }
     
     json(res,200,build); return;
+  }
+
+  // ─── WEBCONTAINER: TEMPLATE FILE TREE ───
+  if (url === '/api/template-tree' && req.method === 'GET') {
+    // Returns the entire template project as a WebContainer-compatible file tree
+    // Format: { "file.tsx": { file: { contents: "..." } }, "dir": { directory: { ... } } }
+    function buildFileTree(dir) {
+      const tree = {};
+      if (!fs.existsSync(dir)) return tree;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (['node_modules', '.git', 'data', 'dist'].includes(entry.name)) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          tree[entry.name] = { directory: buildFileTree(fullPath) };
+        } else {
+          try {
+            tree[entry.name] = { file: { contents: fs.readFileSync(fullPath, 'utf8') } };
+          } catch {}
+        }
+      }
+      return tree;
+    }
+    const templateDir = path.join(__dirname, 'templates', 'react');
+    const tree = buildFileTree(templateDir);
+    // Override package.json for WebContainer (remove native addons)
+    const wcPkg = JSON.parse(JSON.stringify(JSON.parse(fs.readFileSync(path.join(templateDir, 'package.json'), 'utf8'))));
+    delete wcPkg.dependencies['better-sqlite3'];
+    wcPkg.scripts.dev = 'vite --port 5173';
+    tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
+    json(res, 200, tree);
+    return;
   }
 
   // ─── PROJECTS CRUD ───
