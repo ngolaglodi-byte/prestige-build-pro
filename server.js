@@ -6520,7 +6520,7 @@ const server = http.createServer(async (req, res) => {
     }
     const savedApis = db.prepare('SELECT name,service,description FROM api_keys').all();
     const projectKeys = project_id ? db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project_id) : [];
-    const userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
+    let userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
 
     // ── LOVABLE TWO-TIER: GPT-4 Mini selects files BEFORE Claude Sonnet generates ──
     // This reduces context size → fewer hallucinations, faster, cheaper
@@ -6534,6 +6534,18 @@ const server = http.createServer(async (req, res) => {
         }).join('\n');
         llmSelectedFiles = await selectFilesWithLLM(fileList, message);
       } catch (e) { console.warn(`[FileSelect] Skipped: ${e.message}`); }
+    }
+
+    // ── LOVABLE: Auto-inject console logs when user reports a bug ──
+    // If the message mentions an error/bug, read console logs and prepend to context
+    const isBugReport = /\b(erreur|bug|marche pas|fonctionne pas|cassé|crash|blanc|blanche|broken|fix|corrige|problème|ne s'affiche|ne charge)\b/i.test(message);
+    if (isBugReport && project_id) {
+      const logs = clientLogs.get(String(project_id)) || [];
+      if (logs.length > 0) {
+        const logText = logs.slice(-10).map(l => `[${l.level}] ${l.message}`).join('\n');
+        userMsg = `${userMsg}\n\n[CONSOLE LOGS AUTOMATIQUES — lis ces erreurs AVANT de coder]\n${logText}`;
+        console.log(`[Debug] Auto-injected ${logs.length} console logs for bug report`);
+      }
     }
 
     const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys, llmSelectedFiles) : [{role:'user', content: userMsg}];
