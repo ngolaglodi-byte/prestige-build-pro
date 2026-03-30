@@ -6078,7 +6078,7 @@ const server = http.createServer(async (req, res) => {
           const verified = verifyToken(qsToken);
           if (verified) {
             const isHttps = req.headers['x-forwarded-proto'] === 'https';
-            res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/; ${isHttps ? 'HttpOnly; SameSite=None; Secure' : 'HttpOnly; SameSite=Lax'}; Max-Age=86400`);
+            res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/; ${isHttps ? 'HttpOnly; SameSite=Lax; Secure' : 'HttpOnly; SameSite=Lax'}; Max-Age=86400`);
             // Continue to proxy below
           } else {
             json(res, 401, { error: 'Token invalide.' }); return;
@@ -6184,15 +6184,16 @@ const server = http.createServer(async (req, res) => {
 
     // Auth passed — set cookie so sub-requests (CSS, JS, fetch, images) from the
     // iframe are automatically authenticated without needing ?token= on each one.
-    // Only set cookie when token comes via query string (initial iframe load).
+    // Cookie on Path=/ (not /run/{id}/) so ALL Vite sub-requests are covered.
+    // SameSite=Lax works because iframe is same-origin (app.prestige-build.dev).
     const qsParts = req.url.split('?');
     if (qsParts.length > 1) {
       const qsParams = new URLSearchParams(qsParts[1]);
       const qsToken = qsParams.get('token');
       if (qsToken) {
         const isHttps = req.headers['x-forwarded-proto'] === 'https' || req.headers['x-forwarded-ssl'] === 'on';
-        const cookieFlags = isHttps ? 'HttpOnly; SameSite=None; Secure; Max-Age=86400' : 'HttpOnly; SameSite=Lax; Max-Age=86400';
-        res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/run/${projectId}/; ${cookieFlags}`);
+        const cookieFlags = isHttps ? 'HttpOnly; SameSite=Lax; Secure; Max-Age=86400' : 'HttpOnly; SameSite=Lax; Max-Age=86400';
+        res.setHeader('Set-Cookie', `pbp_token=${qsToken}; Path=/; ${cookieFlags}`);
       }
     }
 
