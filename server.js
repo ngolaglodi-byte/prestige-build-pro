@@ -2161,31 +2161,20 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
     } catch (e) { console.error('[Gen] DB save error:', e.message); }
   }
 
-  // ── WAIT FOR CONTAINER — launched async by POST /api/projects ──
-  // The container is started in parallel with this generation.
-  // We need it running before we can push files via docker cp.
-  job.progressMessage = 'Attente du conteneur Docker...';
-  console.log(`[Gen] Waiting for container for project ${projectId}...`);
-  let containerReady = false;
-  for (let i = 0; i < 30; i++) {
-    if (await isContainerRunningAsync(projectId)) {
-      containerReady = true;
-      console.log(`[Gen] Container ready after ${i}s`);
-      break;
-    }
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  if (!containerReady) {
-    // Container didn't start — try launching it ourselves
-    console.warn(`[Gen] Container not ready after 30s — launching now`);
-    try {
-      const result = await launchTemplateContainer(projectId);
-      containerReady = result.success;
-      if (containerReady) console.log(`[Gen] Container launched manually`);
-      else console.error(`[Gen] Manual container launch failed: ${result.error}`);
-    } catch(e) {
-      console.error(`[Gen] Manual container launch error: ${e.message}`);
-    }
+  // ── CONTAINER CHECK — don't block, just check if it's ready ──
+  // Container was launched async by POST /api/projects.
+  // If not ready yet, generation proceeds anyway — files are written to disk.
+  // autoCompile/hot-reload after generation handles pushing to container.
+  const containerRunning = await isContainerRunningAsync(projectId);
+  if (containerRunning) {
+    console.log(`[Gen] Container already running for project ${projectId}`);
+  } else {
+    console.log(`[Gen] Container not ready yet for project ${projectId} — generation proceeds, files written to disk`);
+    // Launch container in background — don't wait
+    launchTemplateContainer(projectId).then(r => {
+      if (r.success) console.log(`[Gen] Container started mid-generation for project ${projectId}`);
+      else console.warn(`[Gen] Container failed for project ${projectId}: ${r.error}`);
+    }).catch(e => console.error(`[Gen] Container launch error: ${e.message}`));
   }
 
   // Detect sector-specific structure from brief
@@ -2433,6 +2422,11 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   validateJsxFiles(projectDir);
 
   // Push ALL final files to running container
+  // If container isn't running yet, launch it now (generation took 30-60s, more than enough)
+  if (!(await isContainerRunningAsync(projectId))) {
+    console.log(`[Gen] Container not running at finalize — launching now`);
+    try { await launchTemplateContainer(projectId); } catch(e) { console.error(`[Gen] Container launch at finalize: ${e.message}`); }
+  }
   try {
     const containerName = getContainerName(projectId);
     const { execSync } = require('child_process');
