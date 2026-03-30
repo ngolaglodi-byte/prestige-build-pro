@@ -2201,7 +2201,7 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
   try {
     const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
     allCode = infraCode;
-    writeGeneratedFiles(projectDir, infraCode);
+    writeGeneratedFiles(projectDir, infraCode, projectId);
     // Push to running container — Vite HMR updates preview in real-time
     try { await writeFilesToContainer(projectId, infraCode); } catch(e) { console.warn(`[Gen] Container push failed (will retry at finalize): ${e.message}`); }
     job.code = allCode;
@@ -2253,7 +2253,7 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   // Merge pages result
   if (pagesResult.status === 'fulfilled') {
     allCode = mergeModifiedCode(allCode, pagesResult.value);
-    writeGeneratedFiles(projectDir, pagesResult.value);
+    writeGeneratedFiles(projectDir, pagesResult.value, projectId);
     try { await writeFilesToContainer(projectId, pagesResult.value); } catch(e) {}
     job.code = allCode;
     job.progress = allCode.length;
@@ -2266,7 +2266,7 @@ Chaque composant : export default function, TailwindCSS, lucide-react. Design pr
   // Merge components result
   if (compsResult.status === 'fulfilled') {
     allCode = mergeModifiedCode(allCode, compsResult.value);
-    writeGeneratedFiles(projectDir, compsResult.value);
+    writeGeneratedFiles(projectDir, compsResult.value, projectId);
     try { await writeFilesToContainer(projectId, compsResult.value); } catch(e) {}
     job.code = allCode;
     job.progress = allCode.length;
@@ -2296,7 +2296,7 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
     try {
       const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000, { ...tracking, operation: 'generate' }, { useTools: true });
       allCode = mergeModifiedCode(allCode, fixCode);
-      writeGeneratedFiles(projectDir, fixCode);
+      writeGeneratedFiles(projectDir, fixCode, projectId);
       console.log(`[Gen] Fixed ${missingFiles.length} missing imports`);
     } catch (e) {
       console.warn(`[Gen] Could not generate missing files: ${e.message}`);
@@ -2343,7 +2343,7 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
         { ...tracking, operation: 'auto-correct' }, { useTools: true });
       if (fixCode) {
         allCode = mergeModifiedCode(allCode, fixCode);
-        writeGeneratedFiles(projectDir, fixCode);
+        writeGeneratedFiles(projectDir, fixCode, projectId);
         savePartialToDb();
         console.log(`[Gen] Vite build error auto-fixed`);
 
@@ -2651,7 +2651,7 @@ async function validateAndFixCode(projectId, code, maxAttempts = 3) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // Write files to disk
-    writeGeneratedFiles(projDir, code);
+    writeGeneratedFiles(projDir, code, projectId);
 
     // 1) Validate server.js syntax (CommonJS — node --check works)
     let serverOk = true;
@@ -2995,9 +2995,11 @@ function isValidProjectFile(filename) {
   return VALID_FILE_PATTERNS.some(pattern => pattern.test(filename));
 }
 
-function writeGeneratedFiles(projectDir, code) {
+function writeGeneratedFiles(projectDir, code, projectId) {
   const sections = code.split(/^### /m).filter(s => s.trim());
   let filesWritten = 0;
+  const CANONICAL_LIB_FILES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
+
   for (const section of sections) {
     const newlineIdx = section.indexOf('\n');
     if (newlineIdx === -1) continue;
@@ -3014,23 +3016,8 @@ function writeGeneratedFiles(projectDir, code) {
       filename = 'index.html';
     }
 
-    // Skip canonical files — server controls these, not the AI
-    if (PROTECTED_FILES.has(filename)) {
-      console.log(`[WriteFiles] Skipping canonical file: ${filename}`);
-      continue;
-    }
-    // Skip canonical UI component templates — our versions are always used
-    // But ALLOW custom files in src/lib/ and src/hooks/ (e.g., src/lib/api.ts, src/hooks/useAuth.ts)
-    const CANONICAL_LIB_FILES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
-    if (filename.startsWith('src/components/ui/') || CANONICAL_LIB_FILES.has(filename)) {
-      console.log(`[WriteFiles] Skipping canonical template: ${filename}`);
-      continue;
-    }
     // Only write valid project files
-    if (!isValidProjectFile(filename)) {
-      console.log(`[WriteFiles] Skipping invalid file: ${filename}`);
-      continue;
-    }
+    if (!isValidProjectFile(filename)) continue;
 
     // Clean Claude artifacts from file content before writing
     content = cleanGeneratedContent(content);
@@ -3041,6 +3028,15 @@ function writeGeneratedFiles(projectDir, code) {
       content = '@import "tailwindcss";\n\n' + content;
     }
 
+    // ALWAYS push to WebContainer via SSE (even protected/canonical files — WC needs ALL files)
+    if (projectId) {
+      notifyProjectClients(projectId, 'file_written', { path: filename, content });
+    }
+
+    // Skip writing canonical/protected files to DISK (server controls them)
+    const isProtected = PROTECTED_FILES.has(filename) || filename.startsWith('src/components/ui/') || CANONICAL_LIB_FILES.has(filename);
+    if (isProtected) continue;
+
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
@@ -3048,7 +3044,7 @@ function writeGeneratedFiles(projectDir, code) {
     filesWritten++;
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
-  console.log(`[WriteFiles] Total: ${filesWritten} files written`);
+  console.log(`[WriteFiles] Total: ${filesWritten} files written, SSE pushed to WC`);
 }
 
 // ─── LEGACY GENERATE CLAUDE (KEPT FOR SMALL OPERATIONS) ───
@@ -3298,7 +3294,7 @@ Règles d'intégration automatique :
         }
         // Write tool files to disk
         if (Object.keys(parsed.files).length > 0 && job.project_id) {
-          writeGeneratedFiles(path.join(DOCKER_PROJECTS_DIR, String(job.project_id)), toolCode);
+          writeGeneratedFiles(path.join(DOCKER_PROJECTS_DIR, String(job.project_id)), toolCode, job.project_id);
         }
       }
 
@@ -4573,7 +4569,7 @@ async function writeFilesToContainer(projectId, code) {
   const { execSync } = require('child_process');
 
   // Write files to disk first
-  writeGeneratedFiles(projectDir, code);
+  writeGeneratedFiles(projectDir, code, projectId);
 
   // Auto-fix relative imports
   validateJsxFiles(projectDir);
@@ -6453,7 +6449,7 @@ const server = http.createServer(async (req, res) => {
           );
           if (fixCode) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
-            writeGeneratedFiles(projDir, fixCode);
+            writeGeneratedFiles(projDir, fixCode, project_id);
             execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
             console.log(`[HMR] Auto-fixed Vite errors and re-applied`);
           }
@@ -6542,7 +6538,7 @@ const server = http.createServer(async (req, res) => {
                 if (fixCode) {
                   // Apply fixes to project files on disk
                   const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
-                  writeGeneratedFiles(projDir, fixCode);
+                  writeGeneratedFiles(projDir, fixCode, project_id);
                   // Update DB code
                   const updatedFiles = readProjectFilesRecursive(projDir);
                   const updatedCode = formatProjectCode(updatedFiles);

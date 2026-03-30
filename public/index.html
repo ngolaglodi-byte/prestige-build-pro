@@ -1532,8 +1532,12 @@ async function autoCompile() {
     return;
   }
 
-  // WebContainer: if URL is ready, show it and we're done (HMR already updated)
+  // WebContainer: load all generated files then show preview
   if (window._wcUrl) {
+    // Write ALL generated files to WC (ensures nothing is missing after finalization)
+    if (currentProject.generated_code) {
+      await wcLoadProject(currentProject.generated_code);
+    }
     const frame = document.getElementById('preview-frame');
     frame.src = window._wcUrl;
     frame.style.display = 'block';
