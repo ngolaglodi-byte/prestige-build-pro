@@ -1024,23 +1024,46 @@ async function openWorkspace(id) {
     document.getElementById('code-editor').textContent = generatedCode;
   }
 
-  // Start preview engine: WebContainer (primary) or Docker (fallback)
+  // Start preview engine in background (don't block generation)
+  // This runs in parallel with sendChatMessage/generation
+  startPreviewEngine();
+}
+
+async function startPreviewEngine() {
+  const _loading = document.getElementById('preview-loading');
+  const _frame = document.getElementById('preview-frame');
+  _loading.style.display = 'flex';
+  _frame.style.display = 'none';
+
+  // Try WebContainer first (like Lovable), fallback to Docker
   if (window._wcAvailable) {
-    // WebContainer: preview runs in the browser, like Lovable
-    (async () => {
-      try {
-        await bootWebContainer();
-        await wcMountAndStart();
-        if (currentProject.generated_code) {
-          await wcLoadProject(currentProject.generated_code);
-        }
-      } catch(e) {
-        console.error('[WC] Failed, falling back to Docker:', e);
-        if (currentProject.build_status === 'done') loadDockerPreview(`/run/${currentProject.id}/`);
+    _loading.querySelector('span').textContent = 'Démarrage de WebContainer...';
+    try {
+      await bootWebContainer();
+      await wcMountAndStart();
+      // server-ready event will show the preview automatically
+      if (currentProject && currentProject.generated_code) {
+        _loading.querySelector('span').textContent = 'Chargement du projet...';
+        await wcLoadProject(currentProject.generated_code);
       }
-    })();
-  } else if (currentProject.build_status === 'done') {
-    loadDockerPreview(`/run/${currentProject.id}/`);
+    } catch(e) {
+      console.error('[WC] Failed:', e);
+      _loading.querySelector('span').textContent = 'WebContainer: ' + (e.message || 'erreur') + ' — Docker...';
+      // Fallback to Docker
+      if (currentProject && currentProject.build_status === 'done') {
+        loadDockerPreview(`/run/${currentProject.id}/`);
+      }
+    }
+  } else {
+    // WebContainer not available — use Docker
+    if (window._wcAvailable === false) {
+      _loading.querySelector('span').textContent = 'WebContainer non supporté — Docker...';
+    }
+    if (currentProject && currentProject.build_status === 'done') {
+      loadDockerPreview(`/run/${currentProject.id}/`);
+    } else {
+      _loading.querySelector('span').textContent = 'Préparation du preview...';
+    }
   }
 }
 
@@ -1320,12 +1343,12 @@ async function generateFromImage(prompt) {
 }
 
 function setGeneratingState(generating) {
+  // Only update the status bar — NOT the preview loading area
+  // The preview loading shows WebContainer/Docker status, not generation status
   const status = document.getElementById('preview-status');
-  const loading = document.getElementById('preview-loading');
   if (generating) {
     status.className = 'preview-status generating';
     status.innerHTML = '<span>Génération en cours...</span>';
-    loading.querySelector('span').textContent = 'Prestige AI conçoit votre site...';
   } else {
     status.className = 'preview-status';
     status.innerHTML = '<span>Prêt</span>';
