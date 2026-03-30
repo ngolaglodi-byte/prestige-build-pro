@@ -631,165 +631,6 @@ button.card { padding: 0; }
   <div class="presentation-header"><div class="presentation-title" id="presentation-title">Présentation</div><button class="btn btn-secondary" onclick="closePresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fermer</button></div>
   <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
 </div>
-<script type="module">
-// === WEBCONTAINER ENGINE ===
-// Runs the generated React project entirely in the browser (like Lovable)
-import { WebContainer } from 'https://esm.sh/@webcontainer/api@1.5.1';
-
-let wc = null; // WebContainer instance
-let wcReady = false; // Vite dev server is running
-let wcUrl = null; // Preview URL from WebContainer
-let wcBooting = false;
-
-window._wc = { instance: null, ready: false, url: null };
-
-async function bootWebContainer() {
-  if (wc || wcBooting) return wc;
-  wcBooting = true;
-  try {
-    console.log('[WC] Booting WebContainer...');
-    wc = await WebContainer.boot();
-    window._wc.instance = wc;
-    console.log('[WC] WebContainer booted');
-
-    // Listen for dev server ready
-    wc.on('server-ready', (port, url) => {
-      console.log(`[WC] Server ready on port ${port}: ${url}`);
-      wcUrl = url;
-      wcReady = true;
-      window._wc.ready = true;
-      window._wc.url = url;
-      // Show preview
-      const frame = document.getElementById('preview-frame');
-      const loading = document.getElementById('preview-loading');
-      if (frame && loading) {
-        frame.src = url;
-        frame.style.display = 'block';
-        loading.style.display = 'none';
-        document.getElementById('preview-status').className = 'preview-status live';
-        document.getElementById('preview-status').innerHTML = '<span>✓ WebContainer</span>';
-      }
-    });
-
-    wc.on('error', (err) => {
-      console.error('[WC] Error:', err);
-    });
-
-    return wc;
-  } catch (e) {
-    console.error('[WC] Boot failed:', e);
-    wcBooting = false;
-    return null;
-  }
-}
-
-async function mountAndInstall() {
-  if (!wc) return;
-  const loading = document.getElementById('preview-loading');
-  const status = document.getElementById('preview-status');
-
-  // Fetch template file tree from server
-  loading.querySelector('span').textContent = 'Chargement du template...';
-  status.className = 'preview-status generating';
-  status.innerHTML = '<span>WebContainer</span>';
-
-  try {
-    const token = localStorage.getItem('token');
-    const res = await fetch('/api/template-tree', { headers: { 'Authorization': 'Bearer ' + token } });
-    if (!res.ok) throw new Error('Failed to fetch template');
-    const tree = await res.json();
-
-    loading.querySelector('span').textContent = 'Montage des fichiers...';
-    await wc.mount(tree);
-    console.log('[WC] Template mounted');
-
-    // Install dependencies
-    loading.querySelector('span').textContent = 'Installation des dépendances (npm install)...';
-    const install = await wc.spawn('npm', ['install', '--prefer-offline']);
-    install.output.pipeTo(new WritableStream({
-      write(data) { console.log('[WC npm]', data); }
-    }));
-    const exitCode = await install.exit;
-    if (exitCode !== 0) {
-      console.warn('[WC] npm install exited with', exitCode, '— retrying with --force');
-      const retry = await wc.spawn('npm', ['install', '--force']);
-      retry.output.pipeTo(new WritableStream({ write(data) { console.log('[WC npm retry]', data); } }));
-      await retry.exit;
-    }
-    console.log('[WC] npm install complete');
-
-    // Start Vite dev server
-    loading.querySelector('span').textContent = 'Démarrage de Vite...';
-    const dev = await wc.spawn('npm', ['run', 'dev']);
-    dev.output.pipeTo(new WritableStream({
-      write(data) { console.log('[WC vite]', data); }
-    }));
-    console.log('[WC] Vite started — waiting for server-ready event');
-  } catch (e) {
-    console.error('[WC] Mount/install failed:', e);
-    loading.querySelector('span').textContent = 'Erreur WebContainer: ' + e.message;
-  }
-}
-
-// Write a file to WebContainer (called from SSE handler)
-async function wcWriteFile(filePath, content) {
-  if (!wc) return;
-  // Ensure parent dirs exist
-  const parts = filePath.split('/');
-  for (let i = 1; i < parts.length; i++) {
-    try { await wc.fs.mkdir(parts.slice(0, i).join('/'), { recursive: true }); } catch {}
-  }
-  await wc.fs.writeFile(filePath, content);
-}
-
-// Edit a file in WebContainer
-async function wcEditFile(filePath, search, replace) {
-  if (!wc) return;
-  try {
-    const content = await wc.fs.readFile(filePath, 'utf-8');
-    if (content.includes(search)) {
-      await wc.fs.writeFile(filePath, content.replace(search, replace));
-    }
-  } catch { /* file might not exist yet */ }
-}
-
-// Write project's existing generated code into WebContainer
-async function wcWriteProjectCode(generatedCode) {
-  if (!wc || !generatedCode) return;
-  const sections = generatedCode.split(/^### /m).filter(s => s.trim());
-  for (const section of sections) {
-    const nl = section.indexOf('\n');
-    if (nl === -1) continue;
-    const filename = section.substring(0, nl).trim();
-    const content = section.substring(nl + 1).trim();
-    if (!filename || !content) continue;
-    // Skip protected files (template controls them)
-    if (['package.json', 'vite.config.js', 'tsconfig.json', 'index.html', 'src/main.tsx'].includes(filename)) continue;
-    if (filename.startsWith('src/components/ui/')) continue;
-    await wcWriteFile(filename, content);
-  }
-}
-
-// Teardown WebContainer
-async function teardownWebContainer() {
-  if (wc) {
-    try { wc.teardown(); } catch {}
-    wc = null;
-    wcReady = false;
-    wcUrl = null;
-    wcBooting = false;
-    window._wc = { instance: null, ready: false, url: null };
-  }
-}
-
-// Expose to global scope for use in non-module scripts
-window.bootWebContainer = bootWebContainer;
-window.mountAndInstall = mountAndInstall;
-window.wcWriteFile = wcWriteFile;
-window.wcEditFile = wcEditFile;
-window.wcWriteProjectCode = wcWriteProjectCode;
-window.teardownWebContainer = teardownWebContainer;
-</script>
 <script>
 // === IFRAME ISOLATION ===
 // 1. Suppress JS errors from preview iframe
@@ -1076,38 +917,19 @@ async function openWorkspace(id) {
   loadChatHistory();
   loadVersionHistory();
   connectProjectSSE(id);
-
-  // Boot WebContainer for preview (like Lovable)
-  const loading = document.getElementById('preview-loading');
-  loading.style.display = 'flex';
-  loading.querySelector('span').textContent = 'Démarrage de WebContainer...';
-  document.getElementById('preview-frame').style.display = 'none';
-
-  try {
-    await bootWebContainer();
-    await mountAndInstall();
-    // If project has existing generated code, write it into WebContainer
-    if (currentProject.generated_code) {
-      generatedCode = currentProject.generated_code;
-      document.getElementById('code-editor').textContent = generatedCode;
-      loading.querySelector('span').textContent = 'Chargement du projet...';
-      await wcWriteProjectCode(generatedCode);
-    }
-  } catch(e) {
-    console.error('[openWorkspace] WebContainer error:', e);
-    // Fallback: try Docker preview
-    if (currentProject.build_status === 'done') {
-      loadDockerPreview(`/run/${currentProject.id}/`);
-    } else {
-      loading.querySelector('span').textContent = 'Erreur: ' + e.message;
-    }
+  if (currentProject.generated_code) {
+    generatedCode = currentProject.generated_code;
+    document.getElementById('code-editor').textContent = generatedCode;
+  }
+  // Load Docker preview if container is running
+  if (currentProject.build_status === 'done') {
+    loadDockerPreview(`/run/${currentProject.id}/`);
   }
 }
 
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
-  teardownWebContainer();
   document.getElementById('workspace-view').classList.remove('active');
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
@@ -1551,23 +1373,7 @@ async function autoCompile() {
     return;
   }
 
-  // WebContainer mode: files are already written via SSE → Vite HMR handles updates
-  // Just make sure the preview is visible
-  if (window._wc && window._wc.ready && window._wc.url) {
-    console.log('[AUTOCOMPILE] WebContainer active — Vite HMR handles updates');
-    const frame = document.getElementById('preview-frame');
-    const loading = document.getElementById('preview-loading');
-    if (frame.style.display === 'none') {
-      frame.src = window._wc.url;
-      frame.style.display = 'block';
-      loading.style.display = 'none';
-    }
-    document.getElementById('preview-status').className = 'preview-status live';
-    document.getElementById('preview-status').innerHTML = '<span>✓ WebContainer</span>';
-    return;
-  }
-
-  // Fallback: Docker hot-reload / full build (for browsers without WebContainer support)
+  // Re-fetch project to get current build_status
   try {
     const fresh = await api('/api/projects/' + currentProject.id);
     currentProject.build_status = fresh.build_status;
@@ -2066,18 +1872,7 @@ function connectProjectSSE(projectId) {
   projectSSE.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'code_updated') {
-        // Refresh preview — WebContainer handles via HMR, Docker via iframe reload
-        if (window._wc && window._wc.ready) { /* HMR auto-updates */ }
-        else loadPreview();
-      }
-      // WebContainer: write files in real-time as Claude generates them
-      if (data.type === 'file_written' && data.path && data.content) {
-        wcWriteFile(data.path, data.content).catch(e => console.warn('[SSE→WC] write error:', e));
-      }
-      if (data.type === 'file_edited' && data.path && data.search !== undefined) {
-        wcEditFile(data.path, data.search, data.replace || '').catch(e => console.warn('[SSE→WC] edit error:', e));
-      }
+      if (data.type === 'code_updated') loadPreview();
     } catch (err) {}
   };
   projectSSE.onerror = () => {

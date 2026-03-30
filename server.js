@@ -5813,9 +5813,6 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  // Required for WebContainers (SharedArrayBuffer needs cross-origin isolation)
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 
   const url = req.url.split('?')[0];
 
