@@ -669,7 +669,9 @@ try {
     // Mount template + install deps (runs in background)
     const t = localStorage.getItem('token');
     const res = await fetch('/api/template-tree', { headers: { 'Authorization': 'Bearer ' + t } });
+    if (!res.ok) throw new Error('Template tree: HTTP ' + res.status);
     const tree = await res.json();
+    if (tree.error) throw new Error('Template tree: ' + tree.error);
     await wc.mount(tree);
     console.log('[WC] Template mounted');
 
@@ -1076,7 +1078,7 @@ async function openWorkspace(id) {
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
-  wcTeardown();
+  // Don't teardown WC — reuse same instance for next project (already warmed)
   document.getElementById('workspace-view').classList.remove('active');
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
@@ -1392,6 +1394,11 @@ function loadPreview(url) {
 
 async function refreshPreviewWithCode() {
   if (!currentProject || !generatedCode) return;
+  // WebContainer: write code to WC, Vite HMR handles the rest
+  if (window._wcUrl) {
+    await wcLoadProject(generatedCode);
+    return;
+  }
   try {
     await fetch('/api/preview/' + currentProject.id + '/refresh', {
       method: 'POST',
@@ -1901,7 +1908,9 @@ async function restoreVersion(versionId) {
     currentProject = await api('/api/projects/' + currentProject.id);
     generatedCode = currentProject.generated_code;
     document.getElementById('code-editor').textContent = generatedCode;
-    loadPreview();
+    // WebContainer: reload project files, Vite HMR handles update
+    if (window._wcUrl) { await wcLoadProject(generatedCode); }
+    else { loadPreview(); }
     loadVersionHistory();
     alert('Version restaurée!');
   } catch (e) { alert('Erreur: ' + e.message); }

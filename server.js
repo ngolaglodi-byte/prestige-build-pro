@@ -6727,9 +6727,27 @@ const server = http.createServer(async (req, res) => {
     delete wcPkg.dependencies['better-sqlite3'];
     wcPkg.scripts.dev = 'vite --port 5173';
     tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
-    // Remove server.js from tree (it requires better-sqlite3 which doesn't work in WebContainer)
-    // The Express backend is for production only — WebContainer preview is frontend-only
+    // Remove server.js (requires native better-sqlite3)
     delete tree['server.js'];
+    // Override vite.config.js for WebContainer (no host binding, no proxy to Express)
+    tree['vite.config.js'] = { file: { contents: `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import path from 'path';
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 5173
+  },
+  build: { outDir: 'dist' }
+});
+` } };
     json(res, 200, tree);
     return;
   }
