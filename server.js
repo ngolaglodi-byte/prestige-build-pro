@@ -2596,16 +2596,16 @@ function validateJsxFiles(projectDir) {
       errors.push({ file: rel, issue: 'no export statement' });
     }
     // Must not have SUGGESTIONS: text
-    if (/^SUGGESTIONS:/m.test(content)) {
-      // Auto-fix: remove the line
-      const fixed = content.replace(/\n*SUGGESTIONS:[\s\S]*$/m, '').trim();
-      fs.writeFileSync(file, fixed);
+    let current = content;
+    if (/^SUGGESTIONS:/m.test(current)) {
+      current = current.replace(/\n*SUGGESTIONS:[\s\S]*$/m, '').trim();
+      fs.writeFileSync(file, current);
       errors.push({ file: rel, issue: 'SUGGESTIONS artifact removed' });
     }
     // Must not have markdown backticks
-    if (/^```/m.test(content)) {
-      const fixed = content.replace(/^```.*$/gm, '').trim();
-      fs.writeFileSync(file, fixed);
+    if (/^```/m.test(current)) {
+      current = current.replace(/^```.*$/gm, '').trim();
+      fs.writeFileSync(file, current);
       errors.push({ file: rel, issue: 'markdown backticks removed' });
     }
     // Check for unclosed JSX (very basic — count < vs />)
@@ -2621,8 +2621,8 @@ function validateJsxFiles(projectDir) {
       errors.push({ file: rel, issue: `${defaultExports} default exports (should be 1)` });
     }
     // Auto-fix relative imports → @/ alias (the AI sometimes generates ../ despite the prompt)
-    if (/from ['"]\.\.\//.test(content) || /from ['"]\.\/components/.test(content) || /from ['"]\.\/pages/.test(content)) {
-      let fixed = content;
+    if (/from ['"]\.\.\//.test(current) || /from ['"]\.\/components/.test(current) || /from ['"]\.\/pages/.test(current)) {
+      let fixed = current;
       // ../components/ → @/components/ (preserve original quote style)
       fixed = fixed.replace(/from (['"])\.\.\/components\//g, "from $1@/components/");
       fixed = fixed.replace(/from (['"])\.\.\/\.\.\/components\//g, "from $1@/components/");
@@ -2637,8 +2637,9 @@ function validateJsxFiles(projectDir) {
       // ./components/ → @/components/ (from App.tsx)
       fixed = fixed.replace(/from (['"])\.\/components\//g, "from $1@/components/");
       fixed = fixed.replace(/from (['"])\.\/pages\//g, "from $1@/pages/");
-      if (fixed !== content) {
+      if (fixed !== current) {
         fs.writeFileSync(file, fixed);
+        current = fixed;
         errors.push({ file: rel, issue: 'relative imports converted to @/' });
       }
     }
@@ -3024,9 +3025,11 @@ function writeGeneratedFiles(projectDir, code) {
       console.log(`[WriteFiles] Skipping canonical file: ${filename}`);
       continue;
     }
-    // Skip UI component templates — our canonical versions are always used
-    if (filename.startsWith('src/components/ui/') || filename.startsWith('src/lib/') || filename.startsWith('src/hooks/')) {
-      console.log(`[WriteFiles] Skipping UI template: ${filename}`);
+    // Skip canonical UI component templates — our versions are always used
+    // But ALLOW custom files in src/lib/ and src/hooks/ (e.g., src/lib/api.ts, src/hooks/useAuth.ts)
+    const CANONICAL_LIB_FILES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
+    if (filename.startsWith('src/components/ui/') || CANONICAL_LIB_FILES.has(filename)) {
+      console.log(`[WriteFiles] Skipping canonical template: ${filename}`);
       continue;
     }
     // Only write valid project files
@@ -3195,7 +3198,8 @@ Règles d'intégration automatique :
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 const cleanContent = cleanGeneratedContent(input.content);
                 // Skip canonical files
-                if (!PROTECTED_FILES.has(input.path) && !input.path.startsWith('src/components/ui/') && !input.path.startsWith('src/lib/') && !input.path.startsWith('src/hooks/') && cleanContent) {
+                const CANONICAL_TEMPLATES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
+                if (!PROTECTED_FILES.has(input.path) && !input.path.startsWith('src/components/ui/') && !CANONICAL_TEMPLATES.has(input.path) && cleanContent) {
                   // Write to disk
                   const filePath = path.join(projDir, input.path);
                   const fileDir = path.dirname(filePath);
@@ -4322,13 +4326,17 @@ function cleanGeneratedContent(content) {
   // 2) Remove SUGGESTIONS: line and everything after it (Claude appends at end of last file)
   cleaned = cleaned.replace(/\n*SUGGESTIONS:[\s\S]*$/m, '');
 
-  // 3) Remove conversational text that isn't code
-  //    Must be careful not to remove JSX text content or comments
-  cleaned = cleaned.replace(/^(?:Voici|Voilà|Ce fichier|Ce composant|Ce code|J'ai (?:ajouté|modifié|créé|changé|corrigé)|Ci-dessus|Ci-dessous|En résumé|Bien sûr|Parfait|D'accord|Très bien|OK,|C'est fait).+$/gm, '');
-  cleaned = cleaned.replace(/^---+\s*$/gm, '');
+  // 3) Remove conversational text ONLY at the very start or end of the file
+  //    NEVER remove lines from the middle — they could be JSX text content
+  //    Only strip leading/trailing non-code text (before first import/const/function, after last })
+  const firstCodeLine = cleaned.search(/^(?:import |export |const |let |var |function |class |\/\/|\/\*|<|'use strict')/m);
+  if (firstCodeLine > 0) {
+    cleaned = cleaned.substring(firstCodeLine);
+  }
+  // Remove trailing conversational text after last closing brace/semicolon
+  cleaned = cleaned.replace(/\n(?:N'hésitez pas|N'hésite pas|Si vous|Tu peux|Bonne continuation)[^\n]*$/gm, '');
   cleaned = cleaned.replace(/^\*\*[^*]+\*\*\s*$/gm, '');
-  // Lines that are pure text (no code chars) at the very end of the file
-  cleaned = cleaned.replace(/\n(?:N'hésitez pas|N'hésite pas|Les? modifications?|Si vous|Tu peux|Bonne continuation).+$/gm, '');
+  cleaned = cleaned.replace(/^---+\s*$/gm, '');
 
   // 4) Fix Express wildcard patterns
   cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
@@ -5420,41 +5428,40 @@ async function autoCorrectProject(projectId, onProgress) {
           lastError: 'Build échoué après correction'
         };
       }
-      // Try again recursively
+      // Try again — release lock first so recursive call can acquire it
+      correctionInProgress.delete(projectId);
       return await autoCorrectProject(projectId, onProgress);
     }
-    
+
   } catch (e) {
     console.error('Auto-correction failed:', e.message);
-    
+
     const currentAttempts = correctionAttempts.get(projectId) || 0;
-    
-    // Always check attempts before recursing
+
     if (currentAttempts >= MAX_AUTO_CORRECTION_ATTEMPTS) {
-      return { 
-        success: false, 
+      return {
+        success: false,
         reason: 'max_attempts',
         attempts: currentAttempts,
         error: e.message
       };
     }
-    
-    // Increment attempts before retrying
+
     correctionAttempts.set(projectId, currentAttempts + 1);
-    
-    // Check again after increment
+
     if (correctionAttempts.get(projectId) >= MAX_AUTO_CORRECTION_ATTEMPTS) {
-      return { 
-        success: false, 
+      return {
+        success: false,
         reason: 'max_attempts',
         attempts: correctionAttempts.get(projectId),
         error: e.message
       };
     }
-    
-    // Try again
+
+    // Try again — release lock first
+    correctionInProgress.delete(projectId);
     return await autoCorrectProject(projectId, onProgress);
-    
+
   } finally {
     correctionInProgress.delete(projectId);
   }
@@ -6158,6 +6165,8 @@ const server = http.createServer(async (req, res) => {
     
     // If done, finalize project and cleanup
     if (job.status === 'done' && job.project_id && !job.finalized) {
+      // Set finalized FIRST to prevent race condition with concurrent poll requests
+      job.finalized = true;
       // Final artifact cleanup before persisting to DB
       const fullCode = stripCodeArtifacts(job.code);
       db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(job.project_id, 'assistant', fullCode);
@@ -6198,7 +6207,6 @@ const server = http.createServer(async (req, res) => {
         previewUrl: `/run/${job.project_id}/`,
         message: `${user.name} a généré une nouvelle version`
       }, user.id);
-      job.finalized = true;
       if (activeGenerations > 0) activeGenerations--;
     }
     // Also decrement counter on error (prevents counter leak blocking all future generations)
@@ -7940,12 +7948,12 @@ server.on('upgrade', (req, socket, head) => {
   proxyReq.end();
 });
 
-server.listen(PORT, ()=>{
+server.listen(PORT, async ()=>{
   console.log(`Prestige Build Pro on port ${PORT}`);
   console.log(`API: ${ANTHROPIC_API_KEY?'OK':'MISSING'} | Compiler: ${compiler?'OK':'N/A'}`);
 
-  // Initialize Docker preview system
-  initializeDockerSystem();
+  // Initialize Docker preview system (must await before checking availability)
+  await initializeDockerSystem();
 
   // Start container monitoring (every 30 seconds)
   if (isDockerAvailable()) {

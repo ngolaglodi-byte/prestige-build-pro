@@ -1046,9 +1046,12 @@ function addSuggestions(suggestions) {
   const div = document.createElement('div');
   div.className = 'chat-message assistant chat-suggestions-block';
   div.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;">Suggestions :</div>' +
-    suggestions.map(s =>
-      `<button class="chat-suggestion-btn" onclick="sendChatMessage('${escapeHtml(s)}')">${escapeHtml(s)}</button>`
+    suggestions.map((s, i) =>
+      `<button class="chat-suggestion-btn" data-suggestion="${escapeHtml(s)}">${escapeHtml(s)}</button>`
     ).join('');
+  div.querySelectorAll('.chat-suggestion-btn').forEach(btn => {
+    btn.addEventListener('click', () => sendChatMessage(btn.dataset.suggestion));
+  });
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 }
@@ -1901,7 +1904,11 @@ function connectProjectSSE(projectId) {
       if (data.type === 'code_updated') loadPreview();
     } catch (err) {}
   };
-  projectSSE.onerror = () => { projectSSE.close(); projectSSE = null; };
+  projectSSE.onerror = () => {
+    projectSSE.close(); projectSSE = null;
+    // Reconnect after 5s (EventSource's built-in reconnect is killed by .close())
+    setTimeout(() => { if (currentProject) connectProjectSSE(currentProject.id); }, 5000);
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
