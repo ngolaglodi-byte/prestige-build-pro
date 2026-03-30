@@ -5813,6 +5813,10 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  // WebContainers need cross-origin isolation for SharedArrayBuffer
+  // 'credentialless' allows external resources (Google Fonts, CDNs) unlike 'require-corp'
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
 
   const url = req.url.split('?')[0];
 

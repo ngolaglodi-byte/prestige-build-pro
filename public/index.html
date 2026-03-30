@@ -631,6 +631,108 @@ button.card { padding: 0; }
   <div class="presentation-header"><div class="presentation-title" id="presentation-title">Présentation</div><button class="btn btn-secondary" onclick="closePresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fermer</button></div>
   <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
 </div>
+<script type="module">
+// === WEBCONTAINER ENGINE (Lovable-style in-browser preview) ===
+// If this fails for ANY reason, the page still works — Docker fallback is automatic
+try {
+  const { WebContainer } = await import('https://esm.sh/@webcontainer/api@1.5.1');
+
+  let wc = null, wcUrl = null, wcBooting = false;
+
+  window.bootWebContainer = async function() {
+    if (wc || wcBooting) return wc;
+    wcBooting = true;
+    wc = await WebContainer.boot();
+    wc.on('server-ready', (port, url) => {
+      console.log('[WC] Vite ready:', url);
+      wcUrl = url;
+      window._wcUrl = url;
+      const frame = document.getElementById('preview-frame');
+      const loading = document.getElementById('preview-loading');
+      frame.src = url;
+      frame.style.display = 'block';
+      loading.style.display = 'none';
+      document.getElementById('preview-status').className = 'preview-status live';
+      document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
+    });
+    return wc;
+  };
+
+  window.wcMountAndStart = async function() {
+    if (!wc) return;
+    const loading = document.getElementById('preview-loading');
+    loading.style.display = 'flex';
+    loading.querySelector('span').textContent = 'Chargement du template...';
+
+    const t = localStorage.getItem('token');
+    const res = await fetch('/api/template-tree', { headers: { 'Authorization': 'Bearer ' + t } });
+    const tree = await res.json();
+    await wc.mount(tree);
+
+    loading.querySelector('span').textContent = 'npm install...';
+    const inst = await wc.spawn('npm', ['install']);
+    inst.output.pipeTo(new WritableStream({ write(d) { console.log('[npm]', d); } }));
+    const code = await inst.exit;
+    if (code !== 0) {
+      const r = await wc.spawn('npm', ['install', '--force']);
+      r.output.pipeTo(new WritableStream({ write(d) {} }));
+      await r.exit;
+    }
+
+    loading.querySelector('span').textContent = 'Démarrage de Vite...';
+    const dev = await wc.spawn('npm', ['run', 'dev']);
+    dev.output.pipeTo(new WritableStream({ write(d) { console.log('[vite]', d); } }));
+  };
+
+  window.wcWriteFile = async function(p, content) {
+    if (!wc) return;
+    const parts = p.split('/');
+    if (parts.length > 1) {
+      try { await wc.fs.mkdir(parts.slice(0, -1).join('/'), { recursive: true }); } catch {}
+    }
+    await wc.fs.writeFile(p, content);
+  };
+
+  window.wcEditFile = async function(p, search, replace) {
+    if (!wc) return;
+    try {
+      const c = await wc.fs.readFile(p, 'utf-8');
+      if (c.includes(search)) await wc.fs.writeFile(p, c.replace(search, replace));
+    } catch {}
+  };
+
+  window.wcLoadProject = async function(code) {
+    if (!wc || !code) return;
+    const skip = new Set(['package.json','vite.config.js','tsconfig.json','index.html','src/main.tsx']);
+    for (const section of code.split(/^### /m).filter(s => s.trim())) {
+      const nl = section.indexOf('\n');
+      if (nl === -1) continue;
+      const fn = section.substring(0, nl).trim();
+      const ct = section.substring(nl + 1).trim();
+      if (!fn || !ct || skip.has(fn) || fn.startsWith('src/components/ui/')) continue;
+      await window.wcWriteFile(fn, ct);
+    }
+  };
+
+  window.wcTeardown = function() {
+    if (wc) { try { wc.teardown(); } catch {} }
+    wc = null; wcUrl = null; wcBooting = false;
+    window._wcUrl = null;
+  };
+
+  window._wcAvailable = true;
+  console.log('[WC] WebContainer API loaded');
+} catch(e) {
+  console.warn('[WC] WebContainer not available:', e.message, '— Docker fallback active');
+  window._wcAvailable = false;
+  window.bootWebContainer = async () => null;
+  window.wcMountAndStart = async () => {};
+  window.wcWriteFile = async () => {};
+  window.wcEditFile = async () => {};
+  window.wcLoadProject = async () => {};
+  window.wcTeardown = () => {};
+}
+</script>
 <script>
 // === IFRAME ISOLATION ===
 // 1. Suppress JS errors from preview iframe
@@ -921,8 +1023,23 @@ async function openWorkspace(id) {
     generatedCode = currentProject.generated_code;
     document.getElementById('code-editor').textContent = generatedCode;
   }
-  // Load Docker preview if container is running
-  if (currentProject.build_status === 'done') {
+
+  // Start preview engine: WebContainer (primary) or Docker (fallback)
+  if (window._wcAvailable) {
+    // WebContainer: preview runs in the browser, like Lovable
+    (async () => {
+      try {
+        await bootWebContainer();
+        await wcMountAndStart();
+        if (currentProject.generated_code) {
+          await wcLoadProject(currentProject.generated_code);
+        }
+      } catch(e) {
+        console.error('[WC] Failed, falling back to Docker:', e);
+        if (currentProject.build_status === 'done') loadDockerPreview(`/run/${currentProject.id}/`);
+      }
+    })();
+  } else if (currentProject.build_status === 'done') {
     loadDockerPreview(`/run/${currentProject.id}/`);
   }
 }
@@ -930,6 +1047,7 @@ async function openWorkspace(id) {
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
+  wcTeardown();
   document.getElementById('workspace-view').classList.remove('active');
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
@@ -1373,7 +1491,20 @@ async function autoCompile() {
     return;
   }
 
-  // Re-fetch project to get current build_status
+  // WebContainer: Vite HMR already updated the preview — just ensure it's visible
+  if (window._wcUrl) {
+    const frame = document.getElementById('preview-frame');
+    if (frame.style.display === 'none') {
+      frame.src = window._wcUrl;
+      frame.style.display = 'block';
+      document.getElementById('preview-loading').style.display = 'none';
+    }
+    document.getElementById('preview-status').className = 'preview-status live';
+    document.getElementById('preview-status').innerHTML = '<span>✓ Live</span>';
+    return;
+  }
+
+  // Docker fallback: re-fetch project to get current build_status
   try {
     const fresh = await api('/api/projects/' + currentProject.id);
     currentProject.build_status = fresh.build_status;
@@ -1873,6 +2004,13 @@ function connectProjectSSE(projectId) {
     try {
       const data = JSON.parse(e.data);
       if (data.type === 'code_updated') loadPreview();
+      // Real-time file streaming to WebContainer (Vite HMR picks up changes)
+      if (data.type === 'file_written' && data.path && data.content) {
+        wcWriteFile(data.path, data.content).catch(() => {});
+      }
+      if (data.type === 'file_edited' && data.path) {
+        wcEditFile(data.path, data.search, data.replace || '').catch(() => {});
+      }
     } catch (err) {}
   };
   projectSSE.onerror = () => {
