@@ -635,7 +635,7 @@ button.card { padding: 0; }
 </div>
 <div class="presentation-overlay" id="presentation-overlay">
   <div class="presentation-header"><div class="presentation-title" id="presentation-title">Présentation</div><button class="btn btn-secondary" onclick="closePresentationMode()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Fermer</button></div>
-  <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
+  <div class="presentation-content"><div class="presentation-frame"><iframe id="presentation-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" credentialless></iframe></div></div>
 </div>
 <script type="module">
 // === WEBCONTAINER ENGINE (Lovable-style in-browser preview) ===
@@ -1948,8 +1948,9 @@ async function loadHistoryModalContent() {
 function openPresentationMode() {
   if (!currentProject) return;
   document.getElementById('presentation-title').textContent = currentProject.title || 'Présentation';
-  const presUrl = '/run/' + currentProject.id + '/';
-  document.getElementById('presentation-frame').src = presUrl + '?token=' + encodeURIComponent(token);
+  // Use WebContainer URL if available, otherwise Docker
+  const presUrl = window._wcUrl || ('/run/' + currentProject.id + '/?token=' + encodeURIComponent(token));
+  document.getElementById('presentation-frame').src = presUrl;
   document.getElementById('presentation-overlay').classList.add('active');
 }
 
