@@ -541,43 +541,64 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 
 const DEFAULT_INDEX_CSS = `@import "tailwindcss";
 
-:root {
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-light: #dbeafe;
-  --color-secondary: #64748b;
-  --color-accent: #f59e0b;
-  --color-background: #ffffff;
-  --color-surface: #f8fafc;
-  --color-text: #0f172a;
-  --color-text-muted: #64748b;
-  --color-border: #e2e8f0;
-  --color-success: #16a34a;
-  --color-error: #dc2626;
-  --color-warning: #f59e0b;
+@theme {
+  --color-background: var(--color-bg, #ffffff);
+  --color-foreground: var(--color-text, #0f172a);
+  --color-card: var(--color-surface, #f8fafc);
+  --color-card-foreground: var(--color-text, #0f172a);
+  --color-popover: var(--color-surface, #f8fafc);
+  --color-popover-foreground: var(--color-text, #0f172a);
+  --color-primary: var(--color-primary-val, #2563eb);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-secondary-val, #f1f5f9);
+  --color-secondary-foreground: var(--color-text, #0f172a);
+  --color-muted: var(--color-surface, #f8fafc);
+  --color-muted-foreground: var(--color-text-muted-val, #64748b);
+  --color-accent: var(--color-surface, #f8fafc);
+  --color-accent-foreground: var(--color-text, #0f172a);
+  --color-destructive: var(--color-error-val, #dc2626);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--color-border-val, #e2e8f0);
+  --color-input: var(--color-border-val, #e2e8f0);
+  --color-ring: var(--color-primary-val, #2563eb);
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
+}
+
+:root {
+  --color-primary-val: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-light: #dbeafe;
+  --color-secondary-val: #64748b;
+  --color-accent-val: #f59e0b;
+  --color-bg: #ffffff;
+  --color-surface: #f8fafc;
+  --color-text: #0f172a;
+  --color-text-muted-val: #64748b;
+  --color-border-val: #e2e8f0;
+  --color-success-val: #16a34a;
+  --color-error-val: #dc2626;
+  --color-warning-val: #f59e0b;
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
   --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
   --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
 }
 
 .dark {
-  --color-primary: #3b82f6; --color-primary-hover: #60a5fa; --color-primary-light: #1e3a5f;
-  --color-secondary: #94a3b8; --color-accent: #fbbf24;
-  --color-background: #0f172a; --color-surface: #1e293b;
-  --color-text: #f1f5f9; --color-text-muted: #94a3b8; --color-border: #334155;
-  --color-success: #22c55e; --color-error: #ef4444; --color-warning: #fbbf24;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+  --color-primary-val: #3b82f6; --color-primary-hover: #60a5fa; --color-primary-light: #1e3a5f;
+  --color-secondary-val: #94a3b8; --color-accent-val: #fbbf24;
+  --color-bg: #0f172a; --color-surface: #1e293b;
+  --color-text: #f1f5f9; --color-text-muted-val: #94a3b8; --color-border-val: #334155;
+  --color-success-val: #22c55e; --color-error-val: #ef4444; --color-warning-val: #fbbf24;
 }
 
-body { font-family: 'Inter', system-ui, -apple-system, sans-serif; color: var(--color-text); background-color: var(--color-background); -webkit-font-smoothing: antialiased; }
+body { font-family: 'Inter', system-ui, -apple-system, sans-serif; color: var(--color-text); background-color: var(--color-bg); -webkit-font-smoothing: antialiased; }
 @keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 .animate-in { animation: fade-in 0.3s ease-out; }
 html { scroll-behavior: smooth; }
-*:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+*:focus-visible { outline: 2px solid var(--color-primary-val); outline-offset: 2px; }
 `;
 
 const DEFAULT_APP_JSX = `import React from 'react';
