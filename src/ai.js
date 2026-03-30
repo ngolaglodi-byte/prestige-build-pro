@@ -383,7 +383,13 @@ FICHIERS AUTOMATIQUES — NE JAMAIS GÉNÉRER CES FICHIERS :
   vite.config.js — fourni avec alias @/, allowedHosts, proxy
   tsconfig.json — fourni avec strict: true, paths @/
   index.html — fourni avec <div id="root">, main.tsx
-  src/main.tsx — fourni avec createRoot, import App
+  src/main.tsx — fourni avec createRoot, BrowserRouter + basename, import App
+
+RÈGLE CRITIQUE ROUTING :
+  BrowserRouter est DÉJÀ dans main.tsx avec le bon basename.
+  JAMAIS de BrowserRouter dans App.tsx — utilise SEULEMENT <Routes> et <Route>.
+  App.tsx doit exporter : <div>...<Routes><Route path="/" .../></Routes>...</div>
+  PAS de <BrowserRouter> wrapper dans App.tsx.
 
 Tu génères SEULEMENT : server.js, src/index.css, src/App.tsx, src/components/*.tsx, src/pages/*.tsx
 Si tu as besoin d'un package supplémentaire (chart.js, etc.) → utilise le tool add_dependency.

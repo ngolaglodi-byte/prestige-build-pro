@@ -530,12 +530,18 @@ export default defineConfig({
 
 const DEFAULT_MAIN_JSX = `import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
 
+// basename from Vite --base flag (e.g. /run/87/) so React Router matches URLs correctly
+const basename = import.meta.env.BASE_URL.replace(/\\/$/, '') || '/';
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <BrowserRouter basename={basename}>
+      <App />
+    </BrowserRouter>
   </React.StrictMode>
 );
 `;
@@ -2400,7 +2406,7 @@ CONTENU : tout le contenu est EN DUR dans le JSX (const data = [...]).
   fetch() UNIQUEMENT pour les formulaires (submit contact, réservation).
 
 Génère ces fichiers :
-### src/App.tsx — BrowserRouter, Routes, Route. Import Header, Footer, et toutes les pages. Layout: <Header/> + <main className="flex-1"><Routes>...</Routes></main> + <Footer/>
+### src/App.tsx — SANS BrowserRouter (déjà dans main.tsx). Import Routes, Route, Header, Footer, et toutes les pages. Layout: <Header/> + <main className="flex-1"><Routes>...</Routes></main> + <Footer/>. JAMAIS import BrowserRouter ici.
 
 ### src/pages/Home.tsx — Page d'accueil COMPLÈTE avec TOUTES ces sections visibles en scrollant :
   1. Hero plein écran : grand titre, sous-titre, 2 boutons CTA (<Button asChild><Link to="...">)
@@ -3248,6 +3254,23 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       content = content.replace(/^export\s+default\s+/gm, 'module.exports = ');
       // export { a, b } → module.exports = { a, b }
       content = content.replace(/^export\s+\{([^}]+)\}\s*;?$/gm, 'module.exports = {$1};');
+    }
+
+    // AUTO-FIX: Remove BrowserRouter from App.tsx (it's in main.tsx with basename)
+    if ((filename === 'src/App.tsx' || filename === 'src/App.jsx') && content.includes('BrowserRouter')) {
+      console.log(`[WriteFiles] Auto-fixing: removing BrowserRouter from ${filename} (already in main.tsx)`);
+      // Remove BrowserRouter import
+      content = content.replace(/import\s*\{[^}]*BrowserRouter[^}]*\}\s*from\s*['"]react-router-dom['"]\s*;?\n?/g, (match) => {
+        // Keep other imports from react-router-dom (Routes, Route, Link, etc.)
+        const others = match.match(/\{([^}]*)\}/)?.[1]?.split(',').map(s => s.trim()).filter(s => s && s !== 'BrowserRouter');
+        if (others && others.length > 0) return `import { ${others.join(', ')} } from 'react-router-dom';\n`;
+        return '';
+      });
+      // Remove <BrowserRouter> and </BrowserRouter> wrapper
+      content = content.replace(/<BrowserRouter[^>]*>/g, '');
+      content = content.replace(/<\/BrowserRouter>/g, '');
+      // Clean double blank lines
+      content = content.replace(/\n{3,}/g, '\n\n');
     }
 
     // AUTO-FIX: Ensure server.js listens on 0.0.0.0 (not just localhost)
