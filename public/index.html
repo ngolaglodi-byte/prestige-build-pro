@@ -686,8 +686,20 @@ try {
     console.log('[WC] Dependencies installed');
 
     // Start Vite — server-ready event will fire when ready
+    // Capture Vite errors for auto-correction (like Lovable)
+    window._wcViteErrors = [];
     const dev = await wc.spawn('npm', ['run', 'dev']);
-    dev.output.pipeTo(new WritableStream({ write(d) { console.log('[vite]', d); } }));
+    dev.output.pipeTo(new WritableStream({
+      write(d) {
+        console.log('[vite]', d);
+        // Capture Vite compilation errors
+        if (d && (d.includes('error') || d.includes('Error') || d.includes('failed to resolve') || d.includes('Cannot find'))) {
+          window._wcViteErrors.push(d);
+          // Keep only last 10 errors
+          if (window._wcViteErrors.length > 10) window._wcViteErrors.shift();
+        }
+      }
+    }));
     console.log('[WC] Vite starting...');
   };
 
@@ -1538,6 +1550,19 @@ async function autoCompile() {
     if (currentProject.generated_code) {
       await wcLoadProject(currentProject.generated_code);
     }
+    // Wait 2s for Vite to recompile, then check for errors
+    window._wcViteErrors = [];
+    await new Promise(r => setTimeout(r, 2000));
+
+    // If Vite has compilation errors, auto-send them for correction (like Lovable)
+    if (window._wcViteErrors.length > 0 && currentProject) {
+      const errors = window._wcViteErrors.join('\n');
+      console.log('[WC] Vite errors detected, sending for auto-correction:', errors);
+      addChatMessage('assistant', 'Correction automatique des erreurs...');
+      sendChatMessage('Le build Vite a échoué avec ces erreurs:\n' + errors + '\n\nCorrige les fichiers en cause.');
+      return; // sendChatMessage will call autoCompile again when done
+    }
+
     const frame = document.getElementById('preview-frame');
     frame.src = window._wcUrl;
     frame.style.display = 'block';
