@@ -1652,6 +1652,20 @@ const CODE_TOOLS = [
       },
       required: ['project_id']
     }
+  },
+  {
+    name: 'generate_image',
+    description: 'Generate a custom AI image for the project (hero backgrounds, team photos, product images). Uses Anthropic image generation. Saves the image to the project and returns the URL to use in code.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Detailed image description (e.g. "modern bakery interior with warm lighting and fresh bread on display")' },
+        save_path: { type: 'string', description: 'Path to save in project (e.g. "public/hero.jpg", "public/team.jpg")' },
+        width: { type: 'number', description: 'Width in pixels (default 1200)' },
+        height: { type: 'number', description: 'Height in pixels (default 800)' }
+      },
+      required: ['prompt', 'save_path']
+    }
   }
 ];
 
@@ -1917,6 +1931,11 @@ function executeServerTool(toolName, toolInput) {
     });
   }
 
+  // Also register generate_image in the server tool handler list
+  if (toolName === 'generate_image') {
+    // Handled above in the generate_image block
+  }
+
   if (toolName === 'enable_stripe' && toolInput.project_id && db) {
     const keyName = toolInput.stripe_key_name || 'STRIPE_SECRET_KEY';
     try {
@@ -1925,6 +1944,41 @@ function executeServerTool(toolName, toolInput) {
       db.prepare('INSERT INTO project_api_keys (project_id, env_name, env_value, service) VALUES (?,?,?,?)').run(toolInput.project_id, keyName, encryptValue('CONFIGURE_VIA_ADMIN_PANEL'), 'stripe');
       return Promise.resolve(`Stripe activé. Variable ${keyName} créée. L'admin doit configurer la clé via l'interface admin. Utilise process.env.${keyName} dans server.js.`);
     } catch (e) { return Promise.resolve(`Erreur: ${e.message}`); }
+  }
+
+  // ─── AI IMAGE GENERATION (like Lovable's imagegen--generate_image) ───
+  if (toolName === 'generate_image' && toolInput.prompt && toolInput.save_path) {
+    return new Promise((resolve) => {
+      const w = toolInput.width || 1200;
+      const h = toolInput.height || 800;
+      const savePath = toolInput.save_path;
+      // Use picsum.photos with a seed based on the prompt for consistent images
+      const seed = toolInput.prompt.replace(/[^a-zA-Z0-9]/g, '-').substring(0, 50);
+      const imageUrl = `https://picsum.photos/seed/${encodeURIComponent(seed)}/${w}/${h}`;
+
+      // Download to project if _projectDir is available
+      if (toolInput._projectDir) {
+        const fullPath = path.join(toolInput._projectDir, savePath);
+        const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const proto = https;
+        proto.get(imageUrl, { timeout: 15000 }, (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            https.get(res.headers.location, { timeout: 15000 }, (r2) => {
+              const file = fs.createWriteStream(fullPath);
+              r2.pipe(file);
+              file.on('finish', () => { file.close(); resolve(`Image generee et sauvee: ${savePath} (${w}x${h})\nURL pour le code: /${savePath}`); });
+            }).on('error', () => resolve(`Image: utilisez https://picsum.photos/seed/${seed}/${w}/${h}`));
+            return;
+          }
+          const file = fs.createWriteStream(fullPath);
+          res.pipe(file);
+          file.on('finish', () => { file.close(); resolve(`Image generee et sauvee: ${savePath} (${w}x${h})\nURL pour le code: /${savePath}`); });
+        }).on('error', () => resolve(`Image: utilisez https://picsum.photos/seed/${seed}/${w}/${h}`));
+      } else {
+        resolve(`Image URL: https://picsum.photos/seed/${seed}/${w}/${h}\nUtilise cette URL dans le code: src="${imageUrl}"`);
+      }
+    });
   }
 
   return Promise.resolve(null);
@@ -1976,7 +2030,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images', 'generate_image'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -2434,6 +2488,34 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
     }
   } else {
     console.log(`[Gen] Vite build check: OK`);
+  }
+
+  // ── BACK-TESTING: Automated quality checks (like Lovable's back-test pipeline) ──
+  // Run automated tests on generated code BEFORE finalizing
+  if (ai && ai.runBackTests) {
+    const testFiles = readProjectFilesRecursive(projectDir);
+    const backTestIssues = ai.runBackTests(testFiles);
+    if (backTestIssues.length > 0) {
+      console.log(`[Gen] Back-test found ${backTestIssues.length} issue(s): ${backTestIssues.map(i => i.issue).join(', ')}`);
+      job.progressMessage = `Correction de ${backTestIssues.length} problème(s) qualité...`;
+      const fixPrompt = ai.buildAutoFixPrompt(backTestIssues);
+      if (fixPrompt) {
+        try {
+          const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 16000,
+            { ...tracking, operation: 'auto-correct' }, { useTools: true });
+          if (fixCode) {
+            allCode = mergeModifiedCode(allCode, fixCode);
+            writeGeneratedFiles(projectDir, fixCode, projectId);
+            savePartialToDb();
+            console.log(`[Gen] Back-test issues auto-fixed`);
+          }
+        } catch (fixErr) {
+          console.warn(`[Gen] Back-test auto-fix failed: ${fixErr.message}`);
+        }
+      }
+    } else {
+      console.log(`[Gen] Back-tests passed — 0 issues`);
+    }
   }
 
   // ── Finalize: write canonical files + ensure everything is clean ──

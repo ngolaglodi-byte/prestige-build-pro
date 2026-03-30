@@ -1066,6 +1066,128 @@ function buildProfessionalPrompt(userMessage, project, availableApis) {
   return prompt;
 }
 
+// ─── LLM FILE SELECTION (like Lovable's GPT-4 Mini pre-selection) ───
+// Uses a fast/cheap model to decide which files are relevant BEFORE sending to Sonnet.
+// Reduces context size → fewer errors, faster generation, lower cost.
+function buildFileSelectionPrompt(projectStructure, userMessage) {
+  return `Tu es un assistant de sélection de fichiers. Un utilisateur veut modifier un projet React.
+
+STRUCTURE DU PROJET:
+${projectStructure}
+
+DEMANDE DE L'UTILISATEUR: "${userMessage}"
+
+Réponds avec UNIQUEMENT la liste des fichiers à envoyer au développeur, un par ligne.
+Inclus TOUJOURS src/App.tsx.
+Inclus les fichiers directement concernés par la demande.
+Si la demande touche le style/couleurs, inclus src/index.css.
+Si la demande touche le backend/API, inclus server.js.
+N'inclus PAS package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx (ils sont canoniques).
+N'inclus PAS les fichiers src/components/ui/* (ils sont canoniques).
+
+FICHIERS:`;
+}
+
+function parseFileSelectionResponse(response) {
+  if (!response) return [];
+  return response.split('\n')
+    .map(l => l.trim().replace(/^[-•*]\s*/, '').replace(/^`|`$/g, ''))
+    .filter(l => l && (l.endsWith('.tsx') || l.endsWith('.ts') || l.endsWith('.js') || l.endsWith('.css') || l.endsWith('.json')))
+    .filter(l => !l.includes('node_modules'));
+}
+
+// ─── BACK-TESTING: Validate generated code quality ───
+// Runs automated checks after generation to catch common issues
+function runBackTests(files) {
+  const issues = [];
+
+  // Test 1: Home.tsx must not fetch for display data
+  const home = files['src/pages/Home.tsx'] || '';
+  if (home && home.includes("fetch('/api/") && !home.includes('onSubmit') && !home.includes('handleSubmit')) {
+    const fetchCount = (home.match(/fetch\(['"]\/api\//g) || []).length;
+    const formCount = (home.match(/onSubmit|handleSubmit/g) || []).length;
+    if (fetchCount > formCount) {
+      issues.push({ file: 'src/pages/Home.tsx', issue: 'FETCH_FOR_DISPLAY', message: 'Home.tsx uses fetch() for display data — should be hardcoded constants' });
+    }
+  }
+
+  // Test 2: server.js must be CommonJS
+  const server = files['server.js'] || '';
+  if (server && /^import\s+\w+\s+from\s+['"]/m.test(server)) {
+    issues.push({ file: 'server.js', issue: 'ESM_IMPORTS', message: 'server.js uses ESM imports — must be CommonJS (require)' });
+  }
+
+  // Test 3: server.js must listen on 0.0.0.0
+  if (server && !server.includes("'0.0.0.0'") && !server.includes('"0.0.0.0"')) {
+    issues.push({ file: 'server.js', issue: 'LOCALHOST_ONLY', message: 'server.js does not listen on 0.0.0.0 — container will be unreachable' });
+  }
+
+  // Test 4: No invalid color tokens
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/') || fn.startsWith('src/lib/') || fn.startsWith('src/hooks/')) continue;
+    const invalidTokens = content.match(/var\(--color-[a-z-]+\)/g) || [];
+    if (invalidTokens.length > 0) {
+      issues.push({ file: fn, issue: 'VAR_IN_CLASSNAME', message: `Uses var() in className: ${invalidTokens.slice(0, 3).join(', ')}` });
+    }
+    const hexInClass = content.match(/className="[^"]*#[0-9a-fA-F]{3,8}[^"]*"/g) || [];
+    if (hexInClass.length > 0) {
+      issues.push({ file: fn, issue: 'HEX_IN_CLASSNAME', message: 'Uses hex colors in className' });
+    }
+  }
+
+  // Test 5: All imports resolve to existing files
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const imports = content.match(/from ['"]@\/([^'"]+)['"]/g) || [];
+    for (const imp of imports) {
+      const importPath = imp.match(/from ['"]@\/([^'"]+)['"]/)?.[1];
+      if (!importPath) continue;
+      if (importPath.startsWith('components/ui/') || importPath.startsWith('lib/') || importPath.startsWith('hooks/')) continue;
+      const resolved = 'src/' + importPath + (importPath.endsWith('.tsx') || importPath.endsWith('.ts') ? '' : '.tsx');
+      if (!files[resolved] && !files[resolved.replace('.tsx', '.ts')]) {
+        issues.push({ file: fn, issue: 'MISSING_IMPORT', message: `Imports @/${importPath} but file not found` });
+      }
+    }
+  }
+
+  // Test 6: App.tsx routes must match existing page files
+  const app = files['src/App.tsx'] || '';
+  const routeImports = app.match(/import\s+(\w+)\s+from\s+['"]@\/pages\/(\w+)['"]/g) || [];
+  for (const ri of routeImports) {
+    const pageName = ri.match(/from\s+['"]@\/pages\/(\w+)['"]/)?.[1];
+    if (pageName && !files[`src/pages/${pageName}.tsx`]) {
+      issues.push({ file: 'src/App.tsx', issue: 'MISSING_PAGE', message: `Route imports @/pages/${pageName} but file not generated` });
+    }
+  }
+
+  // Test 7: index.css must have @theme block (Tailwind 4 requirement)
+  const css = files['src/index.css'] || '';
+  if (css && !css.includes('@theme')) {
+    issues.push({ file: 'src/index.css', issue: 'NO_THEME', message: 'Missing @theme block — Tailwind 4 utility classes will fail' });
+  }
+
+  return issues;
+}
+
+// Build auto-fix prompt from back-test issues
+function buildAutoFixPrompt(issues) {
+  if (!issues || issues.length === 0) return null;
+  const grouped = {};
+  for (const i of issues) {
+    if (!grouped[i.file]) grouped[i.file] = [];
+    grouped[i.file].push(i.message);
+  }
+  let prompt = `Le projet a ${issues.length} problème(s) détecté(s) automatiquement. Corrige-les :\n\n`;
+  for (const [file, msgs] of Object.entries(grouped)) {
+    prompt += `### ${file}\n${msgs.map(m => `- ${m}`).join('\n')}\n\n`;
+  }
+  prompt += `Utilise edit_file pour les petites corrections, write_file pour les réécritures.
+RAPPEL : server.js = CommonJS (require). Couleurs = classes Tailwind @theme (bg-primary, text-muted-foreground). Contenu pages = EN DUR (pas de fetch pour l'affichage).`;
+  return prompt;
+}
+
 module.exports = {
   SYSTEM_PROMPT,
   CHAT_SYSTEM_PROMPT,
@@ -1077,5 +1199,9 @@ module.exports = {
   buildProfessionalPrompt,
   detectProjectComplexity,
   getMaxTokensForProject,
-  getModelForProject
+  getModelForProject,
+  buildFileSelectionPrompt,
+  parseFileSelectionResponse,
+  runBackTests,
+  buildAutoFixPrompt
 };
