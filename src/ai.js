@@ -508,7 +508,10 @@ Frontend : React 19.1.0, Vite 6.3.5, TailwindCSS 4.1.7, React Router DOM 7.6.1, 
 Backend : Express 4.18.2, better-sqlite3 9.4.3, bcryptjs, jsonwebtoken, cors, helmet, compression
 Packages disponibles : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
 
-server.js : Port 3000, /health, express.static('dist'), SQLite, JWT auth, SPA fallback
+server.js : OBLIGATOIREMENT CommonJS (require/module.exports) — JAMAIS import/export ESM
+  const express = require('express'); — PAS import express from 'express'
+  Port 3000, /health, express.static('dist'), SQLite, JWT auth, SPA fallback
+  app.listen(PORT, '0.0.0.0', ...) — écouter sur 0.0.0.0 (pas juste localhost)
 Ordre middlewares : static → public routes → auth → protected /api → SPA fallback
 Fin de server.js : // CREDENTIALS: email=admin@[nom].com password=[MotDePasse]
 

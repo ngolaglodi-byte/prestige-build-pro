@@ -899,9 +899,16 @@ src/
 7. useState, useEffect, useCallback pour state/effets
 8. Responsive mobile-first : sm:, md:, lg:, xl:
 
-## server.js — Backend Express
+## server.js — Backend Express (COMMONJS OBLIGATOIRE)
 
-- Port 3000, route /health
+RÈGLE ABSOLUE : server.js utilise UNIQUEMENT CommonJS :
+  const express = require('express');  — PAS import express from 'express'
+  const Database = require('better-sqlite3');  — PAS import Database from ...
+  module.exports = ...  — PAS export default
+  JAMAIS de import/export ES modules dans server.js
+
+- Port 3000, app.listen(PORT, '0.0.0.0', ...) — écouter sur TOUTES les interfaces
+- Route /health : res.json({ status: 'ok' })
 - Sert dist/ : app.use(express.static(path.join(__dirname, 'dist')))
 - SQLite : tables selon le secteur avec données de démo
 - JWT auth, compte admin basé sur le nom du projet
@@ -2206,8 +2213,8 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
   package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx
 
 Génère SEULEMENT ces 2 fichiers :
-### server.js — Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/index.css — @import "tailwindcss"; puis :root { --color-primary: [couleur secteur]; --color-primary-hover; --color-secondary; --color-accent; --color-background: #ffffff; --color-surface; --color-text; --color-text-muted; --color-border; }
+### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
+### src/index.css — NE PAS inclure @import "tailwindcss" ni @theme (déjà fourni). Génère SEULEMENT :root { --color-primary-val: [couleur secteur]; --color-primary-hover; --color-secondary-val; --color-accent-val; --color-bg; --color-surface; --color-text; --color-text-muted-val; --color-border-val; --color-error-val; --color-success-val; --color-warning-val; }
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
@@ -3036,6 +3043,26 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     // Ensure index.css always has @import "tailwindcss" (AI sometimes omits it)
     if (filename === 'src/index.css' && !content.includes('@import "tailwindcss"')) {
       content = '@import "tailwindcss";\n\n' + content;
+    }
+
+    // AUTO-FIX: Convert ESM imports to CommonJS in server.js
+    // The AI sometimes generates "import x from 'y'" despite the prompt saying CommonJS
+    if (filename === 'server.js' && content.includes('import ') && content.includes(' from ')) {
+      console.log(`[WriteFiles] Auto-fixing ESM → CommonJS in server.js`);
+      // import express from 'express' → const express = require('express')
+      content = content.replace(/^import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?$/gm, "const $1 = require('$2');");
+      // import { a, b } from 'x' → const { a, b } = require('x')
+      content = content.replace(/^import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]\s*;?$/gm, "const {$1} = require('$2');");
+      // export default → module.exports =
+      content = content.replace(/^export\s+default\s+/gm, 'module.exports = ');
+      // export { a, b } → module.exports = { a, b }
+      content = content.replace(/^export\s+\{([^}]+)\}\s*;?$/gm, 'module.exports = {$1};');
+    }
+
+    // AUTO-FIX: Ensure server.js listens on 0.0.0.0 (not just localhost)
+    if (filename === 'server.js' && !content.includes("'0.0.0.0'") && !content.includes('"0.0.0.0"')) {
+      content = content.replace(/app\.listen\(\s*(?:PORT|port|3000)\s*,\s*\(/g, "app.listen(PORT, '0.0.0.0', (");
+      content = content.replace(/app\.listen\(\s*(?:PORT|port|3000)\s*,\s*\(\)/g, "app.listen(PORT, '0.0.0.0', ()");
     }
 
     // ALWAYS push to WebContainer via SSE (even protected/canonical files — WC needs ALL files)
