@@ -889,7 +889,7 @@ function parseCodeFiles(code) {
 }
 
 // ─── CONVERSATION CONTEXT BUILDER (React multi-file) ───
-function buildConversationContext(project, messages, userMessage, configuredKeys) {
+function buildConversationContext(project, messages, userMessage, configuredKeys, llmSelectedFiles) {
   const context = [];
 
   if (project && project.generated_code) {
@@ -960,26 +960,29 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     let projectContext = structure;
 
-    // Determine which files to send (full content)
+    // ── FILE SELECTION: LLM (GPT-4 Mini) or regex fallback ──
+    // Like Lovable: use a fast model to pick relevant files before Claude Sonnet
     const filesToSend = [];
     const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle/i.test(userMessage);
 
     if (isMajor) {
-      // Send all files for major changes
       allFileNames.forEach(f => filesToSend.push(f));
+    } else if (llmSelectedFiles && llmSelectedFiles.length > 0) {
+      // GPT-4 Mini selected the files — use its selection + always include App.tsx
+      console.log(`[Context] Using GPT-4 Mini file selection: ${llmSelectedFiles.join(', ')}`);
+      if (!llmSelectedFiles.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
+      for (const f of llmSelectedFiles) {
+        if (files[f]) filesToSend.push(f);
+      }
     } else {
-      // ALWAYS send App.tsx (routing context) and index.css (styling context)
+      // Regex fallback (no OpenAI key or GPT-4 Mini failed)
       if (files['src/App.tsx']) filesToSend.push('src/App.tsx');
       if (files['src/index.css']) filesToSend.push('src/index.css');
-
-      // Send specifically affected files
       if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
       if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
       if (affected.mainJsx && files['src/main.tsx']) filesToSend.push('src/main.tsx');
       if (affected.viteConfig && files['vite.config.js']) filesToSend.push('vite.config.js');
       if (affected.indexHtml && files['index.html']) filesToSend.push('index.html');
-
-      // Send affected components
       for (const comp of affected.components) {
         const key = `src/components/${comp}.tsx`;
         if (files[key]) filesToSend.push(key);
@@ -988,10 +991,7 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
         const key = `src/pages/${page}.tsx`;
         if (files[key]) filesToSend.push(key);
       }
-
-      // If adding a feature, also send the main page to understand context
       if (affected.serverJs && affected.appJsx) {
-        // Feature addition — send Home page too for layout understanding
         const homePage = allFileNames.find(f => f.includes('Home.tsx'));
         if (homePage && !filesToSend.includes(homePage)) filesToSend.push(homePage);
       }
@@ -1202,6 +1202,7 @@ module.exports = {
   getModelForProject,
   buildFileSelectionPrompt,
   parseFileSelectionResponse,
+  parseCodeFiles,
   runBackTests,
   buildAutoFixPrompt
 };

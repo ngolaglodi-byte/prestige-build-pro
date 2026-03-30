@@ -129,6 +129,7 @@ cache.startCleanup();
 
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
 const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
@@ -2184,6 +2185,64 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
       reject(e);
     }, null);
   });
+}
+
+// ─── GPT-4 MINI: Fast file selection (like Lovable's two-tier model) ───
+// Before sending the full project to Claude Sonnet for modification,
+// use GPT-4 Mini to select which files are relevant → reduces context → fewer errors.
+// Falls back to regex-based detectAffectedFiles() if OpenAI key not configured.
+function callGPT4Mini(prompt, maxTokens = 500) {
+  return new Promise((resolve, reject) => {
+    if (!OPENAI_API_KEY) return reject(new Error('OPENAI_API_KEY not configured'));
+    const payload = JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+      temperature: 0
+    });
+    const req = https.request({
+      hostname: 'api.openai.com', path: '/v1/chat/completions', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Length': Buffer.byteLength(payload) }
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const r = JSON.parse(data);
+          if (r.error) return reject(new Error(r.error.message));
+          const text = r.choices?.[0]?.message?.content || '';
+          console.log(`[GPT-4 Mini] ${text.length} chars, ${r.usage?.total_tokens || 0} tokens`);
+          resolve(text);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('GPT-4 Mini timeout')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// Select relevant files using GPT-4 Mini (fast, cheap) before sending to Claude Sonnet
+// Returns array of file paths to include in context
+async function selectFilesWithLLM(projectStructure, userMessage) {
+  if (!OPENAI_API_KEY || !ai) {
+    // Fallback to regex-based detection
+    return null;
+  }
+  try {
+    const prompt = ai.buildFileSelectionPrompt(projectStructure, userMessage);
+    const response = await callGPT4Mini(prompt);
+    const files = ai.parseFileSelectionResponse(response);
+    if (files.length > 0) {
+      console.log(`[FileSelect] GPT-4 Mini selected ${files.length} files: ${files.join(', ')}`);
+      return files;
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[FileSelect] GPT-4 Mini failed: ${e.message} — falling back to regex`);
+    return null;
+  }
 }
 
 function generateViaAPI(projectId, brief, jobId) {
@@ -6438,7 +6497,22 @@ const server = http.createServer(async (req, res) => {
     const savedApis = db.prepare('SELECT name,service,description FROM api_keys').all();
     const projectKeys = project_id ? db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project_id) : [];
     const userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
-    const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys) : [{role:'user', content: userMsg}];
+
+    // ── LOVABLE TWO-TIER: GPT-4 Mini selects files BEFORE Claude Sonnet generates ──
+    // This reduces context size → fewer hallucinations, faster, cheaper
+    let llmSelectedFiles = null;
+    if (OPENAI_API_KEY && project?.generated_code && ai) {
+      try {
+        const files = ai.parseCodeFiles ? ai.parseCodeFiles(project.generated_code) : {};
+        const fileList = Object.keys(files).map(fn => {
+          const size = (files[fn] || '').length;
+          return `  ${fn} (${size} chars)`;
+        }).join('\n');
+        llmSelectedFiles = await selectFilesWithLLM(fileList, message);
+      } catch (e) { console.warn(`[FileSelect] Skipped: ${e.message}`); }
+    }
+
+    const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys, llmSelectedFiles) : [{role:'user', content: userMsg}];
     if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', message);
     const brief = project?.brief || message;
 
