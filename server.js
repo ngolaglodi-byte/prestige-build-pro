@@ -6725,8 +6725,16 @@ const server = http.createServer(async (req, res) => {
     const tree = buildFileTree(templateDir);
     // Override package.json for WebContainer (remove native addons)
     const wcPkg = JSON.parse(JSON.stringify(JSON.parse(fs.readFileSync(path.join(templateDir, 'package.json'), 'utf8'))));
+    // Remove ALL backend deps — WebContainer only needs frontend for Vite compilation
+    // This cuts npm install time from ~60s to ~20s
     delete wcPkg.dependencies['better-sqlite3'];
-    wcPkg.scripts.dev = 'vite --host 0.0.0.0 --port 5173';
+    delete wcPkg.dependencies['express'];
+    delete wcPkg.dependencies['bcryptjs'];
+    delete wcPkg.dependencies['jsonwebtoken'];
+    delete wcPkg.dependencies['cors'];
+    delete wcPkg.dependencies['helmet'];
+    delete wcPkg.dependencies['compression'];
+    wcPkg.scripts = { dev: 'vite --host 0.0.0.0 --port 5173' };
     tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
     // Remove server.js (requires native better-sqlite3)
     delete tree['server.js'];
