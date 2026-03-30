@@ -871,7 +871,38 @@ async function createAndGenerate() {
     currentProject = p;
     closeNewProjectModal();
     await openWorkspace(p.id);
-    setTimeout(() => { uploadedImage ? generateFromImage(brief) : sendChatMessage(brief); }, 500);
+
+    // Wait for container to be ready before starting generation
+    // The container is launched async by POST /api/projects — poll until build_status='done'
+    const loading = document.getElementById('preview-loading');
+    loading.style.display = 'flex';
+    loading.querySelector('span').textContent = 'Démarrage de l\'environnement...';
+    document.getElementById('preview-status').className = 'preview-status generating';
+    document.getElementById('preview-status').innerHTML = '<span>Préparation...</span>';
+
+    let containerReady = false;
+    for (let i = 0; i < 30; i++) { // max 30s
+      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const fresh = await api('/api/projects/' + p.id);
+        if (fresh.build_status === 'done') {
+          currentProject = fresh;
+          containerReady = true;
+          // Show template preview immediately
+          loadDockerPreview(`/run/${p.id}/`);
+          break;
+        }
+      } catch(e) {}
+      loading.querySelector('span').textContent = 'Démarrage de l\'environnement... (' + (i+1) + 's)';
+    }
+
+    if (!containerReady) {
+      console.warn('[createAndGenerate] Container not ready after 30s — starting generation anyway');
+      currentProject.build_status = 'pending';
+    }
+
+    // Now start generation — container is running, files will be pushed via docker cp
+    uploadedImage ? generateFromImage(brief) : sendChatMessage(brief);
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 
@@ -899,7 +930,16 @@ async function openWorkspace(id) {
   document.getElementById('dashboard-view').classList.remove('active');
   document.getElementById('admin-view').classList.add('hidden');
   document.getElementById('workspace-view').classList.add('active');
-  if (!currentProject || currentProject.id !== id) currentProject = await api('/api/projects/' + id);
+  // ALWAYS fetch fresh project data from server (build_status may have changed)
+  try {
+    currentProject = await api('/api/projects/' + id);
+  } catch(e) {
+    // Fallback: use whatever we have
+    if (!currentProject || currentProject.id !== id) {
+      console.error('[openWorkspace] Failed to fetch project:', e.message);
+      return;
+    }
+  }
   updateWorkspaceUI();
   loadChatHistory();
   loadVersionHistory();
@@ -1356,6 +1396,13 @@ async function autoCompile() {
     console.error('[AUTOCOMPILE] Cannot compile: currentProject.id is missing');
     return;
   }
+
+  // Re-fetch project to get current build_status (may have been updated during generation)
+  try {
+    const fresh = await api('/api/projects/' + currentProject.id);
+    currentProject.build_status = fresh.build_status;
+    currentProject.build_url = fresh.build_url;
+  } catch(e) {}
 
   // Try hot reload first if container is already running (~3s instead of 30-60s)
   if (currentProject.build_status === 'done') {

@@ -2161,6 +2161,33 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
     } catch (e) { console.error('[Gen] DB save error:', e.message); }
   }
 
+  // ── WAIT FOR CONTAINER — launched async by POST /api/projects ──
+  // The container is started in parallel with this generation.
+  // We need it running before we can push files via docker cp.
+  job.progressMessage = 'Attente du conteneur Docker...';
+  console.log(`[Gen] Waiting for container for project ${projectId}...`);
+  let containerReady = false;
+  for (let i = 0; i < 30; i++) {
+    if (await isContainerRunningAsync(projectId)) {
+      containerReady = true;
+      console.log(`[Gen] Container ready after ${i}s`);
+      break;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  if (!containerReady) {
+    // Container didn't start — try launching it ourselves
+    console.warn(`[Gen] Container not ready after 30s — launching now`);
+    try {
+      const result = await launchTemplateContainer(projectId);
+      containerReady = result.success;
+      if (containerReady) console.log(`[Gen] Container launched manually`);
+      else console.error(`[Gen] Manual container launch failed: ${result.error}`);
+    } catch(e) {
+      console.error(`[Gen] Manual container launch error: ${e.message}`);
+    }
+  }
+
   // Detect sector-specific structure from brief
   const sectorHint = sectorProfile ? sectorProfile.substring(0, 200) : '';
 
