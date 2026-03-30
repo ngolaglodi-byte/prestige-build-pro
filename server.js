@@ -2434,7 +2434,7 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
       const { spawnSync } = require('child_process');
       if (spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { timeout: 5000 }).status === 0) {
         execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
-        try { execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 }); } catch {}
+        try { execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; cp server.js server.cjs 2>/dev/null; node server.cjs & echo $! > /tmp/express.pid'`, { timeout: 10000 }); } catch {}
       }
     }
     console.log(`[Gen] Final files pushed to container ${containerName}`);
@@ -4505,7 +4505,7 @@ async function launchTemplateContainer(projectId) {
       `VITE_BASE=/run/${projectId}/`,
       `NODE_OPTIONS=--max-old-space-size=256`
     ],
-    Cmd: ['sh', '-c', `node server.js & echo $! > /tmp/express.pid && ./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" & while true; do sleep 3600; done`],
+    Cmd: ['sh', '-c', `cp server.js server.cjs 2>/dev/null; node server.cjs & echo $! > /tmp/express.pid; sleep 1; ./node_modules/.bin/vite --host 0.0.0.0 --port 5173 --base "/run/${projectId}/" & while true; do sleep 3600; done`],
     HostConfig: {
       NetworkMode: DOCKER_NETWORK,
       RestartPolicy: { Name: 'unless-stopped' },
@@ -6376,7 +6376,7 @@ const server = http.createServer(async (req, res) => {
         const container = docker.getContainer(containerName);
         // Kill and restart only the Express process, not Vite
         try {
-          execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; node server.js & echo $! > /tmp/express.pid'`, { timeout: 10000 });
+          execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; cp server.js server.cjs 2>/dev/null; node server.cjs & echo $! > /tmp/express.pid'`, { timeout: 10000 });
         } catch {
           // Fallback: full container restart
           await container.restart({ t: 2 });

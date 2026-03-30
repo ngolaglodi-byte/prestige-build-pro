@@ -2,23 +2,23 @@
 # Starting a container from this image takes 2-3 seconds (no build, no npm install)
 FROM node:20-alpine
 
-# System deps
-RUN apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont
+# System deps: build tools for native modules (better-sqlite3) + Chromium for screenshots
+RUN apk add --no-cache python3 make g++ chromium nss freetype harfbuzz ca-certificates ttf-freefont
 
 WORKDIR /app
 
 # Copy template project (has all canonical files + UI components)
 COPY templates/react/ .
 
-# Install ALL dependencies from the template package.json
-# This is done ONCE at image build time, never at project creation time
-RUN npm install --force 2>&1 | tail -5
+# Install ALL dependencies — build tools are needed for better-sqlite3 (native)
+RUN npm install && echo "npm install OK — $(ls node_modules | wc -l) packages"
 
-# Copy default server.js and start script
+# Verify critical packages are installed (--input-type=commonjs because package.json has type:module)
+RUN node --input-type=commonjs -e "require('react'); require('express'); require('better-sqlite3'); console.log('All packages OK')"
+RUN ./node_modules/.bin/vite --version
+
+# Copy default server.js
 COPY templates/react/server.js ./server.js
-
-# Create the start script that will be overwritten per-project with correct --base
-RUN echo '#!/bin/sh\nnode server.js &\n./node_modules/.bin/vite --host 0.0.0.0 --port 5173 &\nwait -n' > start-dev.sh && chmod +x start-dev.sh
 
 # Prepare data directory
 RUN mkdir -p /app/data
@@ -31,4 +31,4 @@ EXPOSE 3000 5173
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://localhost:3000/health || exit 1
 
-CMD ["sh", "start-dev.sh"]
+CMD ["sh", "-c", "cp server.js server.cjs 2>/dev/null; node server.cjs & ./node_modules/.bin/vite --host 0.0.0.0 --port 5173 & wait -n"]
