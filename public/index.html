@@ -518,7 +518,7 @@ button.card { padding: 0; }
               <button class="btn btn-ghost" id="toggle-code-btn" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
             </div>
           </div>
-          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
+          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" credentialless></iframe></div></div>
         </div>
         <aside class="workspace-code" id="code-panel">
           <div class="code-header"><span class="code-title">Code généré</span><button class="btn btn-ghost btn-icon" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
@@ -2048,7 +2048,7 @@ function connectProjectSSE(projectId) {
   projectSSE.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'code_updated') loadPreview();
+      if (data.type === 'code_updated' && !window._wcUrl) loadPreview();
       // Real-time file streaming to WebContainer (Vite HMR picks up changes)
       if (data.type === 'file_written' && data.path && data.content) {
         wcWriteFile(data.path, data.content).catch(() => {});

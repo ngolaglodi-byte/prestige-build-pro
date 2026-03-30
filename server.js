@@ -3191,26 +3191,32 @@ Règles d'intégration automatique :
                 job.progressMessage = `${input.path}`;
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 const cleanContent = cleanGeneratedContent(input.content);
-                // Skip canonical files
                 const CANONICAL_TEMPLATES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
-                if (!PROTECTED_FILES.has(input.path) && !input.path.startsWith('src/components/ui/') && !CANONICAL_TEMPLATES.has(input.path) && cleanContent) {
-                  // Write to disk (for persistence/DB)
+                const isProtected = PROTECTED_FILES.has(input.path) || input.path.startsWith('src/components/ui/') || CANONICAL_TEMPLATES.has(input.path);
+
+                // ALWAYS send to WebContainer via SSE (even protected files — WC needs them)
+                if (cleanContent) {
+                  notifyProjectClients(job.project_id, 'file_written', { path: input.path, content: cleanContent });
+                  console.log(`[Stream] SSE push: ${input.path}`);
+                }
+
+                // Write to disk + Docker only for non-protected files
+                if (!isProtected && cleanContent) {
                   const filePath = path.join(projDir, input.path);
                   const fileDir = path.dirname(filePath);
                   if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
                   fs.writeFileSync(filePath, cleanContent);
-                  // Push to frontend via SSE → WebContainer picks it up via Vite HMR
-                  notifyProjectClients(job.project_id, 'file_written', { path: input.path, content: cleanContent });
-                  console.log(`[Stream] SSE push: ${input.path}`);
-                  // Also try Docker container (fallback for non-WebContainer clients)
                   try {
                     const containerName = getContainerName(job.project_id);
                     execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
-                  } catch { /* container might not be ready */ }
+                  } catch {}
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
                 job.progressMessage = `Modifie: ${input.path}`;
-                // Apply edit immediately
+                // ALWAYS send edit to WebContainer via SSE
+                notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
+                console.log(`[Stream] SSE edit: ${input.path}`);
+                // Apply to disk + Docker for non-protected files
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 const filePath = path.join(projDir, input.path);
                 if (fs.existsSync(filePath)) {
@@ -3218,10 +3224,6 @@ Règles d'intégration automatique :
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
                     fs.writeFileSync(filePath, content);
-                    // Push edit to frontend via SSE → WebContainer
-                    notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
-                    console.log(`[Stream] SSE edit: ${input.path}`);
-                    // Also try Docker container (fallback)
                     try {
                       const containerName = getContainerName(job.project_id);
                       execSync(`docker cp ${filePath} ${containerName}:/app/${input.path}`, { timeout: 5000 });
