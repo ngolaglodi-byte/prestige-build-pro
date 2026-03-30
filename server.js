@@ -6726,6 +6726,9 @@ const server = http.createServer(async (req, res) => {
     delete wcPkg.dependencies['better-sqlite3'];
     wcPkg.scripts.dev = 'vite --port 5173';
     tree['package.json'] = { file: { contents: JSON.stringify(wcPkg, null, 2) } };
+    // Remove server.js from tree (it requires better-sqlite3 which doesn't work in WebContainer)
+    // The Express backend is for production only — WebContainer preview is frontend-only
+    delete tree['server.js'];
     json(res, 200, tree);
     return;
   }
