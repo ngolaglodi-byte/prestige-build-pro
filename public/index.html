@@ -387,18 +387,44 @@ button.card { padding: 0; }
   </header>
   <main class="app-main">
     <div id="dashboard-view" class="active">
-      <div class="dashboard-header"><h1 class="dashboard-title">Mes projets</h1><button class="btn btn-primary" id="new-project-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Nouveau projet</button></div>
-      <div class="dashboard-stats" id="dashboard-stats">
-        <div class="stat-card"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Total projets</div></div>
-        <div class="stat-card"><div class="stat-value" id="stat-published">0</div><div class="stat-label">Publiés</div></div>
-        <div class="stat-card"><div class="stat-value" id="stat-draft">0</div><div class="stat-label">Brouillons</div></div>
-        <div class="stat-card" id="stat-agents-card"><div class="stat-value" id="stat-agents">0</div><div class="stat-label">Agents</div></div>
+      <!-- Quick create: Lovable-style direct input -->
+      <div style="max-width:700px;margin:0 auto var(--space-xl);text-align:center;">
+        <h1 style="font-size:2rem;margin-bottom:var(--space-sm);color:var(--text-primary);">Que voulez-vous construire ?</h1>
+        <p style="color:var(--text-secondary);margin-bottom:var(--space-lg);font-size:0.95rem;">Décrivez votre projet et Prestige AI le construit en quelques minutes.</p>
+        <div style="display:flex;gap:var(--space-sm);align-items:flex-start;">
+          <textarea id="quick-brief" class="textarea" rows="2" placeholder="Ex: site vitrine pour une boulangerie artisanale avec menu des pains, horaires et contact..." style="flex:1;min-height:50px;resize:vertical;font-size:0.95rem;"></textarea>
+          <button class="btn btn-primary btn-lg" onclick="quickCreate()" style="white-space:nowrap;height:50px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Générer</button>
+        </div>
+        <div style="display:flex;justify-content:center;gap:var(--space-lg);margin-top:var(--space-sm);">
+          <button class="btn btn-ghost" style="font-size:0.8rem;" onclick="openNewProjectModal()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>Options avancées</button>
+          <label class="btn btn-ghost" style="font-size:0.8rem;cursor:pointer;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Importer un design<input type="file" id="quick-image" accept="image/*" style="display:none;" onchange="quickCreateFromImage(this)"/></label>
+        </div>
+      </div>
+
+      <div class="dashboard-header">
+        <div style="display:flex;align-items:center;gap:var(--space-lg);">
+          <h2 class="dashboard-title" style="font-size:1.25rem;">Mes projets</h2>
+          <div class="stat-card" style="padding:var(--space-xs) var(--space-md);display:flex;gap:var(--space-lg);">
+            <span style="font-size:0.8rem;color:var(--text-secondary);"><strong style="color:var(--gold);" id="stat-total">0</strong> total</span>
+            <span style="font-size:0.8rem;color:var(--text-secondary);"><strong style="color:var(--success);" id="stat-published">0</strong> publiés</span>
+            <span style="font-size:0.8rem;color:var(--text-secondary);"><strong id="stat-draft">0</strong> brouillons</span>
+            <span style="font-size:0.8rem;color:var(--text-secondary);display:none;" id="stat-agents-card"><strong id="stat-agents">0</strong> agents</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:var(--space-sm);align-items:center;">
+          <input type="text" id="search-projects" class="input" placeholder="Rechercher..." style="width:200px;padding:var(--space-xs) var(--space-md);font-size:0.85rem;" oninput="filterProjects()"/>
+          <select id="filter-status" class="select" style="width:auto;padding:var(--space-xs) var(--space-sm);font-size:0.85rem;" onchange="filterProjects()">
+            <option value="">Tous</option>
+            <option value="draft">Brouillons</option>
+            <option value="ready">Prêts</option>
+            <option value="published">Publiés</option>
+          </select>
+        </div>
       </div>
       <div id="projects-container">
         <div id="empty-state" class="empty-state hidden">
-          <svg viewBox="0 0 200 200" fill="none"><rect x="30" y="50" width="140" height="100" rx="8" stroke="currentColor" stroke-width="2" opacity="0.3"/><rect x="40" y="60" width="60" height="8" rx="2" fill="currentColor" opacity="0.2"/><rect x="40" y="75" width="100" height="4" rx="2" fill="currentColor" opacity="0.15"/><circle cx="100" cy="120" r="15" stroke="var(--gold)" stroke-width="2"/><line x1="100" y1="112" x2="100" y2="128" stroke="var(--gold)" stroke-width="2"/><line x1="92" y1="120" x2="108" y2="120" stroke="var(--gold)" stroke-width="2"/></svg>
-          <h3>Créez votre premier projet</h3><p>Commencez à construire des sites web professionnels avec l'IA</p>
-          <button class="btn btn-primary btn-lg" onclick="openNewProjectModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Nouveau projet</button>
+          <svg viewBox="0 0 200 200" fill="none" style="width:120px;height:120px;"><rect x="30" y="50" width="140" height="100" rx="8" stroke="currentColor" stroke-width="2" opacity="0.3"/><circle cx="100" cy="120" r="15" stroke="var(--gold)" stroke-width="2"/><line x1="100" y1="112" x2="100" y2="128" stroke="var(--gold)" stroke-width="2"/><line x1="92" y1="120" x2="108" y2="120" stroke="var(--gold)" stroke-width="2"/></svg>
+          <h3>Aucun projet</h3><p>Décrivez votre projet ci-dessus pour commencer.</p>
         </div>
         <div class="projects-grid" id="projects-grid"></div>
       </div>
@@ -781,18 +807,8 @@ async function loadProjects() {
 function renderProjects() {
   const grid = document.getElementById('projects-grid');
   const empty = document.getElementById('empty-state');
-  if (allProjects.length === 0) { grid.innerHTML = ''; empty.classList.remove('hidden'); return; }
-  empty.classList.add('hidden');
-  grid.innerHTML = allProjects.map(p => `
-    <button class="card project-card" onclick="openProject(${p.id})" aria-label="Ouvrir le projet ${escapeHtml(p.title || 'Sans titre')}">
-      <div class="project-preview"><div class="project-preview-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="7" cy="6" r="1"/><circle cx="11" cy="6" r="1"/></svg><span style="font-size:0.75rem;">${p.status === 'ready' || p.status === 'published' ? 'Preview disponible' : 'Pas encore généré'}</span></div></div>
-      <div class="project-info">
-        <div class="project-title">${escapeHtml(p.title || 'Sans titre')}</div>
-        <div class="project-client">${escapeHtml(p.client_name || 'Client non défini')}</div>
-        <div class="project-meta"><span class="badge ${statusClass(p.status)}">${statusLabel(p.status)}</span><span class="project-date">${formatDate(p.updated_at)}</span></div>
-      </div>
-    </button>
-  `).join('');
+  // Use filterProjects for rendering (handles search + status filter)
+  filterProjects();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -866,6 +882,104 @@ function handleModalImage(input) {
     const reader = new FileReader();
     reader.onload = (ev) => { uploadedImage = { base64: ev.target.result.split(',')[1], type: file.type }; };
     reader.readAsDataURL(file);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUICK CREATE (Lovable-style: 1 input, 1 click)
+// ═══════════════════════════════════════════════════════════════════════════
+function slugify(text) {
+  return text.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove accents
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40);
+}
+
+function extractTitle(brief) {
+  // Extract a short title from the brief (first meaningful words)
+  const cleaned = brief.replace(/^(cree|crée|je veux|fais|construis|génère|genere|site|un|une|pour|avec|de|du|des|le|la|les)\s+/gi, '');
+  const words = cleaned.split(/\s+/).slice(0, 4).join(' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+async function quickCreate() {
+  const brief = document.getElementById('quick-brief').value.trim();
+  if (!brief) { document.getElementById('quick-brief').focus(); return; }
+  const title = extractTitle(brief);
+  const subdomain = slugify(title);
+  const client = currentUser ? currentUser.name : '';
+  try {
+    const p = await api('/api/projects', 'POST', { title, client_name: client, brief, subdomain });
+    currentProject = p;
+    await openWorkspace(p.id);
+    sendChatMessage(brief);
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+async function quickCreateFromImage(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const brief = document.getElementById('quick-brief').value.trim() || 'Reproduis ce design en React';
+  const title = extractTitle(brief);
+  const subdomain = slugify(title);
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    try {
+      const p = await api('/api/projects', 'POST', { title, client_name: currentUser?.name || '', brief, subdomain });
+      currentProject = p;
+      uploadedImage = { base64: ev.target.result.split(',')[1], type: file.type };
+      await openWorkspace(p.id);
+      generateFromImage(brief);
+    } catch (e) { alert('Erreur: ' + e.message); }
+  };
+  reader.readAsDataURL(file);
+}
+
+// Allow Enter key to submit quick create (Shift+Enter for newline)
+document.addEventListener('DOMContentLoaded', () => {
+  const qb = document.getElementById('quick-brief');
+  if (qb) qb.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); quickCreate(); }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEARCH & FILTER PROJECTS
+// ═══════════════════════════════════════════════════════════════════════════
+function filterProjects() {
+  const search = (document.getElementById('search-projects')?.value || '').toLowerCase();
+  const status = document.getElementById('filter-status')?.value || '';
+  const grid = document.getElementById('projects-grid');
+  const empty = document.getElementById('empty-state');
+
+  let filtered = allProjects;
+  if (search) {
+    filtered = filtered.filter(p =>
+      (p.title || '').toLowerCase().includes(search) ||
+      (p.client_name || '').toLowerCase().includes(search) ||
+      (p.brief || '').toLowerCase().includes(search)
+    );
+  }
+  if (status) {
+    filtered = filtered.filter(p => p.status === status);
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '';
+    empty.classList.remove('hidden');
+    empty.querySelector('h3').textContent = search || status ? 'Aucun résultat' : 'Aucun projet';
+    empty.querySelector('p').textContent = search || status ? 'Essayez un autre filtre.' : 'Décrivez votre projet ci-dessus pour commencer.';
+  } else {
+    empty.classList.add('hidden');
+    grid.innerHTML = filtered.map(p => `
+      <button class="card project-card" onclick="openProject(${p.id})" aria-label="Ouvrir ${escapeHtml(p.title || 'Sans titre')}">
+        <div class="project-preview"><div class="project-preview-placeholder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><circle cx="7" cy="6" r="1"/><circle cx="11" cy="6" r="1"/></svg><span style="font-size:0.75rem;">${p.status === 'ready' || p.status === 'published' ? 'Preview disponible' : 'Pas encore généré'}</span></div></div>
+        <div class="project-info">
+          <div class="project-title">${escapeHtml(p.title || 'Sans titre')}</div>
+          <div class="project-client">${escapeHtml(p.client_name || '')}</div>
+          <div class="project-meta"><span class="badge ${statusClass(p.status)}">${statusLabel(p.status)}</span><span class="project-date">${formatDate(p.updated_at)}</span></div>
+        </div>
+      </button>
+    `).join('');
   }
 }
 
