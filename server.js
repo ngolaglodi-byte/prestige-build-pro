@@ -3237,9 +3237,56 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     content = cleanGeneratedContent(content);
     if (!content) continue;
 
-    // Ensure index.css always has @import "tailwindcss" (AI sometimes omits it)
-    if (filename === 'src/index.css' && !content.includes('@import "tailwindcss"')) {
-      content = '@import "tailwindcss";\n\n' + content;
+    // Ensure index.css always has @import "tailwindcss" AND @theme block
+    // Without @theme, Tailwind 4 classes (bg-background, border-border, etc.) are unknown → white page
+    if (filename === 'src/index.css') {
+      if (!content.includes('@import "tailwindcss"')) {
+        content = '@import "tailwindcss";\n\n' + content;
+      }
+      if (!content.includes('@theme')) {
+        // Inject the @theme block right after @import "tailwindcss"
+        const themeBlock = `
+@theme {
+  --color-background: var(--color-bg, #ffffff);
+  --color-foreground: var(--color-text, #0f172a);
+  --color-card: var(--color-surface, #f8fafc);
+  --color-card-foreground: var(--color-text, #0f172a);
+  --color-popover: var(--color-surface, #f8fafc);
+  --color-popover-foreground: var(--color-text, #0f172a);
+  --color-primary: var(--color-primary-val, #2563eb);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--color-secondary-val, #f1f5f9);
+  --color-secondary-foreground: var(--color-text, #0f172a);
+  --color-muted: var(--color-surface, #f8fafc);
+  --color-muted-foreground: var(--color-text-muted-val, #64748b);
+  --color-accent: var(--color-surface, #f8fafc);
+  --color-accent-foreground: var(--color-text, #0f172a);
+  --color-destructive: var(--color-error-val, #dc2626);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--color-border-val, #e2e8f0);
+  --color-input: var(--color-border-val, #e2e8f0);
+  --color-ring: var(--color-primary-val, #2563eb);
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+}`;
+        content = content.replace('@import "tailwindcss";', '@import "tailwindcss";\n' + themeBlock);
+        console.log(`[WriteFiles] Auto-injected @theme block into index.css`);
+      }
+      // Also ensure :root uses the correct variable names (not --color-primary but --color-primary-val)
+      if (content.includes('--color-primary:') && !content.includes('--color-primary-val:')) {
+        content = content.replace(/--color-primary:\s*/g, '--color-primary-val: ');
+        content = content.replace(/--color-secondary:\s*/g, '--color-secondary-val: ');
+        content = content.replace(/--color-accent:\s*/g, '--color-accent-val: ');
+        content = content.replace(/--color-background:\s*/g, '--color-bg: ');
+        content = content.replace(/--color-text-muted:\s*/g, '--color-text-muted-val: ');
+        content = content.replace(/--color-border:\s*/g, '--color-border-val: ');
+        content = content.replace(/--color-error:\s*/g, '--color-error-val: ');
+        content = content.replace(/--color-success:\s*/g, '--color-success-val: ');
+        content = content.replace(/--color-warning:\s*/g, '--color-warning-val: ');
+        console.log(`[WriteFiles] Auto-renamed CSS vars to avoid @theme conflict`);
+      }
     }
 
     // AUTO-FIX: Convert ESM imports to CommonJS in server.js
