@@ -2645,6 +2645,100 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   // Auto-fix relative imports in all generated files
   validateJsxFiles(projectDir);
 
+  // ── SAFETY NET: Fix everything the AI might have forgotten ──
+  // This runs AFTER all generation + back-tests. It ensures the project
+  // is 100% functional even if the AI made mistakes.
+  (function safetyNet() {
+    const srcDir = path.join(projectDir, 'src');
+
+    // 1. App.tsx must have Toaster if any file uses toast()
+    const appPath = path.join(srcDir, 'App.tsx');
+    if (fs.existsSync(appPath)) {
+      let app = fs.readFileSync(appPath, 'utf8');
+      const allFiles = fs.readdirSync(path.join(srcDir, 'pages'), { withFileTypes: true }).concat(
+        fs.existsSync(path.join(srcDir, 'components')) ? fs.readdirSync(path.join(srcDir, 'components'), { withFileTypes: true }) : []
+      );
+      let usesToast = false;
+      for (const f of allFiles) {
+        if (!f.isFile()) continue;
+        try {
+          const content = fs.readFileSync(path.join(f.parentPath || path.join(srcDir, 'pages'), f.name), 'utf8');
+          if (content.includes('toast(') || content.includes('toast.')) usesToast = true;
+        } catch {}
+      }
+      if (usesToast && !app.includes('Toaster')) {
+        app = "import { Toaster } from 'sonner';\n" + app;
+        app = app.replace(/<\/div>\s*\)\s*}\s*$/, '<Toaster position="top-right" />\n</div>\n  )\n}');
+        fs.writeFileSync(appPath, app);
+        console.log('[SafetyNet] Injected <Toaster/> into App.tsx');
+      }
+    }
+
+    // 2. Stub missing pages/components imported in App.tsx
+    if (fs.existsSync(appPath)) {
+      const app = fs.readFileSync(appPath, 'utf8');
+      const imports = app.match(/from ['"]@\/(pages|components)\/(\w+)['"]/g) || [];
+      for (const imp of imports) {
+        const match = imp.match(/from ['"]@\/(pages|components)\/(\w+)['"]/);
+        if (!match) continue;
+        const [, dir, name] = match;
+        const filePath = path.join(srcDir, dir, name + '.tsx');
+        if (!fs.existsSync(filePath)) {
+          const dirPath = path.dirname(filePath);
+          if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+          fs.writeFileSync(filePath, `export default function ${name}() {\n  return (\n    <div className="min-h-screen flex items-center justify-center">\n      <h1 className="text-2xl font-bold">${name}</h1>\n    </div>\n  );\n}\n`);
+          console.log(`[SafetyNet] Created stub: src/${dir}/${name}.tsx`);
+        }
+      }
+    }
+
+    // 3. Header.tsx must exist if App.tsx imports it
+    const headerPath = path.join(srcDir, 'components', 'Header.tsx');
+    if (!fs.existsSync(headerPath) && fs.existsSync(appPath) && fs.readFileSync(appPath, 'utf8').includes('Header')) {
+      fs.mkdirSync(path.dirname(headerPath), { recursive: true });
+      fs.writeFileSync(headerPath, `import { Link } from 'react-router-dom';\n\nexport default function Header() {\n  return (\n    <header className="bg-background border-b border-border px-6 py-4">\n      <nav className="max-w-7xl mx-auto flex justify-between items-center">\n        <Link to="/" className="text-xl font-bold text-foreground">Accueil</Link>\n        <div className="flex gap-6">\n          <Link to="/contact" className="text-muted-foreground hover:text-foreground">Contact</Link>\n        </div>\n      </nav>\n    </header>\n  );\n}\n`);
+      console.log('[SafetyNet] Created default Header.tsx');
+    }
+
+    // 4. Footer.tsx must exist if App.tsx imports it
+    const footerPath = path.join(srcDir, 'components', 'Footer.tsx');
+    if (!fs.existsSync(footerPath) && fs.existsSync(appPath) && fs.readFileSync(appPath, 'utf8').includes('Footer')) {
+      fs.mkdirSync(path.dirname(footerPath), { recursive: true });
+      fs.writeFileSync(footerPath, `export default function Footer() {\n  return (\n    <footer className="bg-muted border-t border-border px-6 py-8 text-center text-muted-foreground text-sm">\n      <p>&copy; ${new Date().getFullYear()} Tous droits réservés.</p>\n    </footer>\n  );\n}\n`);
+      console.log('[SafetyNet] Created default Footer.tsx');
+    }
+
+    // 5. index.css must have @theme (double check — writeGeneratedFiles should have added it)
+    const cssPath = path.join(srcDir, 'index.css');
+    if (fs.existsSync(cssPath)) {
+      let css = fs.readFileSync(cssPath, 'utf8');
+      if (!css.includes('@theme')) {
+        // Copy the template index.css which has @theme
+        const templateCss = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
+        if (fs.existsSync(templateCss)) {
+          const templateContent = fs.readFileSync(templateCss, 'utf8');
+          // Extract @theme block from template and inject into AI's CSS
+          const themeMatch = templateContent.match(/@theme\s*\{[\s\S]*?\n\}/);
+          if (themeMatch) {
+            css = css.replace('@import "tailwindcss";', '@import "tailwindcss";\n\n' + themeMatch[0]);
+            fs.writeFileSync(cssPath, css);
+            console.log('[SafetyNet] Injected @theme from template into index.css');
+          }
+        }
+      }
+    }
+
+    // 6. Home.tsx must exist (the most important page)
+    const homePath = path.join(srcDir, 'pages', 'Home.tsx');
+    if (!fs.existsSync(homePath)) {
+      fs.mkdirSync(path.dirname(homePath), { recursive: true });
+      fs.writeFileSync(homePath, `export default function Home() {\n  return (\n    <div className="min-h-screen">\n      <section className="py-20 text-center">\n        <h1 className="text-4xl font-bold text-foreground mb-4">Bienvenue</h1>\n        <p className="text-muted-foreground text-lg">Votre site est en cours de construction.</p>\n      </section>\n    </div>\n  );\n}\n`);
+      console.log('[SafetyNet] Created default Home.tsx');
+    }
+
+    console.log('[SafetyNet] All checks passed');
+  })();
+
   // Push final files to Docker container
   if (!(await isContainerRunningAsync(projectId))) {
     try { await launchTemplateContainer(projectId); } catch(e) {}
