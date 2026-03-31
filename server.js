@@ -2597,6 +2597,89 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
     }
   }
 
+  // ── SEMANTIC VERIFICATION: GPT-4 Mini checks if brief is fully satisfied ──
+  // Like Lovable: after generation, verify the OUTPUT matches the INPUT (brief)
+  // Not syntax checks (back-tests do that) — this checks MEANING.
+  // "Did the user ask for a menu page? Is there a Menu.tsx with actual menu items?"
+  {
+    const pages = fs.existsSync(path.join(projectDir, 'src', 'pages')) ? fs.readdirSync(path.join(projectDir, 'src', 'pages')) : [];
+    const components = fs.existsSync(path.join(projectDir, 'src', 'components')) ? fs.readdirSync(path.join(projectDir, 'src', 'components')).filter(f => f !== 'ui') : [];
+    const appContent = fs.existsSync(path.join(projectDir, 'src', 'App.tsx')) ? fs.readFileSync(path.join(projectDir, 'src', 'App.tsx'), 'utf8') : '';
+    const serverContent = fs.existsSync(path.join(projectDir, 'server.js')) ? fs.readFileSync(path.join(projectDir, 'server.js'), 'utf8') : '';
+    const routes = (appContent.match(/<Route\s+path="([^"]+)"/g) || []).map(r => r.match(/path="([^"]+)"/)?.[1]);
+    const tables = (serverContent.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+    const apiRoutes = (serverContent.match(/app\.(get|post|put|delete)\(['"]([^'"]+)['"]/g) || []).map(r => r.match(/['"]([^'"]+)['"]/)?.[1]);
+
+    const verifyPrompt = `Brief du projet: "${brief}"
+
+Projet généré:
+- Pages: ${pages.join(', ')}
+- Composants: ${components.join(', ')}
+- Routes frontend: ${routes.join(', ')}
+- Tables SQLite: ${tables.join(', ')}
+- Routes API: ${apiRoutes.join(', ')}
+- Login/Admin: ${pages.some(p => /login/i.test(p)) ? 'OUI' : 'NON'} / ${pages.some(p => /admin/i.test(p)) ? 'OUI' : 'NON'}
+
+Le brief demande-t-il des pages ou features qui MANQUENT dans le projet?
+Vérifie: chaque feature mentionnée dans le brief a-t-elle une page ET une route ET les tables/API nécessaires?
+
+Si tout est complet, réponds: COMPLET
+Sinon, liste ce qui manque (une ligne par manque):
+- write_file src/pages/NomPage.tsx — description de ce que la page doit contenir
+- edit_file server.js — CREATE TABLE xxx + routes API manquantes
+- edit_file src/App.tsx — routes manquantes`;
+
+    let semanticMissing = [];
+    try {
+      let response;
+      if (OPENAI_API_KEY) {
+        response = await callGPT4Mini(verifyPrompt, 800);
+      } else {
+        response = await callClaudeAPI(
+          [{ type: 'text', text: 'Tu vérifies si un projet web correspond au brief. Réponds COMPLET ou liste les manques.' }],
+          [{ role: 'user', content: verifyPrompt }], 800,
+          { ...tracking, operation: 'verify' }
+        );
+      }
+      if (response && !response.includes('COMPLET')) {
+        semanticMissing = response.split('\n').filter(l => l.trim().startsWith('-') || /write_file|edit_file/i.test(l));
+      }
+      console.log(`[SemanticVerify] ${semanticMissing.length > 0 ? semanticMissing.length + ' missing' : 'COMPLET'}`);
+    } catch (e) {
+      console.warn(`[SemanticVerify] Skipped: ${e.message}`);
+    }
+
+    if (semanticMissing.length > 0) {
+      job.progressMessage = `Ajout de ${semanticMissing.length} élément(s) manquant(s)...`;
+      console.log(`[SemanticVerify] Missing:\n${semanticMissing.join('\n')}`);
+      try {
+        const fixPrompt = `Le projet a été généré mais il MANQUE des éléments du brief.
+
+Brief: "${brief}"
+
+Éléments manquants:
+${semanticMissing.join('\n')}
+
+Génère MAINTENANT les fichiers manquants. Pour chaque élément:
+- Page .tsx → write_file complet (export default function, Tailwind, lucide-react, contenu réel)
+- server.js → edit_file (CREATE TABLE + routes API + données demo)
+- App.tsx → edit_file (import + Route)
+
+TOUS en UNE réponse.`;
+        const fixCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: fixPrompt }], 32000,
+          { ...tracking, operation: 'auto-correct' }, { useTools: true });
+        if (fixCode) {
+          allCode = mergeModifiedCode(allCode, fixCode);
+          writeGeneratedFiles(projectDir, fixCode, projectId);
+          savePartialToDb();
+          console.log(`[SemanticVerify] Fixed ${semanticMissing.length} missing items`);
+        }
+      } catch (fixErr) {
+        console.warn(`[SemanticVerify] Fix failed: ${fixErr.message}`);
+      }
+    }
+  }
+
   // ── Finalize: write canonical files + ensure everything is clean ──
   // Write canonical files that the AI must NEVER control
   const canonicalToWrite = {
