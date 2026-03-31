@@ -3698,69 +3698,85 @@ Règles d'intégration automatique :
         }
       }
 
-      // ── AUTO-FOLLOW-UP: Verify actual file CONTENT, not just file names ──
-      // Reads the real files on disk to check if the user's request was fully implemented
+      // ── AUTO-FOLLOW-UP: Use GPT-4 Mini to verify completeness (GENERIC, UNLIMITED) ──
+      // Instead of hardcoded checks, ask GPT-4 Mini: "the user asked X, the AI did Y, what's missing?"
+      // This works for ANY feature, ANY complexity, ANY subject — no hardcoded keywords.
       if (toolBlocks.length > 0 && job.project_id) {
-        const userMsg = (messages[messages.length - 1]?.content || '').toLowerCase();
+        const userMsg = (messages[messages.length - 1]?.content || '');
         const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-        const missing = [];
 
-        // Read actual files from disk to verify content
-        const serverJs = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+        // Build a summary of what was actually done
+        const done = toolBlocks.map(t => {
+          if (t.name === 'write_file') return `write_file ${t.input?.path}`;
+          if (t.name === 'edit_file') return `edit_file ${t.input?.path} (search: "${(t.input?.search || '').substring(0, 50)}...")`;
+          return `${t.name}`;
+        }).join('\n');
+
+        // Build a summary of the current project state
+        const currentFiles = [];
         const appTsx = fs.existsSync(path.join(projDir, 'src', 'App.tsx')) ? fs.readFileSync(path.join(projDir, 'src', 'App.tsx'), 'utf8') : '';
+        const serverJs = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+        const routes = (appTsx.match(/<Route\s+path="([^"]+)"/g) || []).map(r => r.match(/path="([^"]+)"/)?.[1]);
+        const tables = (serverJs.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+        const apiRoutes = (serverJs.match(/app\.(get|post|put|delete)\(['"]([^'"]+)['"]/g) || []).map(r => r.match(/['"]([^'"]+)['"]/)?.[1]);
+        const pages = fs.existsSync(path.join(projDir, 'src', 'pages')) ? fs.readdirSync(path.join(projDir, 'src', 'pages')) : [];
 
-        // 1. User asked for client space → verify ClientDashboard.tsx EXISTS + route /client in App.tsx
-        if (/client|espace client/i.test(userMsg)) {
-          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'ClientDashboard.tsx'))) missing.push('write_file src/pages/ClientDashboard.tsx — dashboard client avec rendez-vous et factures');
-          if (!appTsx.includes('/client')) missing.push('edit_file src/App.tsx — ajouter import ClientDashboard + <Route path="/client" element={<ClientDashboard/>}/>');
-        }
+        const verifyPrompt = `L'utilisateur a demandé: "${userMsg}"
 
-        // 2. User asked for login → verify Login.tsx EXISTS + route /login in App.tsx
-        if (/login|connexion/i.test(userMsg)) {
-          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'Login.tsx'))) missing.push('write_file src/pages/Login.tsx — formulaire connexion email+password');
-          if (!appTsx.includes('/login')) missing.push('edit_file src/App.tsx — ajouter import Login + <Route path="/login" element={<Login/>}/>');
-        }
+L'IA a fait ces actions:
+${done}
 
-        // 3. User asked for admin → verify Admin.tsx EXISTS + route /admin in App.tsx
-        if (/admin|dashboard admin/i.test(userMsg)) {
-          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'Admin.tsx'))) missing.push('write_file src/pages/Admin.tsx — dashboard admin avec sidebar');
-          if (!appTsx.includes('/admin')) missing.push('edit_file src/App.tsx — ajouter import Admin + <Route path="/admin" element={<Admin/>}/>');
-        }
+État actuel du projet:
+- Pages: ${pages.join(', ')}
+- Routes App.tsx: ${routes.join(', ')}
+- Tables SQLite: ${tables.join(', ')}
+- Routes API: ${apiRoutes.join(', ')}
 
-        // 4. User asked for tables/invoices → verify table EXISTS in server.js
-        if (/invoices|facture/i.test(userMsg) && !serverJs.includes('CREATE TABLE') || (serverJs.includes('CREATE TABLE') && /invoices|facture/i.test(userMsg) && !serverJs.includes('invoices'))) {
-          missing.push('edit_file server.js — ajouter CREATE TABLE invoices + route GET /api/invoices protegee + INSERT donnees demo');
-        }
+La demande est-elle COMPLÈTEMENT satisfaite? Liste UNIQUEMENT ce qui MANQUE.
+Format: une ligne par manque, commençant par le type d'action:
+- write_file src/pages/NomPage.tsx — description
+- edit_file server.js — ajouter CREATE TABLE xxx + route GET /api/xxx
+- edit_file src/App.tsx — ajouter import + Route path="/xxx"
 
-        // 5. User asked for API route → verify route EXISTS in server.js
-        if (/route.*api|\/api\//i.test(userMsg)) {
-          const apiMatch = userMsg.match(/\/api\/(\w+)/);
-          if (apiMatch && !serverJs.includes(apiMatch[0])) missing.push(`edit_file server.js — ajouter route ${apiMatch[0]}`);
-        }
+Si TOUT est fait, réponds UNIQUEMENT: COMPLET`;
 
-        // 6. Any new page mentioned → check it exists + has route
-        const pageNames = userMsg.match(/(?:cree|crée|ajoute)\s+(?:la page\s+)?(\w+)\.tsx/gi) || [];
-        for (const pm of pageNames) {
-          const name = pm.match(/(\w+)\.tsx/i)?.[1];
-          if (name && !fs.existsSync(path.join(projDir, 'src', 'pages', name + '.tsx'))) {
-            missing.push(`write_file src/pages/${name}.tsx`);
+        let missingItems = [];
+        try {
+          // Use GPT-4 Mini if available (fast, cheap), otherwise use Claude
+          let verifyResponse;
+          if (OPENAI_API_KEY) {
+            verifyResponse = await callGPT4Mini(verifyPrompt, 500);
+          } else {
+            verifyResponse = await callClaudeAPI(
+              [{ type: 'text', text: 'Tu vérifies si une modification est complète. Réponds UNIQUEMENT avec la liste des manques ou COMPLET.' }],
+              [{ role: 'user', content: verifyPrompt }], 500,
+              { userId: job.user_id, projectId: job.project_id, operation: 'verify' }
+            );
           }
+
+          if (verifyResponse && !verifyResponse.includes('COMPLET')) {
+            missingItems = verifyResponse.split('\n').filter(l => l.trim().startsWith('-') || l.trim().startsWith('write_file') || l.trim().startsWith('edit_file'));
+          }
+        } catch (e) {
+          console.warn(`[FollowUp] Verify failed: ${e.message}`);
         }
 
-        if (missing.length > 0) {
-          console.log(`[FollowUp] Incomplete: ${missing.length} items missing — ${missing.join('; ')}`);
+        if (missingItems.length > 0) {
+          console.log(`[FollowUp] Incomplete: ${missingItems.length} items missing`);
+          missingItems.forEach(m => console.log(`  ${m}`));
           job.progressMessage = 'Finalisation des fichiers manquants...';
           try {
-            const followUpPrompt = `INCOMPLET. Il manque ${missing.length} action(s):\n${missing.map((m, i) => `${i + 1}. ${m}`).join('\n')}.
+            const followUpPrompt = `INCOMPLET. Après vérification, il manque:\n${missingItems.join('\n')}
 
 Demande originale: "${userMsg}"
 
-FAIS MAINTENANT les fichiers manquants. Pour CHAQUE fichier manquant:
-- Si c'est une page .tsx → write_file avec le composant complet
-- Si c'est server.js → edit_file pour ajouter CREATE TABLE + routes API + données demo
-- Si c'est App.tsx → edit_file pour ajouter import + <Route path="..." element={<.../>} />
+Complète MAINTENANT. Pour chaque élément manquant:
+- Nouvelle page → write_file avec composant React complet (export default function, imports @/, Tailwind)
+- Modification server.js → edit_file (CREATE TABLE + routes API + données demo + middleware auth si nécessaire)
+- Modification App.tsx → edit_file (ajouter import en haut + <Route path="..." element={<.../>}/> dans Routes)
 
-TOUS les fichiers en UNE SEULE réponse.`;
+TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
+
             const sysBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Complète.' }];
             const existingProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
             const contextMsgs = ai ? ai.buildConversationContext(
@@ -3770,17 +3786,17 @@ TOUS les fichiers en UNE SEULE réponse.`;
               { userId: job.user_id, projectId: job.project_id, operation: 'auto-correct' },
               { useTools: true });
             if (followUpCode) {
-              if (job.project_id) {
-                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-                writeGeneratedFiles(projDir, followUpCode, job.project_id);
-                const existing = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
-                if (existing?.generated_code) job.code = mergeModifiedCode(existing.generated_code, followUpCode);
-              }
+              const projDir2 = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+              writeGeneratedFiles(projDir2, followUpCode, job.project_id);
+              const existing = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+              if (existing?.generated_code) job.code = mergeModifiedCode(existing.generated_code, followUpCode);
               console.log(`[FollowUp] Completed missing files`);
             }
           } catch (e) {
-            console.warn(`[FollowUp] Failed: ${e.message}`);
+            console.warn(`[FollowUp] Fix failed: ${e.message}`);
           }
+        } else {
+          console.log(`[FollowUp] Verification: COMPLET — nothing missing`);
         }
       }
 
