@@ -3706,18 +3706,31 @@ Règles d'intégration automatique :
         const editedFiles = toolBlocks.filter(t => t.name === 'edit_file').map(t => t.input?.path);
         const allTouched = [...createdFiles, ...editedFiles];
 
-        // Check if user mentioned pages/files that weren't touched
+        // Check if user mentioned pages/files/features that weren't touched
         const mentionedPages = [];
-        if (/login|connexion/i.test(userMsg) && !allTouched.some(f => /login/i.test(f))) mentionedPages.push('Login.tsx');
-        if (/admin|dashboard admin/i.test(userMsg) && !allTouched.some(f => /admin/i.test(f))) mentionedPages.push('Admin.tsx');
-        if (/client.*dashboard|espace client/i.test(userMsg) && !allTouched.some(f => /client/i.test(f))) mentionedPages.push('ClientDashboard.tsx');
-        if (/app\.tsx|route/i.test(userMsg) && !allTouched.includes('src/App.tsx')) mentionedPages.push('App.tsx routes');
+        // Frontend pages
+        if (/login|connexion/i.test(userMsg) && !allTouched.some(f => /login/i.test(f))) mentionedPages.push('Login.tsx (page connexion)');
+        if (/admin|dashboard admin/i.test(userMsg) && !allTouched.some(f => /admin/i.test(f))) mentionedPages.push('Admin.tsx (dashboard admin)');
+        if (/client|espace client/i.test(userMsg) && !allTouched.some(f => /client/i.test(f))) mentionedPages.push('ClientDashboard.tsx (dashboard client)');
+        // Backend
+        if (/table|sql|base de donn|invoices|facture/i.test(userMsg) && !allTouched.includes('server.js')) mentionedPages.push('server.js (table SQL + routes API)');
+        // Routes
+        if (!allTouched.includes('src/App.tsx')) mentionedPages.push('App.tsx (ajouter routes + imports pour les nouvelles pages)');
 
         if (mentionedPages.length > 0) {
           console.log(`[FollowUp] AI missed ${mentionedPages.join(', ')} — sending follow-up`);
           job.progressMessage = 'Finalisation des fichiers manquants...';
           try {
-            const followUpPrompt = `Tu as oublié de créer/modifier ces fichiers: ${mentionedPages.join(', ')}. La demande originale était: "${userMsg}". Complète maintenant — crée les fichiers manquants et ajoute les routes dans App.tsx.`;
+            const followUpPrompt = `INCOMPLET. Tu as modifié seulement ${allTouched.join(', ')} mais il manque: ${mentionedPages.join(', ')}.
+
+Demande originale: "${userMsg}"
+
+FAIS MAINTENANT les fichiers manquants. Pour CHAQUE fichier manquant:
+- Si c'est une page .tsx → write_file avec le composant complet
+- Si c'est server.js → edit_file pour ajouter CREATE TABLE + routes API + données demo
+- Si c'est App.tsx → edit_file pour ajouter import + <Route path="..." element={<.../>} />
+
+TOUS les fichiers en UNE SEULE réponse.`;
             const sysBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Complète.' }];
             const existingProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
             const contextMsgs = ai ? ai.buildConversationContext(
