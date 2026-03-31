@@ -3698,6 +3698,49 @@ Règles d'intégration automatique :
         }
       }
 
+      // ── AUTO-FOLLOW-UP: If AI only did partial work, ask it to finish ──
+      // Detects if the user asked for new pages/files that weren't created
+      if (toolBlocks.length > 0 && toolBlocks.length <= 2 && job.project_id) {
+        const userMsg = (messages[messages.length - 1]?.content || '').toLowerCase();
+        const createdFiles = toolBlocks.filter(t => t.name === 'write_file').map(t => t.input?.path);
+        const editedFiles = toolBlocks.filter(t => t.name === 'edit_file').map(t => t.input?.path);
+        const allTouched = [...createdFiles, ...editedFiles];
+
+        // Check if user mentioned pages/files that weren't touched
+        const mentionedPages = [];
+        if (/login|connexion/i.test(userMsg) && !allTouched.some(f => /login/i.test(f))) mentionedPages.push('Login.tsx');
+        if (/admin|dashboard admin/i.test(userMsg) && !allTouched.some(f => /admin/i.test(f))) mentionedPages.push('Admin.tsx');
+        if (/client.*dashboard|espace client/i.test(userMsg) && !allTouched.some(f => /client/i.test(f))) mentionedPages.push('ClientDashboard.tsx');
+        if (/app\.tsx|route/i.test(userMsg) && !allTouched.includes('src/App.tsx')) mentionedPages.push('App.tsx routes');
+
+        if (mentionedPages.length > 0) {
+          console.log(`[FollowUp] AI missed ${mentionedPages.join(', ')} — sending follow-up`);
+          job.progressMessage = 'Finalisation des fichiers manquants...';
+          try {
+            const followUpPrompt = `Tu as oublié de créer/modifier ces fichiers: ${mentionedPages.join(', ')}. La demande originale était: "${userMsg}". Complète maintenant — crée les fichiers manquants et ajoute les routes dans App.tsx.`;
+            const sysBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Complète.' }];
+            const existingProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+            const contextMsgs = ai ? ai.buildConversationContext(
+              { ...existingProject, title: '', brief: '' }, [], followUpPrompt, []
+            ) : [{ role: 'user', content: followUpPrompt }];
+            const followUpCode = await callClaudeAPI(sysBlocks, contextMsgs, 32000,
+              { userId: job.user_id, projectId: job.project_id, operation: 'auto-correct' },
+              { useTools: true });
+            if (followUpCode) {
+              if (job.project_id) {
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                writeGeneratedFiles(projDir, followUpCode, job.project_id);
+                const existing = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+                if (existing?.generated_code) job.code = mergeModifiedCode(existing.generated_code, followUpCode);
+              }
+              console.log(`[FollowUp] Completed missing files`);
+            }
+          } catch (e) {
+            console.warn(`[FollowUp] Failed: ${e.message}`);
+          }
+        }
+      }
+
       if (job.status === 'running' && job.code.length > 0) {
         try {
           // Strip Claude artifacts (only needed for text/### fallback mode)
