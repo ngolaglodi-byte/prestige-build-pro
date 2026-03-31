@@ -433,6 +433,7 @@ button.card { padding: 0; }
       <h2 style="margin-bottom:var(--space-lg);">Administration</h2>
       <div class="admin-tabs">
         <button class="admin-tab active" data-panel="users" onclick="showAdminPanel('users')">Utilisateurs</button>
+        <button class="admin-tab" data-panel="activity" onclick="showAdminPanel('activity');loadActivity()">Activité</button>
         <button class="admin-tab" data-panel="apis" onclick="showAdminPanel('apis')">APIs externes</button>
         <button class="admin-tab" data-panel="all-projects" onclick="showAdminPanel('all-projects')">Tous les projets</button>
         <button class="admin-tab" data-panel="github" onclick="showAdminPanel('github');loadGithubConfig()">GitHub</button>
@@ -442,6 +443,12 @@ button.card { padding: 0; }
           <div class="admin-section-header"><h3 class="admin-section-title">Gestion des utilisateurs</h3><button class="btn btn-primary" onclick="showAddUserForm()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Ajouter</button></div>
           <div id="add-user-form" class="hidden" style="margin-bottom:var(--space-lg);padding:var(--space-md);background:var(--bg-elevated);border-radius:var(--radius-md);"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-md);margin-bottom:var(--space-md);"><input type="text" id="new-user-name" class="input" placeholder="Nom"/><input type="email" id="new-user-email" class="input" placeholder="Email"/><input type="password" id="new-user-password" class="input" placeholder="Mot de passe"/></div><div style="display:flex;gap:var(--space-md);align-items:center;"><select id="new-user-role" class="select" style="width:auto;"><option value="agent">Agent</option><option value="admin">Admin</option></select><select id="new-user-lang" class="select" style="width:auto;"><option value="fr">Français</option><option value="en">English</option></select><button class="btn btn-primary" onclick="createUser()">Créer</button><button class="btn btn-ghost" onclick="hideAddUserForm()">Annuler</button></div></div>
           <table class="admin-table" id="users-table"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Créé le</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div id="activity-panel" class="admin-panel">
+        <div class="admin-section">
+          <div class="admin-section-header"><h3 class="admin-section-title">Activité récente</h3></div>
+          <table class="admin-table" id="activity-table"><thead><tr><th>Agent</th><th>Projet</th><th>Action</th><th>Coût</th><th>Date</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
       <div id="apis-panel" class="admin-panel">
@@ -2065,15 +2072,23 @@ async function loadAdminData() {
 async function loadUsers() {
   try {
     const users = await api('/api/users');
-    document.querySelector('#users-table tbody').innerHTML = users.map(u => `
+    document.querySelector('#users-table tbody').innerHTML = users.map(u => {
+      const roleColor = u.role === 'admin' ? 'badge-published' : u.role === 'disabled' ? 'badge-error' : 'badge-draft';
+      return `
       <tr>
-        <td>${escapeHtml(u.name)}</td>
-        <td>${escapeHtml(u.email)}</td>
-        <td><span class="badge ${u.role === 'admin' ? 'badge-published' : 'badge-draft'}">${u.role}</span></td>
+        <td><strong>${escapeHtml(u.name)}</strong></td>
+        <td style="font-family:var(--font-mono);font-size:0.8rem;">${escapeHtml(u.email)}</td>
+        <td><span class="badge ${roleColor}">${u.role}</span></td>
         <td>${formatDate(u.created_at)}</td>
-        <td><button class="btn btn-ghost btn-danger" onclick="deleteUser(${u.id})">Supprimer</button></td>
-      </tr>
-    `).join('');
+        <td style="display:flex;gap:4px;flex-wrap:wrap;">
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px;" onclick="editUser(${u.id},'${escapeHtml(u.name)}','${u.role}','${u.lang||'fr'}')">Modifier</button>
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px;" onclick="changePassword(${u.id},'${escapeHtml(u.name)}')">Mot de passe</button>
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px;" onclick="showUserStats(${u.id},'${escapeHtml(u.name)}')">Stats</button>
+          <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px;color:${u.role==='disabled'?'var(--success)':'var(--warning)'};" onclick="toggleUserActive(${u.id},${u.role==='disabled'})">${u.role==='disabled'?'Activer':'Désactiver'}</button>
+          <button class="btn btn-ghost btn-danger" style="font-size:0.75rem;padding:2px 8px;" onclick="deleteUser(${u.id})">Supprimer</button>
+        </td>
+      </tr>`;
+    }).join('');
   } catch (e) { console.error(e); }
 }
 
@@ -2097,8 +2112,66 @@ async function createUser() {
 }
 
 async function deleteUser(id) {
-  if (!confirm('Supprimer cet utilisateur?')) return;
+  if (!confirm('Supprimer cet utilisateur? Ses projets seront conservés.')) return;
   try { await api('/api/users/' + id, 'DELETE'); loadUsers(); } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+function editUser(id, name, role, lang) {
+  const newName = prompt('Nom:', name);
+  if (newName === null) return;
+  const newRole = prompt('Rôle (admin/agent):', role);
+  if (newRole === null) return;
+  const newLang = prompt('Langue (fr/en):', lang);
+  const dailyLimit = prompt('Limite quotidienne de générations:', '50');
+  const monthlyLimit = prompt('Limite mensuelle de générations:', '500');
+  api('/api/users/' + id, 'PUT', {
+    name: newName || undefined,
+    role: newRole || undefined,
+    lang: newLang || undefined,
+    daily_generation_limit: dailyLimit ? parseInt(dailyLimit) : undefined,
+    monthly_generation_limit: monthlyLimit ? parseInt(monthlyLimit) : undefined
+  }).then(() => loadUsers()).catch(e => alert('Erreur: ' + e.message));
+}
+
+function changePassword(id, name) {
+  const newPass = prompt('Nouveau mot de passe pour ' + name + ':');
+  if (!newPass) return;
+  if (newPass.length < 6) { alert('Minimum 6 caractères.'); return; }
+  api('/api/users/' + id, 'PUT', { password: newPass })
+    .then(() => alert('Mot de passe modifié.'))
+    .catch(e => alert('Erreur: ' + e.message));
+}
+
+async function toggleUserActive(id, currentlyDisabled) {
+  const action = currentlyDisabled ? 'activer' : 'désactiver';
+  if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} cet utilisateur?`)) return;
+  try {
+    await api('/api/users/' + id, 'PUT', { active: currentlyDisabled });
+    loadUsers();
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+async function loadActivity() {
+  try {
+    const activity = await api('/api/admin/activity');
+    document.querySelector('#activity-table tbody').innerHTML = activity.map(a => {
+      const opLabel = (a.operation || '').replace('generate:', 'Génération ').replace('auto-correct:', 'Auto-fix ').replace('chat:', 'Chat ').replace('verify:', 'Vérification ');
+      return `<tr>
+        <td>${escapeHtml(a.user_name || '-')}</td>
+        <td>${escapeHtml((a.project_title || '-').substring(0, 30))}</td>
+        <td style="font-size:0.8rem;">${escapeHtml(opLabel)}</td>
+        <td style="font-family:var(--font-mono);font-size:0.8rem;">$${(a.cost_usd || 0).toFixed(4)}</td>
+        <td style="font-size:0.8rem;">${new Date(a.created_at).toLocaleString('fr-FR', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function showUserStats(id, name) {
+  try {
+    const s = await api('/api/users/' + id + '/stats');
+    alert(`Stats de ${name}:\n\nProjets: ${s.projects} (${s.published} publiés)\nAujourd'hui: ${s.today.operations} opérations ($${s.today.cost.toFixed(4)})\nCe mois: ${s.month.operations} opérations ($${s.month.cost.toFixed(4)})\nDernière activité: ${s.lastActivity ? new Date(s.lastActivity).toLocaleString('fr-FR') : 'Aucune'}`);
+  } catch (e) { alert('Erreur: ' + e.message); }
 }
 
 async function loadApiKeys() {

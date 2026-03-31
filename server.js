@@ -7838,7 +7838,53 @@ export default defineConfig({
     catch(e){json(res,400,{error:'Email déjà utilisé.'});}
     return;
   }
+  // PUT /api/users/:id — Modifier un utilisateur (role, password, nom, activer/desactiver)
+  if (url.match(/^\/api\/users\/\d+$/) && req.method==='PUT') {
+    if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;}
+    const id=parseInt(url.split('/').pop());
+    const {name,role,password,lang,active,daily_generation_limit,monthly_generation_limit}=await getBody(req);
+    const existing = db.prepare('SELECT id FROM users WHERE id=?').get(id);
+    if (!existing) { json(res,404,{error:'Utilisateur non trouvé.'}); return; }
+    if (name) db.prepare('UPDATE users SET name=? WHERE id=?').run(name, id);
+    if (role) db.prepare('UPDATE users SET role=? WHERE id=?').run(role, id);
+    if (lang) db.prepare('UPDATE users SET lang=? WHERE id=?').run(lang, id);
+    if (password) db.prepare('UPDATE users SET password=? WHERE id=?').run(require('bcryptjs').hashSync(password, 10), id);
+    if (typeof active === 'boolean') {
+      // Desactiver = changer le role en 'disabled', activer = remettre 'agent'
+      db.prepare('UPDATE users SET role=? WHERE id=?').run(active ? 'agent' : 'disabled', id);
+    }
+    if (daily_generation_limit !== undefined) db.prepare('UPDATE users SET daily_generation_limit=? WHERE id=?').run(daily_generation_limit, id);
+    if (monthly_generation_limit !== undefined) db.prepare('UPDATE users SET monthly_generation_limit=? WHERE id=?').run(monthly_generation_limit, id);
+    json(res,200,{ok:true});
+    return;
+  }
+  // GET /api/users/:id/stats — Stats d'un agent (projets, tokens, activite)
+  if (url.match(/^\/api\/users\/\d+\/stats$/) && req.method==='GET') {
+    if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;}
+    const id=parseInt(url.split('/')[3]);
+    const projects = db.prepare('SELECT COUNT(*) as c FROM projects WHERE user_id=?').get(id)?.c || 0;
+    const published = db.prepare('SELECT COUNT(*) as c FROM projects WHERE user_id=? AND is_published=1').get(id)?.c || 0;
+    const tokensToday = db.prepare("SELECT COALESCE(SUM(cost_usd),0) as cost, COUNT(*) as ops FROM token_usage WHERE user_id=? AND created_at >= date('now')").get(id);
+    const tokensMonth = db.prepare("SELECT COALESCE(SUM(cost_usd),0) as cost, COUNT(*) as ops FROM token_usage WHERE user_id=? AND created_at >= date('now','start of month')").get(id);
+    const lastActivity = db.prepare("SELECT created_at FROM token_usage WHERE user_id=? ORDER BY created_at DESC LIMIT 1").get(id);
+    json(res,200,{ projects, published, today: { cost: tokensToday.cost, operations: tokensToday.ops }, month: { cost: tokensMonth.cost, operations: tokensMonth.ops }, lastActivity: lastActivity?.created_at || null });
+    return;
+  }
   if (url.match(/^\/api\/users\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM users WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+
+  // GET /api/admin/activity — Logs d'activite recents (generations, modifications)
+  if (url === '/api/admin/activity' && req.method === 'GET') {
+    if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;}
+    const activity = db.prepare(`
+      SELECT t.operation, t.cost_usd, t.created_at, u.name as user_name, p.title as project_title
+      FROM token_usage t
+      LEFT JOIN users u ON t.user_id = u.id
+      LEFT JOIN projects p ON t.project_id = p.id
+      ORDER BY t.created_at DESC LIMIT 50
+    `).all();
+    json(res, 200, activity);
+    return;
+  }
 
   // ─── API KEYS ───
   if (url==='/api/apikeys' && req.method==='GET') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} json(res,200,db.prepare('SELECT id,name,service,description,created_at FROM api_keys').all()); return; }
