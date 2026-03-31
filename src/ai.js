@@ -676,6 +676,15 @@ OUTILS :
 - JAMAIS de code dans le texte — TOUJOURS dans les outils
 - NE CRÉE PAS un fichier qui existe déjà
 
+RÈGLE CRITIQUE — MODIFICATIONS COMPLÈTES :
+Quand l'agent demande une feature, tu DOIS modifier TOUS les fichiers concernés en UNE SEULE réponse :
+- Nouveau composant/page → write_file pour le fichier + edit_file pour App.tsx (ajouter la route + import)
+- Nouvelle table SQL → edit_file server.js (CREATE TABLE + routes API + données demo)
+- Nouveau rôle → edit_file server.js (table + routes) + write_file page dashboard + edit_file App.tsx (route)
+JAMAIS modifier un seul fichier quand la feature touche plusieurs fichiers.
+Exemple : "ajoute un espace client" = edit_file server.js + write_file ClientDashboard.tsx + edit_file App.tsx
+Si tu oublies App.tsx, la page existe mais n'est pas accessible → BUG.
+
 COMPOSANTS UI — TOUJOURS importer avec @/ alias :
 Imports : from '@/components/ui/button', from '@/components/ui/card', from '@/components/ui/input', etc.
 JAMAIS de chemin relatif (../) — TOUJOURS @/components/ui/xxx (fichiers en lowercase)
