@@ -226,6 +226,7 @@ button.card { padding: 0; }
 .preview-pulse-ring.delay-1 { animation-delay: 0.8s; }
 .preview-pulse-ring.delay-2 { animation-delay: 1.6s; }
 @keyframes pulse-ring { 0% { transform: scale(0.5); opacity: 0.8; } 100% { transform: scale(1.3); opacity: 0; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .preview-loading-text { font-size: 0.9rem; font-weight: 500; color: var(--text-primary); }
 .preview-loading-sub { font-size: 0.75rem; color: var(--text-muted); min-height: 1em; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1065,9 +1066,15 @@ async function sendChatMessage(message) {
 
   const assistantDiv = document.createElement('div');
   assistantDiv.className = 'chat-message assistant';
-  assistantDiv.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">Prestige AI réfléchit...</span>';
+  assistantDiv.style.cssText = 'max-width:95%;';
+  assistantDiv.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+    <div style="width:8px;height:8px;background:var(--gold);border-radius:50%;animation:pulse 1.5s infinite;"></div>
+    <span style="color:var(--text-muted);font-size:0.85rem;" id="ai-status-text">Prestige AI analyse votre demande...</span>
+  </div>
+  <div id="ai-live-files" style="margin-top:4px;"></div>`;
   document.getElementById('chat-messages').appendChild(assistantDiv);
   document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+  _liveFilesDiv = document.getElementById('ai-live-files');
   
   try {
     // Start generation job
@@ -1099,14 +1106,20 @@ async function sendChatMessage(message) {
         continue;
       }
 
-      // Show natural progress messages
+      // Show natural progress messages in the status text (keep live files below)
       if (job.progress_message) {
-        assistantDiv.innerHTML = '<span style="color:var(--text-muted);font-size:0.85rem;">' + escapeHtml(job.progress_message) + '</span>';
+        const statusEl = document.getElementById('ai-status-text');
+        if (statusEl) statusEl.textContent = job.progress_message;
       }
 
       if (job.status === 'done') {
         generatedCode = job.code;
         document.getElementById('code-editor').textContent = generatedCode;
+        _liveFilesDiv = null; // Stop SSE file updates in chat
+
+        // Count files that were shown live
+        const fileCount = assistantDiv.querySelectorAll('[data-file]').length;
+
         // Show conversational message from Claude
         if (job.chat_message) {
           let html = escapeHtml(job.chat_message);
@@ -1114,11 +1127,11 @@ async function sendChatMessage(message) {
           html = html.replace(/\n/g, '<br>');
           assistantDiv.innerHTML = html;
         } else {
-          // Detect if this was a modification or a new generation
           const isModification = currentProject && currentProject.build_status === 'done';
-          assistantDiv.textContent = isModification
-            ? 'Modification appliquée ! Recompilation en cours...'
-            : 'Projet généré ! Compilation en cours...';
+          // Show summary with file count
+          let summary = isModification ? 'Modifications appliquées' : 'Projet généré';
+          if (fileCount > 0) summary += ` — ${fileCount} fichier${fileCount > 1 ? 's' : ''}`;
+          assistantDiv.innerHTML = `<div style="color:var(--gold);font-weight:600;">${summary}</div>`;
         }
         if (job.credentials) {
           projectCredentials = job.credentials;
@@ -1868,6 +1881,9 @@ async function saveCustomDomain() {
 // ═══════════════════════════════════════════════════════════════════════════
 // SSE COLLABORATION
 // ═══════════════════════════════════════════════════════════════════════════
+// SSE: Real-time file streaming (Lovable-style live interaction)
+let _liveFilesDiv = null; // The chat div showing live file list during generation
+
 function connectProjectSSE(projectId) {
   if (projectSSE) projectSSE.close();
   projectSSE = new EventSource('/api/projects/' + projectId + '/stream?token=' + token);
@@ -1875,6 +1891,41 @@ function connectProjectSSE(projectId) {
     try {
       const data = JSON.parse(e.data);
       if (data.type === 'code_updated' && currentProject) loadDockerPreview(`/run/${currentProject.id}/`);
+
+      // Live file streaming: show each file as it's generated (like Lovable)
+      if (data.type === 'file_written' && data.path && _liveFilesDiv) {
+        const icon = data.path.endsWith('.tsx') ? '⚛' : data.path.endsWith('.css') ? '🎨' : data.path.endsWith('.js') ? '⚙' : '📄';
+        const existing = _liveFilesDiv.querySelector(`[data-file="${data.path}"]`);
+        if (!existing) {
+          const line = document.createElement('div');
+          line.setAttribute('data-file', data.path);
+          line.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.8rem;color:var(--text-secondary);animation:fade-in 0.3s ease-out;';
+          line.innerHTML = `<span>${icon}</span><span style="color:var(--gold);font-family:var(--font-mono);">${escapeHtml(data.path)}</span><span style="color:var(--text-muted);font-size:0.7rem;">${Math.round((data.content||'').length/1024)}KB</span>`;
+          _liveFilesDiv.appendChild(line);
+          _liveFilesDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+        // Update code panel in real-time
+        const codeEditor = document.getElementById('code-editor');
+        if (codeEditor && data.content) {
+          codeEditor.textContent = (codeEditor.textContent || '').length > 50000
+            ? '### ' + data.path + '\n' + data.content.substring(0, 500) + '...\n'
+            : (codeEditor.textContent || '') + '\n### ' + data.path + '\n' + data.content.substring(0, 200) + '...\n';
+        }
+      }
+
+      if (data.type === 'file_edited' && data.path && _liveFilesDiv) {
+        const existing = _liveFilesDiv.querySelector(`[data-file="${data.path}"]`);
+        if (existing) {
+          existing.querySelector('span:last-child').textContent = 'modifié';
+          existing.querySelector('span:last-child').style.color = 'var(--gold)';
+        } else {
+          const line = document.createElement('div');
+          line.setAttribute('data-file', data.path);
+          line.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:0.8rem;color:var(--text-secondary);animation:fade-in 0.3s ease-out;';
+          line.innerHTML = `<span>✏️</span><span style="color:var(--gold);font-family:var(--font-mono);">${escapeHtml(data.path)}</span><span style="color:var(--gold);font-size:0.7rem;">modifié</span>`;
+          _liveFilesDiv.appendChild(line);
+        }
+      }
     } catch (err) {}
   };
   projectSSE.onerror = () => {
