@@ -917,8 +917,12 @@ RÈGLE ABSOLUE : server.js utilise UNIQUEMENT CommonJS :
 - Port 3000, app.listen(PORT, '0.0.0.0', ...) — écouter sur TOUTES les interfaces
 - Route /health : res.json({ status: 'ok' })
 - Sert dist/ : app.use(express.static(path.join(__dirname, 'dist')))
-- SQLite : tables selon le secteur avec données de démo
-- JWT auth, compte admin basé sur le nom du projet
+- SQLite : tables selon le secteur avec données de démo (INSERT INTO pour 5-10 entrées)
+- JWT auth : POST /api/auth/login (email+password), retourne { token, user }
+- Middleware authenticateToken : vérifie Bearer token dans Authorization header
+- Routes publiques : GET /api/services, GET /api/[items-secteur]
+- Routes protégées : GET /api/appointments, GET /api/contacts (nécessitent token)
+- Compte admin créé au démarrage : INSERT IF NOT EXISTS
 - Ordre : static → public routes → auth middleware → protected routes → SPA fallback
 - SPA fallback : app.get(/.*/, ...) qui sert dist/index.html
 - À la FIN : // CREDENTIALS: email=admin@[nom-projet].com password=[MotDePasse]
@@ -2406,7 +2410,7 @@ CONTENU : tout le contenu est EN DUR dans le JSX (const data = [...]).
   fetch() UNIQUEMENT pour les formulaires (submit contact, réservation).
 
 Génère ces fichiers :
-### src/App.tsx — SANS BrowserRouter (déjà dans main.tsx). Import Routes, Route, Header, Footer, et toutes les pages. Layout: <Header/> + <main className="flex-1"><Routes>...</Routes></main> + <Footer/>. JAMAIS import BrowserRouter ici.
+### src/App.tsx — SANS BrowserRouter (déjà dans main.tsx). Import Routes, Route, Header, Footer, et TOUTES les pages (Home, About, Contact, Login, Admin + pages du secteur). Layout: <Header/> + <main className="flex-1"><Routes>...</Routes></main> + <Footer/>. Routes: /, /about, /contact, /login, /admin, + routes du secteur. JAMAIS import BrowserRouter ici.
 
 ### src/pages/Home.tsx — Page d'accueil COMPLÈTE avec TOUTES ces sections visibles en scrollant :
   1. Hero plein écran : grand titre, sous-titre, 2 boutons CTA (<Button asChild><Link to="...">)
@@ -2418,6 +2422,16 @@ Génère ces fichiers :
 
 ### src/pages/About.tsx — histoire, équipe (3 personnes EN DUR), valeurs. Contenu statique.
 ### src/pages/Contact.tsx — formulaire contact (useState pour les champs, fetch POST /api/contact sur submit). Adresse, téléphone, email, horaires EN DUR.
+### src/pages/Login.tsx — page connexion admin avec formulaire email+password (useState), fetch POST /api/auth/login, stocke token dans localStorage, redirige vers /admin avec useNavigate
+### src/pages/Admin.tsx — dashboard admin PRO avec sidebar et contenu:
+  LAYOUT: flex row. Sidebar gauche fixe (w-64) + contenu a droite.
+  SIDEBAR: bg-card border-r border-border, logo en haut, liens: Dashboard, [items du secteur], Contacts, Parametres, bouton Deconnexion en bas
+  CONTENU PAR DEFAUT (dashboard):
+    - 4 stat cards en haut (total clients, RDV aujourd'hui, CA mensuel, avis) avec icones lucide-react
+    - Tableau des derniers rendez-vous/commandes (fetch GET /api/appointments ou equivalent avec Authorization Bearer token)
+    - Section contacts recents (fetch GET /api/contacts avec Authorization Bearer token)
+  PROTECTION: useEffect verifie localStorage token, si absent redirige vers /login
+  Chaque section a un state loading (Skeleton) et error handling (toast)
 
 Chaque page : export default function, responsive, lucide-react, contenu PRO français.`;
 

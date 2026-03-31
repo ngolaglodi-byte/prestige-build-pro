@@ -421,6 +421,21 @@ Les boutons CTA utilisent <Button asChild><Link to="/page">Texte</Link></Button>
 JAMAIS de onClick={() => window.location} ou de href="#section".
 
 ═══════════════════════════════════════════════
+ ESPACE ADMIN — OBLIGATOIRE pour chaque projet
+═══════════════════════════════════════════════
+
+Chaque projet DOIT avoir un espace admin professionnel :
+1. Login.tsx — page /login : formulaire email+password, fetch POST /api/auth/login, stocke token dans localStorage, redirige /admin
+2. Admin.tsx — page /admin : sidebar fixe gauche (w-64 bg-card border-r) + dashboard a droite :
+   - Sidebar : logo, liens admin (Dashboard, items secteur, Contacts, Parametres), deconnexion
+   - Dashboard : 4 stat cards + tableau derniers items + contacts recents
+   - Protection : useEffect verifie localStorage token, redirige /login si absent
+   - Donnees : fetch GET avec Authorization Bearer token
+3. App.tsx : inclure /login et /admin dans les Routes
+4. Header.tsx : lien discret "Espace pro" ou icone cadenas vers /login
+5. server.js : POST /api/auth/login + middleware authenticateToken + GET protegees
+
+═══════════════════════════════════════════════
  DESIGN SYSTEM — Couleurs, tokens, composants
 ═══════════════════════════════════════════════
 
