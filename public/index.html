@@ -1247,13 +1247,16 @@ document.getElementById('image-upload').addEventListener('change', async (e) => 
 // PREVIEW
 // ═══════════════════════════════════════════════════════════════════════════
 function loadPreview(url) {
+  if (!currentProject || !token) return;
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
   const previewUrl = url || '/run/' + currentProject.id + '/';
-  document.getElementById('preview-url').textContent = previewUrl;
-  // Add auth token for /run/ routes (iframe doesn't send Authorization headers)
-  const sep = previewUrl.includes('?') ? '&' : '?';
-  frame.src = previewUrl + sep + 'token=' + encodeURIComponent(token);
+  // ALWAYS include token — ensures auth even after cookie expires
+  const cleanUrl = previewUrl.replace(/[?&]token=[^&]*/g, '').replace(/\?$/, '');
+  const sep = cleanUrl.includes('?') ? '&' : '?';
+  const authenticatedUrl = cleanUrl + sep + 'token=' + encodeURIComponent(token);
+  document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + cleanUrl;
+  frame.src = authenticatedUrl;
   frame.style.display = 'block';
   loading.style.display = 'none';
   document.getElementById('preview-status').className = 'preview-status live';
@@ -1269,8 +1272,10 @@ async function refreshPreviewWithCode() {
 }
 
 function refreshPreview() {
-  const frame = document.getElementById('preview-frame');
-  if (frame.src) frame.src = frame.src;
+  // Reload with fresh token to avoid 401
+  if (currentProject && token) {
+    loadDockerPreview(`/run/${currentProject.id}/`);
+  }
 }
 
 function previewBack() { try { document.getElementById('preview-frame').contentWindow.history.back(); } catch(e){ /* sandboxed */ } }
@@ -1386,29 +1391,20 @@ async function autoCompile() {
     return;
   }
 
-  // Refresh project status
+  // Files are already in the container (pushed via docker cp during generation/streaming).
+  // Vite HMR picks up changes automatically. Just reload the preview iframe.
   try {
-    const fresh = await api('/api/projects/' + currentProject.id);
-    currentProject.build_status = fresh.build_status;
-    currentProject.build_url = fresh.build_url;
-  } catch(e) {}
-
-  // Try hot-reload first (instant, no rebuild)
-  if (currentProject.build_status === 'done') {
-    try {
-      const r = await api('/api/hot-reload', 'POST', { project_id: currentProject.id });
-      if (r.hot) {
-        console.log('[AUTOCOMPILE] Hot reload OK');
-        loadDockerPreview(r.url || `/run/${currentProject.id}/`);
-        return;
-      }
-    } catch (e) {
-      console.log('[AUTOCOMPILE] Hot reload failed:', e.message);
+    // Hot-reload: sync any remaining files to container + check Vite errors
+    const r = await api('/api/hot-reload', 'POST', { project_id: currentProject.id });
+    if (r.hot) {
+      console.log('[AUTOCOMPILE] Hot reload OK (' + (r.elapsed || 0) + 'ms)');
     }
+  } catch (e) {
+    console.log('[AUTOCOMPILE] Hot reload skipped:', e.message);
   }
 
-  // Full compile as fallback
-  await compileProject();
+  // Always show the preview — Vite HMR handles the rest
+  loadDockerPreview(`/run/${currentProject.id}/`);
 }
 
 async function compileProject() {
@@ -1878,7 +1874,7 @@ function connectProjectSSE(projectId) {
   projectSSE.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      if (data.type === 'code_updated') loadPreview();
+      if (data.type === 'code_updated' && currentProject) loadDockerPreview(`/run/${currentProject.id}/`);
     } catch (err) {}
   };
   projectSSE.onerror = () => {
