@@ -3698,30 +3698,60 @@ Règles d'intégration automatique :
         }
       }
 
-      // ── AUTO-FOLLOW-UP: If AI only did partial work, ask it to finish ──
-      // Detects if the user asked for new pages/files that weren't created
-      if (toolBlocks.length > 0 && toolBlocks.length <= 2 && job.project_id) {
+      // ── AUTO-FOLLOW-UP: Verify actual file CONTENT, not just file names ──
+      // Reads the real files on disk to check if the user's request was fully implemented
+      if (toolBlocks.length > 0 && job.project_id) {
         const userMsg = (messages[messages.length - 1]?.content || '').toLowerCase();
-        const createdFiles = toolBlocks.filter(t => t.name === 'write_file').map(t => t.input?.path);
-        const editedFiles = toolBlocks.filter(t => t.name === 'edit_file').map(t => t.input?.path);
-        const allTouched = [...createdFiles, ...editedFiles];
+        const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+        const missing = [];
 
-        // Check if user mentioned pages/files/features that weren't touched
-        const mentionedPages = [];
-        // Frontend pages
-        if (/login|connexion/i.test(userMsg) && !allTouched.some(f => /login/i.test(f))) mentionedPages.push('Login.tsx (page connexion)');
-        if (/admin|dashboard admin/i.test(userMsg) && !allTouched.some(f => /admin/i.test(f))) mentionedPages.push('Admin.tsx (dashboard admin)');
-        if (/client|espace client/i.test(userMsg) && !allTouched.some(f => /client/i.test(f))) mentionedPages.push('ClientDashboard.tsx (dashboard client)');
-        // Backend
-        if (/table|sql|base de donn|invoices|facture/i.test(userMsg) && !allTouched.includes('server.js')) mentionedPages.push('server.js (table SQL + routes API)');
-        // Routes
-        if (!allTouched.includes('src/App.tsx')) mentionedPages.push('App.tsx (ajouter routes + imports pour les nouvelles pages)');
+        // Read actual files from disk to verify content
+        const serverJs = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+        const appTsx = fs.existsSync(path.join(projDir, 'src', 'App.tsx')) ? fs.readFileSync(path.join(projDir, 'src', 'App.tsx'), 'utf8') : '';
 
-        if (mentionedPages.length > 0) {
-          console.log(`[FollowUp] AI missed ${mentionedPages.join(', ')} — sending follow-up`);
+        // 1. User asked for client space → verify ClientDashboard.tsx EXISTS + route /client in App.tsx
+        if (/client|espace client/i.test(userMsg)) {
+          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'ClientDashboard.tsx'))) missing.push('write_file src/pages/ClientDashboard.tsx — dashboard client avec rendez-vous et factures');
+          if (!appTsx.includes('/client')) missing.push('edit_file src/App.tsx — ajouter import ClientDashboard + <Route path="/client" element={<ClientDashboard/>}/>');
+        }
+
+        // 2. User asked for login → verify Login.tsx EXISTS + route /login in App.tsx
+        if (/login|connexion/i.test(userMsg)) {
+          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'Login.tsx'))) missing.push('write_file src/pages/Login.tsx — formulaire connexion email+password');
+          if (!appTsx.includes('/login')) missing.push('edit_file src/App.tsx — ajouter import Login + <Route path="/login" element={<Login/>}/>');
+        }
+
+        // 3. User asked for admin → verify Admin.tsx EXISTS + route /admin in App.tsx
+        if (/admin|dashboard admin/i.test(userMsg)) {
+          if (!fs.existsSync(path.join(projDir, 'src', 'pages', 'Admin.tsx'))) missing.push('write_file src/pages/Admin.tsx — dashboard admin avec sidebar');
+          if (!appTsx.includes('/admin')) missing.push('edit_file src/App.tsx — ajouter import Admin + <Route path="/admin" element={<Admin/>}/>');
+        }
+
+        // 4. User asked for tables/invoices → verify table EXISTS in server.js
+        if (/invoices|facture/i.test(userMsg) && !serverJs.includes('CREATE TABLE') || (serverJs.includes('CREATE TABLE') && /invoices|facture/i.test(userMsg) && !serverJs.includes('invoices'))) {
+          missing.push('edit_file server.js — ajouter CREATE TABLE invoices + route GET /api/invoices protegee + INSERT donnees demo');
+        }
+
+        // 5. User asked for API route → verify route EXISTS in server.js
+        if (/route.*api|\/api\//i.test(userMsg)) {
+          const apiMatch = userMsg.match(/\/api\/(\w+)/);
+          if (apiMatch && !serverJs.includes(apiMatch[0])) missing.push(`edit_file server.js — ajouter route ${apiMatch[0]}`);
+        }
+
+        // 6. Any new page mentioned → check it exists + has route
+        const pageNames = userMsg.match(/(?:cree|crée|ajoute)\s+(?:la page\s+)?(\w+)\.tsx/gi) || [];
+        for (const pm of pageNames) {
+          const name = pm.match(/(\w+)\.tsx/i)?.[1];
+          if (name && !fs.existsSync(path.join(projDir, 'src', 'pages', name + '.tsx'))) {
+            missing.push(`write_file src/pages/${name}.tsx`);
+          }
+        }
+
+        if (missing.length > 0) {
+          console.log(`[FollowUp] Incomplete: ${missing.length} items missing — ${missing.join('; ')}`);
           job.progressMessage = 'Finalisation des fichiers manquants...';
           try {
-            const followUpPrompt = `INCOMPLET. Tu as modifié seulement ${allTouched.join(', ')} mais il manque: ${mentionedPages.join(', ')}.
+            const followUpPrompt = `INCOMPLET. Il manque ${missing.length} action(s):\n${missing.map((m, i) => `${i + 1}. ${m}`).join('\n')}.
 
 Demande originale: "${userMsg}"
 
