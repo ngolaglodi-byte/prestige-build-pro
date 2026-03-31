@@ -1174,6 +1174,31 @@ function runBackTests(files) {
     issues.push({ file: 'src/index.css', issue: 'NO_THEME', message: 'Missing @theme block — Tailwind 4 utility classes will fail' });
   }
 
+  // Test 8: JSX fragments must be properly closed (<> must have </>)
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const opens = (content.match(/<>/g) || []).length;
+    const closes = (content.match(/<\/>/g) || []).length;
+    if (opens > closes) {
+      issues.push({ file: fn, issue: 'UNCLOSED_FRAGMENT', message: `${opens} fragment(s) <> but only ${closes} closing </> — JSX will crash` });
+    }
+  }
+
+  // Test 9: App.tsx must NOT contain BrowserRouter (it's in main.tsx)
+  if (app && /import.*BrowserRouter/.test(app)) {
+    issues.push({ file: 'src/App.tsx', issue: 'DUPLICATE_ROUTER', message: 'BrowserRouter must be in main.tsx, not App.tsx — causes double router error' });
+  }
+
+  // Test 10: No Tailwind v3 classes in generated code (we use v4 @theme)
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    if (/className="[^"]*\b(bg-gray-|text-gray-|bg-blue-|text-blue-|bg-red-|text-red-|bg-green-|text-green-|border-gray-)/.test(content)) {
+      issues.push({ file: fn, issue: 'TAILWIND_V3_CLASSES', message: 'Uses Tailwind v3 color classes (bg-gray-*, text-blue-*) — use @theme classes instead (bg-muted, text-primary, etc.)' });
+    }
+  }
+
   return issues;
 }
 
