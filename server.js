@@ -396,7 +396,9 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
     jsonwebtoken: "9.0.2",
     cors: "2.8.5",
     helmet: "7.1.0",
-    compression: "1.7.4"
+    compression: "1.7.4",
+    "date-fns": "3.6.0",
+    recharts: "2.15.0"
   },
   devDependencies: {
     vite: "6.3.5",
@@ -3636,6 +3638,28 @@ function writeGeneratedFiles(projectDir, code, projectId) {
         console.log(`[WriteFiles] Removed duplicate imports from ${filename}`);
       }
 
+      // Fix imports of packages not in package.json — remove them to prevent Vite crash
+      const INSTALLED_PACKAGES = new Set([
+        'react', 'react-dom', 'react-router-dom', 'lucide-react', 'clsx', 'tailwind-merge',
+        'sonner', 'cmdk', 'date-fns', 'recharts',
+        '@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs',
+        '@radix-ui/react-accordion', '@radix-ui/react-tooltip', '@radix-ui/react-popover',
+        '@radix-ui/react-checkbox', '@radix-ui/react-switch', '@radix-ui/react-radio-group',
+        '@radix-ui/react-slider', '@radix-ui/react-progress', '@radix-ui/react-collapsible',
+        '@radix-ui/react-scroll-area', '@radix-ui/react-separator', '@radix-ui/react-label',
+        '@radix-ui/react-avatar', '@radix-ui/react-alert-dialog', '@radix-ui/react-select',
+        'express', 'better-sqlite3', 'bcryptjs', 'jsonwebtoken', 'cors', 'helmet', 'compression'
+      ]);
+      content = content.replace(/^import\s+.*from\s+['"]([^'"@./][^'"]*)['"]\s*;?\s*$/gm, (match, pkg) => {
+        // Extract base package name (e.g. "date-fns/locale" → "date-fns")
+        const basePkg = pkg.startsWith('@') ? pkg.split('/').slice(0, 2).join('/') : pkg.split('/')[0];
+        if (!INSTALLED_PACKAGES.has(basePkg)) {
+          console.log(`[WriteFiles] Removed uninstalled import: ${basePkg} from ${filename}`);
+          return `// removed: ${match.trim()} — package not installed`;
+        }
+        return match;
+      });
+
       // Fix missing export default (AI sometimes forgets)
       if (!content.includes('export default') && !content.includes('export {')) {
         const funcMatch = content.match(/^function (\w+)/m);
@@ -6463,7 +6487,7 @@ RUN npm install \
   cors@2.8.5 helmet@7.1.0 compression@1.7.4 path-to-regexp@6.3.0 \
   pdfkit@0.15.0 nodemailer@6.9.8 stripe@14.14.0 socket.io@4.7.4 \
   multer@1.4.5-lts.1 sharp@0.33.2 qrcode@1.5.3 exceljs@4.4.0 \
-  csv-parse@5.5.3 marked@11.1.1 axios@1.6.7 \
+  csv-parse@5.5.3 marked@11.1.1 axios@1.6.7 date-fns@3.6.0 recharts@2.15.0 \
   vite@6.3.5 @vitejs/plugin-react@4.5.2 \
   react@19.1.0 react-dom@19.1.0 react-router-dom@7.6.1 \
   lucide-react@0.511.0 clsx@2.1.1 tailwind-merge@3.3.0 \
