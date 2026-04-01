@@ -3478,6 +3478,23 @@ function writeGeneratedFiles(projectDir, code, projectId) {
         content = content.replace(/--color-warning:\s*/g, '--color-warning-val: ');
         console.log(`[WriteFiles] Auto-renamed CSS vars to avoid @theme conflict`);
       }
+      // Remove theme() function calls — Tailwind 4 doesn't support theme(colors.xxx)
+      // AI generates theme(colors.muted) etc from Tailwind 3 docs
+      if (content.includes('theme(')) {
+        content = content.replace(/theme\(colors\.([a-zA-Z-]+)\)/g, 'var(--color-$1)');
+        content = content.replace(/theme\(([^)]+)\)/g, '/* $1 */');
+        console.log(`[WriteFiles] Removed theme() function calls from index.css`);
+      }
+      // Remove @apply with unknown utilities — common Tailwind 3 pattern
+      if (content.includes('@apply')) {
+        content = content.replace(/@apply\s+[^;]*;/g, (match) => {
+          // Keep simple known utilities, remove complex unknown ones
+          if (/border-border|bg-background|text-foreground|ring-ring/.test(match)) {
+            return '/* ' + match + ' */';
+          }
+          return match;
+        });
+      }
     }
 
     // AUTO-FIX: Convert ESM imports to CommonJS in server.js

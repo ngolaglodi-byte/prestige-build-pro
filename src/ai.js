@@ -1240,6 +1240,16 @@ function runBackTests(files) {
     }
   }
 
+  // Test 11: index.css must not use theme() function (Tailwind 3 syntax, breaks v4)
+  if (css && css.includes('theme(')) {
+    issues.push({ file: 'src/index.css', issue: 'THEME_FUNCTION', message: 'Uses theme() function — Tailwind 4 does not support this. Use var(--color-xxx) instead.' });
+  }
+
+  // Test 12: index.css must not use @apply with custom classes
+  if (css && /@apply\s+.*(?:border-border|bg-background|text-foreground)/.test(css)) {
+    issues.push({ file: 'src/index.css', issue: 'APPLY_CUSTOM', message: 'Uses @apply with @theme classes — not supported in Tailwind 4. Use the class directly in className.' });
+  }
+
   return issues;
 }
 
