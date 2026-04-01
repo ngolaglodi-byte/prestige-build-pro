@@ -5111,7 +5111,12 @@ async function launchTemplateContainer(projectId) {
     HostConfig: {
       NetworkMode: DOCKER_NETWORK,
       RestartPolicy: { Name: 'unless-stopped' },
-      Binds: [`${dataDir}:/app/data`],
+      Binds: [
+        `${dataDir}:/app/data`,
+        `${projectDir}/src:/app/src`,
+        `${projectDir}/server.js:/app/server.js`,
+        `${projectDir}/index.html:/app/index.html`
+      ],
       Memory: 512 * 1024 * 1024,
       NanoCpus: 500000000,
       SecurityOpt: ['no-new-privileges']
@@ -5509,7 +5514,12 @@ CMD ["sh", "start-dev.sh"]
       HostConfig: {
         NetworkMode: DOCKER_NETWORK,
         RestartPolicy: { Name: 'unless-stopped' },
-        Binds: [`${dataDir}:/app/data`],
+        Binds: [
+          `${dataDir}:/app/data`,
+          `${projectDir}/src:/app/src`,
+          `${projectDir}/server.js:/app/server.js`,
+          `${projectDir}/index.html:/app/index.html`
+        ],
         Memory: 512 * 1024 * 1024,    // 512MB max
         NanoCpus: 500000000,           // 0.5 CPU
         SecurityOpt: ['no-new-privileges']
