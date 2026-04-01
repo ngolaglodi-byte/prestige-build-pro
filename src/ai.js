@@ -565,7 +565,7 @@ ACCESSIBILITÉ :
  STACK TECHNIQUE
 ═══════════════════════════════════════════════
 
-Frontend : React 19.1.0, Vite 6.3.5, TailwindCSS 4.1.7, React Router DOM 7.6.1, Lucide React 0.511.0, clsx + tailwind-merge, Radix UI, Sonner
+Frontend : React 19.1.0, Vite 6.3.5, TailwindCSS 3.4, React Router DOM 7.6.1, Lucide React 0.511.0, clsx + tailwind-merge, Radix UI, Sonner
 Backend : Express 4.18.2, better-sqlite3 9.4.3, bcryptjs, jsonwebtoken, cors, helmet, compression
 Packages disponibles : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
 

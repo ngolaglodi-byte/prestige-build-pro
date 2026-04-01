@@ -403,8 +403,9 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
   devDependencies: {
     vite: "6.3.5",
     "@vitejs/plugin-react": "4.5.2",
-    tailwindcss: "4.1.7",
-    "@tailwindcss/vite": "4.1.7"
+    tailwindcss: "3.4.17",
+    postcss: "8.5.3",
+    autoprefixer: "10.4.21"
   }
 }, null, 2);
 
@@ -507,11 +508,10 @@ const DEFAULT_INDEX_HTML = `<!DOCTYPE html>
 // Default React source files for fallback
 const DEFAULT_VITE_CONFIG = `import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -548,66 +548,63 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 );
 `;
 
-const DEFAULT_INDEX_CSS = `@import "tailwindcss";
+const DEFAULT_INDEX_CSS = `@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-@theme {
-  --color-background: var(--color-bg, #ffffff);
-  --color-foreground: var(--color-text, #0f172a);
-  --color-card: var(--color-surface, #f8fafc);
-  --color-card-foreground: var(--color-text, #0f172a);
-  --color-popover: var(--color-surface, #f8fafc);
-  --color-popover-foreground: var(--color-text, #0f172a);
-  --color-primary: var(--color-primary-val, #2563eb);
-  --color-primary-foreground: #ffffff;
-  --color-secondary: var(--color-secondary-val, #f1f5f9);
-  --color-secondary-foreground: var(--color-text, #0f172a);
-  --color-muted: var(--color-surface, #f8fafc);
-  --color-muted-foreground: var(--color-text-muted-val, #64748b);
-  --color-accent: var(--color-surface, #f8fafc);
-  --color-accent-foreground: var(--color-text, #0f172a);
-  --color-destructive: var(--color-error-val, #dc2626);
-  --color-destructive-foreground: #ffffff;
-  --color-border: var(--color-border-val, #e2e8f0);
-  --color-input: var(--color-border-val, #e2e8f0);
-  --color-ring: var(--color-primary-val, #2563eb);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
 }
 
-:root {
-  --color-primary-val: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-light: #dbeafe;
-  --color-secondary-val: #64748b;
-  --color-accent-val: #f59e0b;
-  --color-bg: #ffffff;
-  --color-surface: #f8fafc;
-  --color-text: #0f172a;
-  --color-text-muted-val: #64748b;
-  --color-border-val: #e2e8f0;
-  --color-success-val: #16a34a;
-  --color-error-val: #dc2626;
-  --color-warning-val: #f59e0b;
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
-  --shadow-md: 0 4px 6px rgba(0,0,0,0.07);
-  --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 }
 
-.dark {
-  --color-primary-val: #3b82f6; --color-primary-hover: #60a5fa; --color-primary-light: #1e3a5f;
-  --color-secondary-val: #94a3b8; --color-accent-val: #fbbf24;
-  --color-bg: #0f172a; --color-surface: #1e293b;
-  --color-text: #f1f5f9; --color-text-muted-val: #94a3b8; --color-border-val: #334155;
-  --color-success-val: #22c55e; --color-error-val: #ef4444; --color-warning-val: #fbbf24;
-}
-
-body { font-family: 'Inter', system-ui, -apple-system, sans-serif; color: var(--color-text); background-color: var(--color-bg); -webkit-font-smoothing: antialiased; }
-@keyframes fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.animate-in { animation: fade-in 0.3s ease-out; }
 html { scroll-behavior: smooth; }
-*:focus-visible { outline: 2px solid var(--color-primary-val); outline-offset: 2px; }
+*:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
 `;
 
 const DEFAULT_APP_JSX = `import React from 'react';
@@ -1974,36 +1971,86 @@ function executeServerTool(toolName, toolInput) {
   }
 
   // ─── AI IMAGE GENERATION (like Lovable's imagegen--generate_image) ───
+  // ── AI IMAGE GENERATION (DALL-E 3 via OpenAI API, like Lovable Flux) ──
   if (toolName === 'generate_image' && toolInput.prompt && toolInput.save_path) {
-    return new Promise((resolve) => {
-      const w = toolInput.width || 1200;
-      const h = toolInput.height || 800;
+    return new Promise(async (resolve) => {
       const savePath = toolInput.save_path;
-      // Use picsum.photos with a seed based on the prompt for consistent images
+      const size = (toolInput.width || 1200) >= 1024 ? '1792x1024' : '1024x1024';
       const seed = toolInput.prompt.replace(/[^a-zA-Z0-9]/g, '-').substring(0, 50);
-      const imageUrl = `https://picsum.photos/seed/${encodeURIComponent(seed)}/${w}/${h}`;
+      const fallbackUrl = `https://picsum.photos/seed/${seed}/${toolInput.width || 1200}/${toolInput.height || 800}`;
 
-      // Download to project if _projectDir is available
+      // Try DALL-E 3 first, fallback to picsum
+      if (OPENAI_API_KEY) {
+        try {
+          const payload = JSON.stringify({
+            model: 'dall-e-3',
+            prompt: toolInput.prompt,
+            n: 1,
+            size: size,
+            quality: 'standard'
+          });
+          const imageData = await new Promise((res, rej) => {
+            const req = https.request({
+              hostname: 'api.openai.com', path: '/v1/images/generations', method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}`, 'Content-Length': Buffer.byteLength(payload) }
+            }, (apiRes) => {
+              let data = '';
+              apiRes.on('data', c => data += c);
+              apiRes.on('end', () => {
+                try { const r = JSON.parse(data); res(r.data?.[0]?.url || null); }
+                catch { res(null); }
+              });
+            });
+            req.on('error', () => res(null));
+            req.setTimeout(30000, () => { req.destroy(); res(null); });
+            req.write(payload); req.end();
+          });
+
+          if (imageData) {
+            // Download the generated image to the project
+            if (toolInput._projectDir) {
+              const fullPath = path.join(toolInput._projectDir, savePath);
+              const dir = path.dirname(fullPath);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              await new Promise((dl) => {
+                https.get(imageData, { timeout: 20000 }, (imgRes) => {
+                  const file = fs.createWriteStream(fullPath);
+                  imgRes.pipe(file);
+                  file.on('finish', () => { file.close(); dl(); });
+                }).on('error', dl);
+              });
+              console.log(`[ImageGen] DALL-E 3 image saved: ${savePath}`);
+              resolve(`Image IA generee et sauvee: ${savePath}\nURL pour le code: /${savePath}`);
+              return;
+            }
+            resolve(`Image IA generee: ${imageData}\nUtilise cette URL dans src=""`);
+            return;
+          }
+        } catch (e) {
+          console.warn(`[ImageGen] DALL-E failed: ${e.message}, falling back to picsum`);
+        }
+      }
+
+      // Fallback: picsum with seed (deterministic, free)
       if (toolInput._projectDir) {
         const fullPath = path.join(toolInput._projectDir, savePath);
         const dir = path.dirname(fullPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        const proto = https;
-        proto.get(imageUrl, { timeout: 15000 }, (res) => {
+        https.get(fallbackUrl, { timeout: 15000 }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
             https.get(res.headers.location, { timeout: 15000 }, (r2) => {
               const file = fs.createWriteStream(fullPath);
               r2.pipe(file);
-              file.on('finish', () => { file.close(); resolve(`Image generee et sauvee: ${savePath} (${w}x${h})\nURL pour le code: /${savePath}`); });
-            }).on('error', () => resolve(`Image: utilisez https://picsum.photos/seed/${seed}/${w}/${h}`));
+              file.on('finish', () => { file.close(); resolve(`Image sauvee: ${savePath}\nURL: /${savePath}`); });
+            }).on('error', () => resolve(`Image: ${fallbackUrl}`));
             return;
           }
           const file = fs.createWriteStream(fullPath);
           res.pipe(file);
-          file.on('finish', () => { file.close(); resolve(`Image generee et sauvee: ${savePath} (${w}x${h})\nURL pour le code: /${savePath}`); });
-        }).on('error', () => resolve(`Image: utilisez https://picsum.photos/seed/${seed}/${w}/${h}`));
+          file.on('finish', () => { file.close(); resolve(`Image sauvee: ${savePath}\nURL: /${savePath}`); });
+        }).on('error', () => resolve(`Image: ${fallbackUrl}`));
       } else {
-        resolve(`Image URL: https://picsum.photos/seed/${seed}/${w}/${h}\nUtilise cette URL dans le code: src="${imageUrl}"`);
+        resolve(`Image URL: ${fallbackUrl}`);
       }
     });
   }
@@ -2503,32 +2550,32 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
 
 Génère SEULEMENT ces 2 fichiers :
 ### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/index.css — COMMENCE par @import "tailwindcss"; puis le bloc @theme puis :root. Voici le FORMAT EXACT :
-@import "tailwindcss";
-@theme {
-  --color-background: var(--color-bg, #ffffff);
-  --color-foreground: var(--color-text, #0f172a);
-  --color-card: var(--color-surface, #f8fafc);
-  --color-card-foreground: var(--color-text, #0f172a);
-  --color-popover: var(--color-surface, #f8fafc);
-  --color-popover-foreground: var(--color-text, #0f172a);
-  --color-primary: var(--color-primary-val, #2563eb);
-  --color-primary-foreground: #ffffff;
-  --color-secondary: var(--color-secondary-val, #f1f5f9);
-  --color-secondary-foreground: var(--color-text, #0f172a);
-  --color-muted: var(--color-surface, #f8fafc);
-  --color-muted-foreground: var(--color-text-muted-val, #64748b);
-  --color-accent: var(--color-surface, #f8fafc);
-  --color-accent-foreground: var(--color-text, #0f172a);
-  --color-destructive: var(--color-error-val, #dc2626);
-  --color-destructive-foreground: #ffffff;
-  --color-border: var(--color-border-val, #e2e8f0);
-  --color-input: var(--color-border-val, #e2e8f0);
-  --color-ring: var(--color-primary-val, #2563eb);
-  --radius-sm: 0.375rem; --radius-md: 0.5rem; --radius-lg: 0.75rem; --radius-xl: 1rem;
+### src/index.css — Tailwind 3 avec variables HSL dans :root. FORMAT EXACT (shadcn/ui) :
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: [HSL du secteur];
+    --primary: [HSL couleur principale du secteur];
+    --primary-foreground: 210 40% 98%;
+    --secondary: [HSL];
+    --secondary-foreground: [HSL];
+    --muted: [HSL];
+    --muted-foreground: [HSL];
+    --accent: [HSL];
+    --accent-foreground: [HSL];
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: [HSL];
+    --input: [HSL];
+    --ring: [HSL identique a primary];
+    --radius: 0.5rem;
+  }
 }
-:root { --color-primary-val: [COULEUR SECTEUR]; --color-primary-hover: [hover]; --color-bg: #ffffff; --color-surface: #f8fafc; --color-text: #0f172a; --color-text-muted-val: #64748b; --color-border-val: #e2e8f0; --color-secondary-val: [couleur]; --color-accent-val: [couleur]; --color-error-val: #dc2626; --color-success-val: #16a34a; --color-warning-val: #f59e0b; }
-Puis styles body, animations, scrollbar.
+@layer base { * { @apply border-border; } body { @apply bg-background text-foreground; } }
+IMPORTANT : les couleurs sont en HSL SANS hsl() — juste "221 83% 53%". Le tailwind.config.js les wrappe avec hsl().
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 
@@ -2898,11 +2945,18 @@ TOUS en UNE réponse.`;
       paths: { "@/*": ["./src/*"] } },
     include: ["src"]
   }, null, 2));
-  // Delete files that shouldn't exist (postcss.config.js, tailwind.config.js — TailwindCSS 4 doesn't need them)
-  for (const junk of ['postcss.config.js', 'postcss.config.cjs', 'tailwind.config.js', 'tailwind.config.ts', 'vite.config.ts']) {
+  // Delete files that shouldn't exist
+  for (const junk of ['vite.config.ts']) {
     const jp = path.join(projectDir, junk);
     if (fs.existsSync(jp)) { fs.unlinkSync(jp); console.log(`[Gen] Removed unnecessary: ${junk}`); }
   }
+  // Ensure tailwind.config.js and postcss.config.js exist (needed for TW3)
+  const twConfigPath = path.join(projectDir, 'tailwind.config.js');
+  const pcConfigPath = path.join(projectDir, 'postcss.config.js');
+  const templateTwConfig = path.join(__dirname, 'templates', 'react', 'tailwind.config.js');
+  const templatePcConfig = path.join(__dirname, 'templates', 'react', 'postcss.config.js');
+  if (!fs.existsSync(twConfigPath) && fs.existsSync(templateTwConfig)) fs.copyFileSync(templateTwConfig, twConfigPath);
+  if (!fs.existsSync(pcConfigPath) && fs.existsSync(templatePcConfig)) fs.copyFileSync(templatePcConfig, pcConfigPath);
   console.log(`[Gen] Canonical files written`);
 
   // Write UI component library + utils + hooks
@@ -3436,127 +3490,24 @@ function buildProjectStructure(code) {
 // ─── UNIVERSAL INDEX.CSS FIX ───
 // Guarantees index.css works with Tailwind 4 no matter what the AI generates.
 // Uses the template as the safe base, extracts AI's custom colors, merges them.
+// ── TAILWIND 3 CSS FIX (simple — TW3 is mature, few issues) ──
 function fixIndexCss(content) {
-  // Read the template index.css (the safe, tested version)
   const templatePath = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
-  const templateCss = fs.existsSync(templatePath) ? fs.readFileSync(templatePath, 'utf8') : '';
-
-  // 1. Ensure @import "tailwindcss" is present
-  if (!content.includes('@import "tailwindcss"')) {
-    content = '@import "tailwindcss";\n\n' + content;
+  // TW4 → TW3 conversion
+  if (content.includes('@import "tailwindcss"')) {
+    content = content.replace('@import "tailwindcss";', '@tailwind base;\n@tailwind components;\n@tailwind utilities;');
   }
-
-  // 2. Remove ALL Tailwind 3 incompatible syntax
-  // theme() function — not supported in v4
-  content = content.replace(/theme\(colors\.([a-zA-Z.-]+)\)/g, 'var(--color-$1)');
-  content = content.replace(/theme\(spacing\.([a-zA-Z0-9.-]+)\)/g, '$1rem');
-  content = content.replace(/theme\(([^)]+)\)/g, '/* theme($1) removed — use var() */');
-
-  // @apply with @theme classes — not supported in v4
-  content = content.replace(/@apply\s+[^;]*(?:border-border|bg-background|text-foreground|ring-ring|bg-muted|text-muted-foreground|bg-card|bg-popover|bg-destructive)[^;]*;/g,
-    (match) => '/* ' + match.trim() + ' — use className instead */');
-
-  // @screen — replaced by @media in v4
-  content = content.replace(/@screen\s+(\w+)/g, '@media (min-width: theme(--breakpoint-$1))');
-
-  // @variants — not needed in v4
-  content = content.replace(/@variants\s+[^{]+\{([^}]*)\}/g, '$1');
-
-  // 3. Extract AI's custom :root colors (the creative part we want to keep)
-  const aiColors = {};
-  const rootMatch = content.match(/:root\s*\{([^}]+)\}/);
-  if (rootMatch) {
-    const rootContent = rootMatch[1];
-    const varMatches = rootContent.match(/--[\w-]+:\s*[^;]+/g) || [];
-    for (const v of varMatches) {
-      const [name, ...valueParts] = v.split(':');
-      const value = valueParts.join(':').trim();
-      if (name && value) aiColors[name.trim()] = value;
-    }
+  content = content.replace(/@theme\s*\{[\s\S]*?\n\}/g, ''); // Remove @theme (TW4)
+  content = content.replace(/theme\([^)]+\)/g, ''); // Remove theme() (TW4)
+  // Ensure @tailwind directives
+  if (!content.includes('@tailwind base')) {
+    content = '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n' + content;
   }
-
-  // Also extract .dark colors
-  const aiDarkColors = {};
-  const darkMatch = content.match(/\.dark\s*\{([^}]+)\}/);
-  if (darkMatch) {
-    const darkContent = darkMatch[1];
-    const varMatches = darkContent.match(/--[\w-]+:\s*[^;]+/g) || [];
-    for (const v of varMatches) {
-      const [name, ...valueParts] = v.split(':');
-      const value = valueParts.join(':').trim();
-      if (name && value) aiDarkColors[name.trim()] = value;
-    }
+  // If no HSL variables, use template
+  if (!content.includes('--background:') && !content.includes('--primary:')) {
+    if (fs.existsSync(templatePath)) return fs.readFileSync(templatePath, 'utf8');
   }
-
-  // 4. Extract ONLY safe custom rules (font imports, NOT @keyframes/body/etc.)
-  // @keyframes have nested {} which break regex extraction → use template animations instead
-  const aiCustomRules = [];
-  const fontImports = content.match(/@import url\([^)]+\)\s*;/g) || [];
-  for (const fi of fontImports) { aiCustomRules.push(fi); }
-
-  // 5. Build the final CSS from template + AI colors + AI rules
-  let finalCss = templateCss;
-
-  // Merge AI colors into template :root (AI's colors override template defaults)
-  if (Object.keys(aiColors).length > 0) {
-    // Rename conflicting vars: --color-primary → --color-primary-val
-    const renameMap = {
-      '--color-primary': '--color-primary-val',
-      '--color-secondary': '--color-secondary-val',
-      '--color-accent': '--color-accent-val',
-      '--color-background': '--color-bg',
-      '--color-text-muted': '--color-text-muted-val',
-      '--color-border': '--color-border-val',
-      '--color-error': '--color-error-val',
-      '--color-success': '--color-success-val',
-      '--color-warning': '--color-warning-val',
-    };
-    const renamedColors = {};
-    for (const [k, v] of Object.entries(aiColors)) {
-      const newName = renameMap[k] || k;
-      renamedColors[newName] = v;
-    }
-
-    // Replace :root in template with merged colors
-    const templateRootMatch = finalCss.match(/:root\s*\{([^}]+)\}/);
-    if (templateRootMatch) {
-      // Parse template :root vars
-      const templateVars = {};
-      const tvMatches = templateRootMatch[1].match(/--[\w-]+:\s*[^;]+/g) || [];
-      for (const v of tvMatches) {
-        const [name, ...vp] = v.split(':');
-        templateVars[name.trim()] = vp.join(':').trim();
-      }
-      // Merge: AI overrides template
-      const merged = { ...templateVars, ...renamedColors };
-      const mergedStr = Object.entries(merged).map(([k, v]) => `  ${k}: ${v};`).join('\n');
-      finalCss = finalCss.replace(/:root\s*\{[^}]+\}/, `:root {\n${mergedStr}\n}`);
-    }
-  }
-
-  // Merge AI dark mode colors
-  if (Object.keys(aiDarkColors).length > 0) {
-    const renameMap = { '--color-primary': '--color-primary-val', '--color-secondary': '--color-secondary-val', '--color-accent': '--color-accent-val', '--color-background': '--color-bg', '--color-text-muted': '--color-text-muted-val', '--color-border': '--color-border-val', '--color-error': '--color-error-val', '--color-success': '--color-success-val', '--color-warning': '--color-warning-val' };
-    const renamedDark = {};
-    for (const [k, v] of Object.entries(aiDarkColors)) { renamedDark[renameMap[k] || k] = v; }
-    const templateDarkMatch = finalCss.match(/\.dark\s*\{([^}]+)\}/);
-    if (templateDarkMatch) {
-      const templateDarkVars = {};
-      const tdm = templateDarkMatch[1].match(/--[\w-]+:\s*[^;]+/g) || [];
-      for (const v of tdm) { const [name, ...vp] = v.split(':'); templateDarkVars[name.trim()] = vp.join(':').trim(); }
-      const mergedDark = { ...templateDarkVars, ...renamedDark };
-      const mergedDarkStr = Object.entries(mergedDark).map(([k, v]) => `  ${k}: ${v};`).join('\n');
-      finalCss = finalCss.replace(/\.dark\s*\{[^}]+\}/, `.dark {\n${mergedDarkStr}\n}`);
-    }
-  }
-
-  // Append AI's custom rules (animations, fonts, scrollbar, etc.)
-  if (aiCustomRules.length > 0) {
-    finalCss += '\n\n/* ── Custom styles ── */\n' + aiCustomRules.join('\n\n');
-  }
-
-  console.log(`[fixIndexCss] Merged ${Object.keys(aiColors).length} colors + ${aiCustomRules.length} custom rules into template`);
-  return finalCss;
+  return content;
 }
 
 // ─── DIFF-BASED MODIFICATION SUPPORT ───
@@ -3783,11 +3734,30 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     content = cleanGeneratedContent(content);
     if (!content) continue;
 
-    // ── UNIVERSAL CSS FIX: Guarantee index.css works with Tailwind 4 ──
-    // Strategy: use the TEMPLATE as the safe base, extract AI's custom colors,
-    // merge them into the template. This catches ALL CSS errors — present and future.
+    // ── CSS FIX: Ensure Tailwind 3 directives are present ──
     if (filename === 'src/index.css') {
-      content = fixIndexCss(content);
+      // TW4 syntax → convert to TW3
+      if (content.includes('@import "tailwindcss"')) {
+        content = content.replace('@import "tailwindcss";', '@tailwind base;\n@tailwind components;\n@tailwind utilities;');
+      }
+      // Remove @theme blocks (TW4 only)
+      content = content.replace(/@theme\s*\{[\s\S]*?\n\}/g, '');
+      // Remove theme() function calls (TW4 only)
+      content = content.replace(/theme\(colors\.([a-zA-Z.-]+)\)/g, 'hsl(var(--$1))');
+      content = content.replace(/theme\(([^)]+)\)/g, '/* $1 */');
+      // Ensure @tailwind directives exist
+      if (!content.includes('@tailwind base')) {
+        content = '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n' + content;
+      }
+      // Ensure :root with HSL variables exists
+      if (!content.includes('--background:') && !content.includes('--primary:')) {
+        // Use template index.css as base
+        const templateCss = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
+        if (fs.existsSync(templateCss)) {
+          content = fs.readFileSync(templateCss, 'utf8');
+          console.log(`[WriteFiles] Replaced index.css with Tailwind 3 template`);
+        }
+      }
     }
 
     // AUTO-FIX: Convert ESM imports to CommonJS in server.js
@@ -6760,7 +6730,7 @@ RUN npm install \
   vite@6.3.5 @vitejs/plugin-react@4.5.2 \
   react@19.1.0 react-dom@19.1.0 react-router-dom@7.6.1 \
   lucide-react@0.511.0 clsx@2.1.1 tailwind-merge@3.3.0 \
-  tailwindcss@4.1.7 @tailwindcss/vite@4.1.7 \
+  tailwindcss@3.4.17 postcss@8.5.3 autoprefixer@10.4.21 \
   @radix-ui/react-dialog@1.1.14 @radix-ui/react-dropdown-menu@2.1.15 \
   @radix-ui/react-tabs@1.1.12 @radix-ui/react-accordion@1.2.11 \
   @radix-ui/react-tooltip@1.1.18 @radix-ui/react-popover@1.1.14 \
