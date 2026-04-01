@@ -3601,7 +3601,52 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       content = content.replace(/app\.listen\(\s*(?:PORT|port|3000)\s*,\s*\(\)/g, "app.listen(PORT, '0.0.0.0', ()");
     }
 
-    // ALWAYS push to WebContainer via SSE (even protected/canonical files — WC needs ALL files)
+    // ── UNIVERSAL TSX FIX: catch all common AI errors in components/pages ──
+    if (filename.endsWith('.tsx') || filename.endsWith('.jsx')) {
+      // Fix picsum.photos without seed (random images)
+      content = content.replace(/https:\/\/picsum\.photos\/(\d+)\/(\d+)/g, (match, w, h) => {
+        // Already has seed? Keep it
+        if (match.includes('/seed/')) return match;
+        // Generate a seed from context (filename + dimensions)
+        const seed = filename.replace(/[^a-zA-Z0-9]/g, '-').replace(/\.tsx$|\.jsx$/, '') + '-' + w + 'x' + h;
+        return `https://picsum.photos/seed/${seed}/${w}/${h}`;
+      });
+
+      // Fix duplicate imports (AI sometimes adds same import twice)
+      const importLines = content.match(/^import .+$/gm) || [];
+      const seen = new Set();
+      const deduped = [];
+      for (const line of importLines) {
+        if (!seen.has(line)) { seen.add(line); deduped.push(line); }
+      }
+      if (importLines.length !== deduped.length) {
+        for (const line of importLines) {
+          if (!deduped.includes(line)) {
+            content = content.replace(line + '\n', '');
+          }
+        }
+        // Remove the first occurrence of duplicates (keep the deduped ones)
+        const uniqueImports = new Set();
+        content = content.replace(/^import .+$/gm, (match) => {
+          if (uniqueImports.has(match)) return ''; // remove duplicate
+          uniqueImports.add(match);
+          return match;
+        });
+        content = content.replace(/\n{3,}/g, '\n\n');
+        console.log(`[WriteFiles] Removed duplicate imports from ${filename}`);
+      }
+
+      // Fix missing export default (AI sometimes forgets)
+      if (!content.includes('export default') && !content.includes('export {')) {
+        const funcMatch = content.match(/^function (\w+)/m);
+        if (funcMatch) {
+          content = content.replace(`function ${funcMatch[1]}`, `export default function ${funcMatch[1]}`);
+          console.log(`[WriteFiles] Added missing export default to ${filename}`);
+        }
+      }
+    }
+
+    // ALWAYS push via SSE
     if (projectId) {
       notifyProjectClients(projectId, 'file_written', { path: filename, content });
     }
@@ -3669,7 +3714,7 @@ AVANT de générer le code, crée automatiquement du contenu contextuel adapté 
 - Des noms fictifs réalistes pour l'équipe (avec titres et courtes bios)
 - Des prix et tarifs cohérents avec le marché français
 - 3-5 témoignages clients convaincants et réalistes
-- Utilise https://picsum.photos/WIDTH/HEIGHT pour les images placeholder (ex: https://picsum.photos/800/600)
+- Images : TOUJOURS https://picsum.photos/seed/DESCRIPTIF/WIDTH/HEIGHT (avec seed pour image fixe)
 
 RÈGLE ABSOLUE : Zéro "Lorem ipsum" — tout le contenu doit être réaliste et contextuel.`;
 

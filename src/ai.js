@@ -1250,6 +1250,36 @@ function runBackTests(files) {
     issues.push({ file: 'src/index.css', issue: 'APPLY_CUSTOM', message: 'Uses @apply with @theme classes — not supported in Tailwind 4. Use the class directly in className.' });
   }
 
+  // Test 13: picsum.photos without seed (random images on refresh)
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const randomPicsum = (content.match(/picsum\.photos\/\d+\/\d+/g) || []).filter(u => !u.includes('seed'));
+    if (randomPicsum.length > 0) {
+      issues.push({ file: fn, issue: 'RANDOM_IMAGES', message: `${randomPicsum.length} image(s) picsum sans seed — change to picsum.photos/seed/descriptif/W/H` });
+    }
+  }
+
+  // Test 14: Duplicate imports in any file
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const imports = content.match(/^import .+$/gm) || [];
+    const unique = new Set(imports);
+    if (imports.length !== unique.size) {
+      issues.push({ file: fn, issue: 'DUPLICATE_IMPORTS', message: `${imports.length - unique.size} import(s) en double` });
+    }
+  }
+
+  // Test 15: Component without export default
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/') || fn === 'src/main.tsx') continue;
+    if (!content.includes('export default') && !content.includes('export {')) {
+      issues.push({ file: fn, issue: 'NO_EXPORT', message: 'Missing export default — component will not render' });
+    }
+  }
+
   return issues;
 }
 
