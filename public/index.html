@@ -1456,7 +1456,7 @@ function closeErrorConsole() { document.getElementById('error-console').classLis
 // ═══════════════════════════════════════════════════════════════════════════
 // DOCKER CONTAINER LOGS
 // ═══════════════════════════════════════════════════════════════════════════
-let logsPollingInterval = null;
+var logsPollingInterval = null;
 
 async function refreshLogs() {
   if (!currentProject) return;
@@ -2012,7 +2012,7 @@ async function saveCustomDomain() {
 // SSE COLLABORATION
 // ═══════════════════════════════════════════════════════════════════════════
 // SSE: Real-time file streaming (Lovable-style live interaction)
-let _liveFilesDiv = null; // The chat div showing live file list during generation
+var _liveFilesDiv = null; // The chat div showing live file list during generation
 
 function connectProjectSSE(projectId) {
   if (projectSSE) projectSSE.close();
