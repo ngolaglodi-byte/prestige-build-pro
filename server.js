@@ -3204,6 +3204,137 @@ function buildProjectStructure(code) {
   return structure;
 }
 
+// ─── UNIVERSAL INDEX.CSS FIX ───
+// Guarantees index.css works with Tailwind 4 no matter what the AI generates.
+// Uses the template as the safe base, extracts AI's custom colors, merges them.
+function fixIndexCss(content) {
+  // Read the template index.css (the safe, tested version)
+  const templatePath = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
+  const templateCss = fs.existsSync(templatePath) ? fs.readFileSync(templatePath, 'utf8') : '';
+
+  // 1. Ensure @import "tailwindcss" is present
+  if (!content.includes('@import "tailwindcss"')) {
+    content = '@import "tailwindcss";\n\n' + content;
+  }
+
+  // 2. Remove ALL Tailwind 3 incompatible syntax
+  // theme() function — not supported in v4
+  content = content.replace(/theme\(colors\.([a-zA-Z.-]+)\)/g, 'var(--color-$1)');
+  content = content.replace(/theme\(spacing\.([a-zA-Z0-9.-]+)\)/g, '$1rem');
+  content = content.replace(/theme\(([^)]+)\)/g, '/* theme($1) removed — use var() */');
+
+  // @apply with @theme classes — not supported in v4
+  content = content.replace(/@apply\s+[^;]*(?:border-border|bg-background|text-foreground|ring-ring|bg-muted|text-muted-foreground|bg-card|bg-popover|bg-destructive)[^;]*;/g,
+    (match) => '/* ' + match.trim() + ' — use className instead */');
+
+  // @screen — replaced by @media in v4
+  content = content.replace(/@screen\s+(\w+)/g, '@media (min-width: theme(--breakpoint-$1))');
+
+  // @variants — not needed in v4
+  content = content.replace(/@variants\s+[^{]+\{([^}]*)\}/g, '$1');
+
+  // 3. Extract AI's custom :root colors (the creative part we want to keep)
+  const aiColors = {};
+  const rootMatch = content.match(/:root\s*\{([^}]+)\}/);
+  if (rootMatch) {
+    const rootContent = rootMatch[1];
+    const varMatches = rootContent.match(/--[\w-]+:\s*[^;]+/g) || [];
+    for (const v of varMatches) {
+      const [name, ...valueParts] = v.split(':');
+      const value = valueParts.join(':').trim();
+      if (name && value) aiColors[name.trim()] = value;
+    }
+  }
+
+  // Also extract .dark colors
+  const aiDarkColors = {};
+  const darkMatch = content.match(/\.dark\s*\{([^}]+)\}/);
+  if (darkMatch) {
+    const darkContent = darkMatch[1];
+    const varMatches = darkContent.match(/--[\w-]+:\s*[^;]+/g) || [];
+    for (const v of varMatches) {
+      const [name, ...valueParts] = v.split(':');
+      const value = valueParts.join(':').trim();
+      if (name && value) aiDarkColors[name.trim()] = value;
+    }
+  }
+
+  // 4. Extract AI's custom CSS rules (animations, fonts, scrollbar, etc.)
+  const aiCustomRules = [];
+  const rulePattern = /(?:^|\n)((?:@keyframes|@font-face|@import url|body|html|h[1-6]|\*|::[\w-]+|::-webkit-[\w-]+|\.[a-z][\w-]*)[^{]*\{[^}]*\})/g;
+  let ruleMatch;
+  while ((ruleMatch = rulePattern.exec(content)) !== null) {
+    const rule = ruleMatch[1].trim();
+    if (!rule.includes(':root') && !rule.includes('.dark') && !rule.includes('@import "tailwindcss"') && !rule.includes('@theme')) {
+      aiCustomRules.push(rule);
+    }
+  }
+
+  // 5. Build the final CSS from template + AI colors + AI rules
+  let finalCss = templateCss;
+
+  // Merge AI colors into template :root (AI's colors override template defaults)
+  if (Object.keys(aiColors).length > 0) {
+    // Rename conflicting vars: --color-primary → --color-primary-val
+    const renameMap = {
+      '--color-primary': '--color-primary-val',
+      '--color-secondary': '--color-secondary-val',
+      '--color-accent': '--color-accent-val',
+      '--color-background': '--color-bg',
+      '--color-text-muted': '--color-text-muted-val',
+      '--color-border': '--color-border-val',
+      '--color-error': '--color-error-val',
+      '--color-success': '--color-success-val',
+      '--color-warning': '--color-warning-val',
+    };
+    const renamedColors = {};
+    for (const [k, v] of Object.entries(aiColors)) {
+      const newName = renameMap[k] || k;
+      renamedColors[newName] = v;
+    }
+
+    // Replace :root in template with merged colors
+    const templateRootMatch = finalCss.match(/:root\s*\{([^}]+)\}/);
+    if (templateRootMatch) {
+      // Parse template :root vars
+      const templateVars = {};
+      const tvMatches = templateRootMatch[1].match(/--[\w-]+:\s*[^;]+/g) || [];
+      for (const v of tvMatches) {
+        const [name, ...vp] = v.split(':');
+        templateVars[name.trim()] = vp.join(':').trim();
+      }
+      // Merge: AI overrides template
+      const merged = { ...templateVars, ...renamedColors };
+      const mergedStr = Object.entries(merged).map(([k, v]) => `  ${k}: ${v};`).join('\n');
+      finalCss = finalCss.replace(/:root\s*\{[^}]+\}/, `:root {\n${mergedStr}\n}`);
+    }
+  }
+
+  // Merge AI dark mode colors
+  if (Object.keys(aiDarkColors).length > 0) {
+    const renameMap = { '--color-primary': '--color-primary-val', '--color-secondary': '--color-secondary-val', '--color-accent': '--color-accent-val', '--color-background': '--color-bg', '--color-text-muted': '--color-text-muted-val', '--color-border': '--color-border-val', '--color-error': '--color-error-val', '--color-success': '--color-success-val', '--color-warning': '--color-warning-val' };
+    const renamedDark = {};
+    for (const [k, v] of Object.entries(aiDarkColors)) { renamedDark[renameMap[k] || k] = v; }
+    const templateDarkMatch = finalCss.match(/\.dark\s*\{([^}]+)\}/);
+    if (templateDarkMatch) {
+      const templateDarkVars = {};
+      const tdm = templateDarkMatch[1].match(/--[\w-]+:\s*[^;]+/g) || [];
+      for (const v of tdm) { const [name, ...vp] = v.split(':'); templateDarkVars[name.trim()] = vp.join(':').trim(); }
+      const mergedDark = { ...templateDarkVars, ...renamedDark };
+      const mergedDarkStr = Object.entries(mergedDark).map(([k, v]) => `  ${k}: ${v};`).join('\n');
+      finalCss = finalCss.replace(/\.dark\s*\{[^}]+\}/, `.dark {\n${mergedDarkStr}\n}`);
+    }
+  }
+
+  // Append AI's custom rules (animations, fonts, scrollbar, etc.)
+  if (aiCustomRules.length > 0) {
+    finalCss += '\n\n/* ── Custom styles ── */\n' + aiCustomRules.join('\n\n');
+  }
+
+  console.log(`[fixIndexCss] Merged ${Object.keys(aiColors).length} colors + ${aiCustomRules.length} custom rules into template`);
+  return finalCss;
+}
+
 // ─── DIFF-BASED MODIFICATION SUPPORT ───
 // Apply SEARCH/REPLACE diffs to existing files (like Claude Code's edit format)
 // Format: ### DIFF filename\n<<<< SEARCH\nold code\n==== REPLACE\nnew code\n>>>>
@@ -3428,73 +3559,11 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     content = cleanGeneratedContent(content);
     if (!content) continue;
 
-    // Ensure index.css always has @import "tailwindcss" AND @theme block
-    // Without @theme, Tailwind 4 classes (bg-background, border-border, etc.) are unknown → white page
+    // ── UNIVERSAL CSS FIX: Guarantee index.css works with Tailwind 4 ──
+    // Strategy: use the TEMPLATE as the safe base, extract AI's custom colors,
+    // merge them into the template. This catches ALL CSS errors — present and future.
     if (filename === 'src/index.css') {
-      if (!content.includes('@import "tailwindcss"')) {
-        content = '@import "tailwindcss";\n\n' + content;
-      }
-      if (!content.includes('@theme')) {
-        // Inject the @theme block right after @import "tailwindcss"
-        const themeBlock = `
-@theme {
-  --color-background: var(--color-bg, #ffffff);
-  --color-foreground: var(--color-text, #0f172a);
-  --color-card: var(--color-surface, #f8fafc);
-  --color-card-foreground: var(--color-text, #0f172a);
-  --color-popover: var(--color-surface, #f8fafc);
-  --color-popover-foreground: var(--color-text, #0f172a);
-  --color-primary: var(--color-primary-val, #2563eb);
-  --color-primary-foreground: #ffffff;
-  --color-secondary: var(--color-secondary-val, #f1f5f9);
-  --color-secondary-foreground: var(--color-text, #0f172a);
-  --color-muted: var(--color-surface, #f8fafc);
-  --color-muted-foreground: var(--color-text-muted-val, #64748b);
-  --color-accent: var(--color-surface, #f8fafc);
-  --color-accent-foreground: var(--color-text, #0f172a);
-  --color-destructive: var(--color-error-val, #dc2626);
-  --color-destructive-foreground: #ffffff;
-  --color-border: var(--color-border-val, #e2e8f0);
-  --color-input: var(--color-border-val, #e2e8f0);
-  --color-ring: var(--color-primary-val, #2563eb);
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
-}`;
-        content = content.replace('@import "tailwindcss";', '@import "tailwindcss";\n' + themeBlock);
-        console.log(`[WriteFiles] Auto-injected @theme block into index.css`);
-      }
-      // Also ensure :root uses the correct variable names (not --color-primary but --color-primary-val)
-      if (content.includes('--color-primary:') && !content.includes('--color-primary-val:')) {
-        content = content.replace(/--color-primary:\s*/g, '--color-primary-val: ');
-        content = content.replace(/--color-secondary:\s*/g, '--color-secondary-val: ');
-        content = content.replace(/--color-accent:\s*/g, '--color-accent-val: ');
-        content = content.replace(/--color-background:\s*/g, '--color-bg: ');
-        content = content.replace(/--color-text-muted:\s*/g, '--color-text-muted-val: ');
-        content = content.replace(/--color-border:\s*/g, '--color-border-val: ');
-        content = content.replace(/--color-error:\s*/g, '--color-error-val: ');
-        content = content.replace(/--color-success:\s*/g, '--color-success-val: ');
-        content = content.replace(/--color-warning:\s*/g, '--color-warning-val: ');
-        console.log(`[WriteFiles] Auto-renamed CSS vars to avoid @theme conflict`);
-      }
-      // Remove theme() function calls — Tailwind 4 doesn't support theme(colors.xxx)
-      // AI generates theme(colors.muted) etc from Tailwind 3 docs
-      if (content.includes('theme(')) {
-        content = content.replace(/theme\(colors\.([a-zA-Z-]+)\)/g, 'var(--color-$1)');
-        content = content.replace(/theme\(([^)]+)\)/g, '/* $1 */');
-        console.log(`[WriteFiles] Removed theme() function calls from index.css`);
-      }
-      // Remove @apply with unknown utilities — common Tailwind 3 pattern
-      if (content.includes('@apply')) {
-        content = content.replace(/@apply\s+[^;]*;/g, (match) => {
-          // Keep simple known utilities, remove complex unknown ones
-          if (/border-border|bg-background|text-foreground|ring-ring/.test(match)) {
-            return '/* ' + match + ' */';
-          }
-          return match;
-        });
-      }
+      content = fixIndexCss(content);
     }
 
     // AUTO-FIX: Convert ESM imports to CommonJS in server.js
