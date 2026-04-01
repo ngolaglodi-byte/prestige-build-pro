@@ -1454,27 +1454,41 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 const CODE_TOOLS = [
   {
     name: 'write_file',
-    description: 'Create or overwrite a file in the project. Use for new files or when most of the file changes.',
+    description: 'Create or overwrite a file. For modifications, use "// ... keep existing code" to skip unchanged sections (>5 lines). The server will merge with the existing file. Example:\nimport React from "react";\n// ... keep existing code\nexport default function App() {\n  return <div>NEW CONTENT</div>;\n}\nThis saves tokens — only send the changed parts.',
     input_schema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path relative to project root (e.g. src/components/Header.tsx)' },
-        content: { type: 'string', description: 'Complete file content' }
+        content: { type: 'string', description: 'File content. Use "// ... keep existing code" for unchanged sections.' }
       },
       required: ['path', 'content']
     }
   },
   {
     name: 'edit_file',
-    description: 'Make a surgical edit to an existing file. Use for small changes (color, text, fix). More efficient than rewriting the whole file.',
+    description: 'Search and replace text in a file. For small changes (color, text, name). The search is fuzzy — whitespace differences are tolerated.',
     input_schema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path relative to project root' },
-        search: { type: 'string', description: 'Exact text to find (must match existing code exactly)' },
+        search: { type: 'string', description: 'Text to find (whitespace-tolerant)' },
         replace: { type: 'string', description: 'Text to replace it with' }
       },
       required: ['path', 'search', 'replace']
+    }
+  },
+  {
+    name: 'line_replace',
+    description: 'Replace lines by line number range. Most precise edit tool — use when you know exactly which lines to change.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path relative to project root' },
+        start_line: { type: 'number', description: 'First line to replace (1-based)' },
+        end_line: { type: 'number', description: 'Last line to replace (inclusive)' },
+        new_content: { type: 'string', description: 'New content to insert (replaces lines start_line through end_line)' }
+      },
+      required: ['path', 'start_line', 'end_line', 'new_content']
     }
   }
   ,
@@ -2034,9 +2048,29 @@ function parseToolResponse(response) {
         if (PROTECTED_FILES.has(block.input.path) || block.input.path.startsWith('src/components/ui/') || block.input.path.startsWith('src/lib/') || block.input.path.startsWith('src/hooks/')) {
           console.log(`[Tool] Blocked write to canonical file: ${block.input.path}`);
         } else {
-          const cleanContent = cleanGeneratedContent(block.input.content);
-          if (cleanContent) { result.files[block.input.path] = cleanContent; }
+          let newContent = cleanGeneratedContent(block.input.content);
+          // ── LOVABLE-STYLE ELLIPSIS MERGE ──
+          // If content has "// ... keep existing code", merge with existing file
+          if (newContent && newContent.includes('// ... keep existing code')) {
+            const projDir = trackingInfo?.projectId ? path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId)) : null;
+            const existingPath = projDir ? path.join(projDir, block.input.path) : null;
+            if (existingPath && fs.existsSync(existingPath)) {
+              const existing = fs.readFileSync(existingPath, 'utf8');
+              newContent = mergeEllipsis(existing, newContent);
+              console.log(`[Tool] Merged ellipsis write for ${block.input.path}`);
+            }
+          }
+          if (newContent) { result.files[block.input.path] = newContent; }
         }
+      } else if (block.name === 'line_replace' && block.input?.path && block.input?.start_line && block.input?.new_content) {
+        // Line-number based replace (like Lovable lov-line-replace)
+        result.edits.push({
+          path: block.input.path,
+          lineReplace: true,
+          startLine: block.input.start_line,
+          endLine: block.input.end_line || block.input.start_line,
+          newContent: block.input.new_content
+        });
       } else if (block.name === 'edit_file' && block.input?.path && block.input?.search) {
         result.edits.push({
           path: block.input.path,
@@ -2066,6 +2100,51 @@ function toolResponseToCode(parsed) {
 }
 
 // Apply edit_file operations to existing project files on disk
+// ── LOVABLE-STYLE ELLIPSIS MERGE ──
+// Merges new content with "// ... keep existing code" markers against the existing file.
+// This allows the AI to send ONLY the changed parts, saving tokens.
+function mergeEllipsis(existing, partial) {
+  const existingLines = existing.split('\n');
+  const partialLines = partial.split('\n');
+  const result = [];
+  let existingIdx = 0;
+
+  for (let i = 0; i < partialLines.length; i++) {
+    const line = partialLines[i];
+    if (line.trim() === '// ... keep existing code' || line.trim() === '/* ... keep existing code */') {
+      // Find where to resume: look at the NEXT non-ellipsis line in partial
+      let nextPartialLine = null;
+      for (let j = i + 1; j < partialLines.length; j++) {
+        if (partialLines[j].trim() !== '// ... keep existing code' && partialLines[j].trim() !== '/* ... keep existing code */' && partialLines[j].trim()) {
+          nextPartialLine = partialLines[j].trim();
+          break;
+        }
+      }
+      // Copy existing lines until we find the next partial line
+      if (nextPartialLine) {
+        while (existingIdx < existingLines.length) {
+          if (existingLines[existingIdx].trim() === nextPartialLine) break;
+          result.push(existingLines[existingIdx]);
+          existingIdx++;
+        }
+      } else {
+        // Last ellipsis — copy rest of existing file
+        while (existingIdx < existingLines.length) {
+          result.push(existingLines[existingIdx]);
+          existingIdx++;
+        }
+      }
+    } else {
+      result.push(line);
+      // Advance existingIdx to stay in sync
+      if (existingIdx < existingLines.length && existingLines[existingIdx].trim() === line.trim()) {
+        existingIdx++;
+      }
+    }
+  }
+  return result.join('\n');
+}
+
 function applyToolEdits(projectDir, edits) {
   let applied = 0;
   let failed = 0;
@@ -2081,6 +2160,19 @@ function applyToolEdits(projectDir, edits) {
     }
     let content = fs.readFileSync(filePath, 'utf8');
     let matched = false;
+
+    // LINE REPLACE (like Lovable lov-line-replace) — replace by line numbers
+    if (edit.lineReplace) {
+      const lines = content.split('\n');
+      const start = Math.max(0, edit.startLine - 1); // 1-based to 0-based
+      const end = Math.min(lines.length, edit.endLine); // inclusive
+      lines.splice(start, end - start, edit.newContent);
+      content = lines.join('\n');
+      fs.writeFileSync(filePath, content);
+      applied++;
+      console.log(`[ToolEdit] Line replace ${edit.startLine}-${edit.endLine} on ${edit.path}`);
+      continue;
+    }
 
     // Level 1: Exact match
     if (content.includes(edit.search)) {
@@ -3965,7 +4057,14 @@ Règles d'intégration automatique :
               if (currentToolName === 'write_file' && input.path && input.content && job.project_id) {
                 job.progressMessage = `${input.path}`;
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-                const cleanContent = cleanGeneratedContent(input.content);
+                let cleanContent = cleanGeneratedContent(input.content);
+                // Lovable-style ellipsis merge
+                if (cleanContent && cleanContent.includes('// ... keep existing code')) {
+                  const existingPath = path.join(projDir, input.path);
+                  if (fs.existsSync(existingPath)) {
+                    cleanContent = mergeEllipsis(fs.readFileSync(existingPath, 'utf8'), cleanContent);
+                  }
+                }
                 const CANONICAL_TEMPLATES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
                 const isProtected = PROTECTED_FILES.has(input.path) || input.path.startsWith('src/components/ui/') || CANONICAL_TEMPLATES.has(input.path);
 
@@ -3998,6 +4097,19 @@ Règles d'intégration automatique :
                     fs.writeFileSync(filePath, content);
                     try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
                   }
+                }
+              } else if (currentToolName === 'line_replace' && input.path && input.start_line && input.new_content && job.project_id) {
+                job.progressMessage = `Modifie: ${input.path} L${input.start_line}`;
+                notifyProjectClients(job.project_id, 'file_edited', { path: input.path, lineReplace: true, startLine: input.start_line, endLine: input.end_line });
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                const filePath = path.join(projDir, input.path);
+                if (fs.existsSync(filePath)) {
+                  const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+                  const start = Math.max(0, input.start_line - 1);
+                  const end = Math.min(lines.length, input.end_line || input.start_line);
+                  lines.splice(start, end - start, input.new_content);
+                  fs.writeFileSync(filePath, lines.join('\n'));
+                  try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
                 }
               } else if (currentToolName === 'write_file' && input.path) {
                 job.progressMessage = `Fichier: ${input.path}`;
