@@ -7871,6 +7871,41 @@ export default defineConfig({
     }
     return;
   }
+  // ─── UNPUBLISH: Retirer un site publie ───
+  if (url.match(/^\/api\/projects\/\d+\/unpublish$/) && req.method==='POST') {
+    if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
+    const id=parseInt(url.split('/')[3]);
+    const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
+    if (!p.is_published) { json(res,400,{error:'Ce projet n\'est pas publié.'}); return; }
+
+    try {
+      // 1. Remove static site files
+      if (p.subdomain) {
+        const siteDir = path.join(SITES_DIR, p.subdomain.replace(/[^a-zA-Z0-9-]/g, ''));
+        if (fs.existsSync(siteDir)) {
+          fs.rmSync(siteDir, { recursive: true, force: true });
+          console.log(`[Unpublish] Removed site files: ${siteDir}`);
+        }
+      }
+
+      // 2. Stop production container
+      try {
+        await stopContainerAsync(id);
+        console.log(`[Unpublish] Stopped container pbp-project-${id}`);
+      } catch (e) { /* container might not exist */ }
+
+      // 3. Update DB — back to ready (not published)
+      db.prepare("UPDATE projects SET is_published=0, status='ready', updated_at=datetime('now') WHERE id=?").run(id);
+      db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id, `Projet "${p.title}" retiré de la publication.`, 'info');
+
+      console.log(`[Unpublish] Project ${id} unpublished`);
+      json(res, 200, { ok: true, message: `Le site ${p.subdomain}.${PUBLISH_DOMAIN} a été retiré.` });
+    } catch (e) {
+      json(res, 500, { error: 'Erreur: ' + e.message });
+    }
+    return;
+  }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='DELETE') {
     if (user.role!=='admin') { json(res,403,{error:'Interdit.'}); return; }
     const id=parseInt(url.split('/').pop());
