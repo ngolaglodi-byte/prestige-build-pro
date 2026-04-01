@@ -6509,6 +6509,25 @@ const server = http.createServer(async (req, res) => {
       if (project && project.subdomain) {
         const siteDir = path.join(SITES_DIR, project.subdomain.replace(/[^a-zA-Z0-9-]/g, ''));
         if (fs.existsSync(siteDir)) {
+          // API proxy for custom domains (same as subdomain proxy)
+          if (url.startsWith('/api/') || url === '/health') {
+            const containerHost = getContainerHostname(project.id);
+            const proxyReq = http.request({
+              hostname: containerHost, port: 3000, path: req.url, method: req.method,
+              headers: { ...req.headers, host: `${containerHost}:3000` }, timeout: 15000
+            }, (proxyRes) => {
+              const headers = { ...proxyRes.headers };
+              headers['access-control-allow-origin'] = `https://${host}`;
+              headers['access-control-allow-methods'] = 'GET,POST,PUT,DELETE,OPTIONS';
+              headers['access-control-allow-headers'] = 'Content-Type,Authorization';
+              res.writeHead(proxyRes.statusCode, headers);
+              proxyRes.pipe(res);
+            });
+            proxyReq.on('error', () => { if (!res.headersSent) json(res, 503, { error: 'Backend indisponible.' }); });
+            if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(proxyReq);
+            else proxyReq.end();
+            return;
+          }
           let filePath = path.join(siteDir, url === '/' ? 'index.html' : url);
           if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) filePath = path.join(filePath, 'index.html');
           if (fs.existsSync(filePath) && isPathSafe(siteDir, filePath)) {
@@ -6594,7 +6613,35 @@ const server = http.createServer(async (req, res) => {
     if (subdomain) {
       const siteDir = path.join(SITES_DIR, subdomain);
       if (fs.existsSync(siteDir)) {
-        // Serve published site static files
+        // ── API PROXY: route /api/* and /health to the production container ──
+        // The container runs Express only (no Vite) serving the backend
+        if (url.startsWith('/api/') || url === '/health') {
+          const project = db ? db.prepare('SELECT id FROM projects WHERE subdomain=? AND is_published=1').get(subdomain) : null;
+          if (project) {
+            const containerHost = getContainerHostname(project.id);
+            const proxyReq = http.request({
+              hostname: containerHost, port: 3000, path: req.url, method: req.method,
+              headers: { ...req.headers, host: `${containerHost}:3000` }, timeout: 15000
+            }, (proxyRes) => {
+              // Add CORS for the published domain
+              const headers = { ...proxyRes.headers };
+              headers['access-control-allow-origin'] = `https://${subdomain}.${PUBLISH_DOMAIN}`;
+              headers['access-control-allow-methods'] = 'GET,POST,PUT,DELETE,OPTIONS';
+              headers['access-control-allow-headers'] = 'Content-Type,Authorization';
+              res.writeHead(proxyRes.statusCode, headers);
+              proxyRes.pipe(res);
+            });
+            proxyReq.on('error', () => {
+              if (!res.headersSent) json(res, 503, { error: 'Backend temporairement indisponible.' });
+            });
+            proxyReq.on('timeout', () => { proxyReq.destroy(); if (!res.headersSent) json(res, 504, { error: 'Timeout backend.' }); });
+            if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(proxyReq);
+            else proxyReq.end();
+            return;
+          }
+        }
+
+        // Serve published site static files (dist/ compiled by Vite)
         let filePath = path.join(siteDir, url === '/' ? 'index.html' : url);
         // Directory → index.html
         if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
@@ -7702,6 +7749,73 @@ export default defineConfig({
       };
       copyRecursive(previewDir, siteDir);
       
+      // ── PRODUCTION MODE: Switch container from dev (Vite+Express) to prod (Express only) ──
+      // This makes the published site stable: Express serves dist/ + API, no Vite dev server
+      try {
+        const containerName = getContainerName(id);
+        const projectDir = path.join(DOCKER_PROJECTS_DIR, String(id));
+        const dataDir = path.join(projectDir, 'data');
+
+        // Copy dist/ into the project directory (for the bind mount)
+        const localDist = path.join(projectDir, 'dist');
+        if (fs.existsSync(path.join(siteDir, 'assets'))) {
+          // Copy compiled dist back to project dir so container can serve it
+          if (!fs.existsSync(localDist)) fs.mkdirSync(localDist, { recursive: true });
+          const copyDir = (s, d) => {
+            fs.mkdirSync(d, { recursive: true });
+            for (const f of fs.readdirSync(s, { withFileTypes: true })) {
+              if (f.isDirectory()) copyDir(path.join(s, f.name), path.join(d, f.name));
+              else fs.copyFileSync(path.join(s, f.name), path.join(d, f.name));
+            }
+          };
+          copyDir(siteDir, localDist);
+        }
+
+        // Recreate container in PRODUCTION mode (Express only, no Vite)
+        await stopContainerAsync(id);
+        await ensureDockerNetwork();
+        const jwtSecret = crypto.randomBytes(32).toString('hex');
+
+        // Load project API keys
+        const projKeys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(id);
+        const envVars = [
+          `PORT=3000`,
+          `JWT_SECRET=${jwtSecret}`,
+          `NODE_ENV=production`,
+          `NODE_OPTIONS=--max-old-space-size=128`
+        ];
+        projKeys.forEach(k => envVars.push(`${k.env_name}=${decryptValue(k.env_value)}`));
+
+        const readyImage = READY_IMAGE;
+        try { await docker.getImage(readyImage).inspect(); } catch { /* use whatever is available */ }
+
+        const prodContainer = await docker.createContainer({
+          Image: readyImage,
+          name: containerName,
+          Env: envVars,
+          // PRODUCTION: only Express (serves dist/ + API), NO Vite
+          Cmd: ['sh', '-c', 'cp server.js server.cjs 2>/dev/null; node server.cjs'],
+          HostConfig: {
+            NetworkMode: DOCKER_NETWORK,
+            RestartPolicy: { Name: 'always' }, // always restart in production
+            Binds: [
+              `${dataDir}:/app/data`,
+              `${projectDir}/src:/app/src`,
+              `${projectDir}/server.js:/app/server.js`,
+              `${projectDir}/index.html:/app/index.html`,
+              `${localDist}:/app/dist`
+            ],
+            Memory: 128 * 1024 * 1024, // 128MB (production is lighter)
+            NanoCpus: 250000000, // 0.25 CPU
+            SecurityOpt: ['no-new-privileges']
+          }
+        });
+        await prodContainer.start();
+        console.log(`[Publish] Production container started for project ${id} (Express only, 128MB)`);
+      } catch (prodErr) {
+        console.warn(`[Publish] Production container failed: ${prodErr.message} — site still serves static files`);
+      }
+
       // Update project status
       db.prepare("UPDATE projects SET is_published=1,status='published',subdomain=?,updated_at=datetime('now') WHERE id=?").run(safeSubdomain, id);
       db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id,`Projet "${p.title}" publié sur ${safeSubdomain}.${PUBLISH_DOMAIN} !`,'success');
