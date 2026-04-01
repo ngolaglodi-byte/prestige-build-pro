@@ -3259,16 +3259,11 @@ function fixIndexCss(content) {
     }
   }
 
-  // 4. Extract AI's custom CSS rules (animations, fonts, scrollbar, etc.)
+  // 4. Extract ONLY safe custom rules (font imports, NOT @keyframes/body/etc.)
+  // @keyframes have nested {} which break regex extraction → use template animations instead
   const aiCustomRules = [];
-  const rulePattern = /(?:^|\n)((?:@keyframes|@font-face|@import url|body|html|h[1-6]|\*|::[\w-]+|::-webkit-[\w-]+|\.[a-z][\w-]*)[^{]*\{[^}]*\})/g;
-  let ruleMatch;
-  while ((ruleMatch = rulePattern.exec(content)) !== null) {
-    const rule = ruleMatch[1].trim();
-    if (!rule.includes(':root') && !rule.includes('.dark') && !rule.includes('@import "tailwindcss"') && !rule.includes('@theme')) {
-      aiCustomRules.push(rule);
-    }
-  }
+  const fontImports = content.match(/@import url\([^)]+\)\s*;/g) || [];
+  for (const fi of fontImports) { aiCustomRules.push(fi); }
 
   // 5. Build the final CSS from template + AI colors + AI rules
   let finalCss = templateCss;
