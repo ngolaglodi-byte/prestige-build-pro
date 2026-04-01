@@ -6721,6 +6721,17 @@ const server = http.createServer(async (req, res) => {
     // Track access for auto-sleep
     containerLastAccess.set(projectId, Date.now());
 
+    // Auto-fix CSS on first access (fixes projects created before the fix)
+    const cssPath = path.join(DOCKER_PROJECTS_DIR, String(projectId), 'src', 'index.css');
+    if (fs.existsSync(cssPath)) {
+      const css = fs.readFileSync(cssPath, 'utf8');
+      if (css.includes('theme(') || !css.includes('@theme') || /@keyframes[^{]*\{[^}]*\{/.test(css)) {
+        const fixed = fixIndexCss(css);
+        fs.writeFileSync(cssPath, fixed);
+        console.log(`[AutoFix] Fixed index.css for project ${projectId} on access`);
+      }
+    }
+
     // Wake container if sleeping
     const running = await isContainerRunningAsync(projectId);
     if (!running) {
