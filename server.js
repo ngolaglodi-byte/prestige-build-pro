@@ -951,7 +951,7 @@ export default defineConfig({
 - Design professionnel TailwindCSS, responsive mobile-first
 - Contenu réel adapté au secteur, zéro lorem ipsum
 - Animations Tailwind (transition, hover:, group-hover:)
-- Images via picsum.photos
+- Images : TOUJOURS picsum.photos/seed/DESCRIPTIF/W/H (avec seed pour image fixe, jamais picsum.photos/W/H sans seed)
 - Toutes les pages fonctionnelles
 - Données de démo réalistes dans SQLite
 
@@ -2415,10 +2415,13 @@ Génère ces fichiers :
 ### src/pages/Home.tsx — Page d'accueil COMPLÈTE avec TOUTES ces sections visibles en scrollant :
   1. Hero plein écran : grand titre, sous-titre, 2 boutons CTA (<Button asChild><Link to="...">)
   2. Services/produits : 3-6 cartes avec icônes lucide-react (données EN DUR dans un const)
-  3. À propos résumé : texte + image picsum.photos
+  3. À propos résumé : texte + image
   4. Témoignages : 3 avis clients (données EN DUR) avec étoiles Star de lucide-react
   5. CTA final : titre + bouton réservation/contact
   MINIMUM 200 lignes. Contenu réaliste français. Pas de loading state, pas de fetch.
+  IMAGES : TOUJOURS utiliser https://picsum.photos/seed/DESCRIPTIF/LARGEUR/HAUTEUR
+  Exemples : picsum.photos/seed/hero-restaurant/1200/600, picsum.photos/seed/chef-portrait/400/400
+  Le seed doit être descriptif (hero-bakery, team-photo, dish-pasta) pour que l'image soit FIXE et ne change pas au refresh.
 
 ### src/pages/About.tsx — histoire, équipe (3 personnes EN DUR), valeurs. Contenu statique.
 ### src/pages/Contact.tsx — formulaire contact (useState pour les champs, fetch POST /api/contact sur submit). Adresse, téléphone, email, horaires EN DUR.
