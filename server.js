@@ -2068,32 +2068,104 @@ function toolResponseToCode(parsed) {
 // Apply edit_file operations to existing project files on disk
 function applyToolEdits(projectDir, edits) {
   let applied = 0;
+  let failed = 0;
+  const failedEdits = [];
+
   for (const edit of edits) {
     const filePath = path.join(projectDir, edit.path);
     if (!fs.existsSync(filePath)) {
       console.warn(`[ToolEdit] File not found: ${edit.path}`);
+      failed++;
+      failedEdits.push(edit);
       continue;
     }
     let content = fs.readFileSync(filePath, 'utf8');
+    let matched = false;
+
+    // Level 1: Exact match
     if (content.includes(edit.search)) {
       content = content.replace(edit.search, edit.replace);
+      matched = true;
+    }
+
+    // Level 2: Trim whitespace
+    if (!matched) {
+      const trimSearch = edit.search.trim();
+      if (trimSearch && content.includes(trimSearch)) {
+        content = content.replace(trimSearch, edit.replace.trim());
+        matched = true;
+        console.log(`[ToolEdit] Fuzzy match (trim) on ${edit.path}`);
+      }
+    }
+
+    // Level 3: Normalize whitespace (collapse spaces, ignore indentation)
+    if (!matched) {
+      const normalizeWs = (s) => s.replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n');
+      const normalizedContent = normalizeWs(content);
+      const normalizedSearch = normalizeWs(edit.search.trim());
+      if (normalizedSearch && normalizedContent.includes(normalizedSearch)) {
+        // Find the original text by line matching
+        const searchLines = edit.search.trim().split('\n').map(l => l.trim()).filter(Boolean);
+        const contentLines = content.split('\n');
+        for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+          let lineMatch = true;
+          for (let j = 0; j < searchLines.length; j++) {
+            if (contentLines[i + j].trim() !== searchLines[j]) { lineMatch = false; break; }
+          }
+          if (lineMatch) {
+            const originalBlock = contentLines.slice(i, i + searchLines.length).join('\n');
+            content = content.replace(originalBlock, edit.replace.trim());
+            matched = true;
+            console.log(`[ToolEdit] Fuzzy match (normalize) on ${edit.path} at line ${i + 1}`);
+            break;
+          }
+        }
+      }
+    }
+
+    // Level 4: First line match — find by the first unique line of the search text
+    if (!matched) {
+      const searchLines = edit.search.trim().split('\n').map(l => l.trim()).filter(Boolean);
+      if (searchLines.length > 0) {
+        const firstLine = searchLines[0];
+        const lastLine = searchLines[searchLines.length - 1];
+        const contentLines = content.split('\n');
+        for (let i = 0; i < contentLines.length; i++) {
+          if (contentLines[i].trim() === firstLine) {
+            // Found first line — check if last line also matches nearby
+            for (let j = i + 1; j < Math.min(i + searchLines.length + 5, contentLines.length); j++) {
+              if (contentLines[j].trim() === lastLine) {
+                const originalBlock = contentLines.slice(i, j + 1).join('\n');
+                content = content.replace(originalBlock, edit.replace.trim());
+                matched = true;
+                console.log(`[ToolEdit] Fuzzy match (first+last line) on ${edit.path} at line ${i + 1}`);
+                break;
+              }
+            }
+            if (matched) break;
+          }
+        }
+      }
+    }
+
+    if (matched) {
       fs.writeFileSync(filePath, content);
       applied++;
       console.log(`[ToolEdit] Applied edit to ${edit.path}`);
     } else {
-      // Fuzzy match: trim whitespace
-      const trimSearch = edit.search.trim();
-      if (trimSearch && content.includes(trimSearch)) {
-        content = content.replace(trimSearch, edit.replace.trim());
-        fs.writeFileSync(filePath, content);
-        applied++;
-        console.log(`[ToolEdit] Applied fuzzy edit to ${edit.path}`);
-      } else {
-        console.warn(`[ToolEdit] Search text not found in ${edit.path}: "${edit.search.substring(0, 50)}..."`);
-      }
+      failed++;
+      failedEdits.push(edit);
+      console.warn(`[ToolEdit] FAILED on ${edit.path}: "${edit.search.substring(0, 80)}..." — no match at any level`);
     }
   }
-  return applied;
+
+  // If edits failed, try write_file as fallback (rewrite the whole file)
+  // This ensures the modification is NEVER silently lost
+  if (failedEdits.length > 0) {
+    console.log(`[ToolEdit] ${failed} edit(s) failed — will be retried by follow-up`);
+  }
+
+  return { applied, failed, failedEdits };
 }
 
 // opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
@@ -3977,15 +4049,40 @@ Règles d'intégration automatique :
         // Apply edits to existing project files on disk
         if (parsed.edits.length > 0 && job.project_id) {
           const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-          applyToolEdits(projDir, parsed.edits);
-          // Also update the code in memory with the edit results
-          if (job.project_id) {
-            const existingCode = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
-            if (existingCode?.generated_code) {
-              // Re-read files from disk after edits applied
-              const updatedFiles = readProjectFilesRecursive(projDir);
-              job.code = formatProjectCode(updatedFiles);
+          const editResult = applyToolEdits(projDir, parsed.edits);
+
+          // If edits failed, ask Claude to rewrite the file instead (fallback)
+          if (editResult.failed > 0 && editResult.failedEdits.length > 0) {
+            console.log(`[Stream] ${editResult.failed} edit(s) failed — retrying with write_file`);
+            try {
+              const retryFiles = [...new Set(editResult.failedEdits.map(e => e.path))];
+              const retryPrompt = `Les modifications suivantes ont échoué (le texte recherché ne correspond pas exactement).
+Réécris les fichiers COMPLETS avec write_file pour appliquer les changements:
+
+${editResult.failedEdits.map(e => `Fichier: ${e.path}\nRecherche: ${e.search.substring(0, 100)}...\nRemplacer par: ${e.replace.substring(0, 100)}...`).join('\n\n')}
+
+Utilise write_file pour réécrire chaque fichier en ENTIER avec les modifications appliquées.`;
+              const sysBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Réécris les fichiers.' }];
+              const existingProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+              const ctxMsgs = ai ? ai.buildConversationContext(
+                { ...existingProject, title: '', brief: '' }, [], retryPrompt, []
+              ) : [{ role: 'user', content: retryPrompt }];
+              const retryCode = await callClaudeAPI(sysBlocks, ctxMsgs, 32000,
+                { userId: job.user_id, projectId: job.project_id, operation: 'auto-correct' },
+                { useTools: true });
+              if (retryCode) {
+                writeGeneratedFiles(projDir, retryCode, job.project_id);
+                console.log(`[Stream] Failed edits retried with write_file — success`);
+              }
+            } catch (retryErr) {
+              console.warn(`[Stream] Retry failed: ${retryErr.message}`);
             }
+          }
+
+          // Re-read files from disk after all edits
+          if (job.project_id) {
+            const updatedFiles = readProjectFilesRecursive(projDir);
+            job.code = formatProjectCode(updatedFiles);
           }
         }
         // Write tool files to disk
