@@ -111,7 +111,8 @@ button.card { padding: 0; }
 .user-name { font-size: 0.875rem; color: var(--text-primary); }
 .user-role { font-size: 0.75rem; color: var(--text-muted); }
 .app-main { margin-top: var(--header-height); flex: 1; display: flex; flex-direction: column; }
-#dashboard-view { padding: var(--space-xl); max-width: 1400px; margin: 0 auto; width: 100%; }
+#dashboard-view { padding: var(--space-xl); max-width: 1400px; margin: 0 auto; width: 100%; display: none; }
+#dashboard-view.active { display: block; }
 .dashboard-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-xl); }
 .dashboard-title { font-size: 1.75rem; }
 .dashboard-stats { display: flex; gap: var(--space-lg); margin-bottom: var(--space-xl); }
@@ -1035,6 +1036,7 @@ async function openWorkspace(id) {
   document.getElementById('dashboard-view').classList.remove('active');
   document.getElementById('admin-view').classList.add('hidden');
   document.getElementById('workspace-view').classList.add('active');
+  window.scrollTo(0, 0);
   // ALWAYS fetch fresh project data from server (build_status may have changed)
   try {
     currentProject = await api('/api/projects/' + id);
