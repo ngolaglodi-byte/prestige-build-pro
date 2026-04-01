@@ -6676,6 +6676,10 @@ const server = http.createServer(async (req, res) => {
       console.log(`[Auth] Failed login attempt for: ${email} from ${clientIp}`);
       json(res,401,{error:'Email ou mot de passe incorrect.'}); return;
     }
+    if (u.role === 'disabled') {
+      console.log(`[Auth] Blocked disabled user: ${u.email}`);
+      json(res,403,{error:'Votre compte a été désactivé. Contactez l\'administrateur.'}); return;
+    }
     console.log(`[Auth] Login: ${u.email} (${u.role})`);
     json(res,200,{token:signToken({id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}),user:{id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}});
     return;
