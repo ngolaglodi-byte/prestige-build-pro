@@ -6193,18 +6193,24 @@ async function monitorContainers() {
         continue;
       }
 
-      // Keep published sites running
+      // Keep published sites running — but don't loop on missing containers
       if (!running && project.is_published) {
         const containerName = getContainerName(project.id);
         try {
-          await startContainerAsync(project.id);
-          await new Promise(r => setTimeout(r, 3000));
-          const healthy = await waitForContainerHealth(project.id, 10000);
-          if (healthy) {
-            console.log(`[Monitor] Published container ${containerName} restarted`);
+          // Check if container EXISTS first (not just running)
+          const container = docker.getContainer(containerName);
+          const info = await container.inspect().catch(() => null);
+          if (info) {
+            // Container exists but stopped → restart it
+            await container.start();
+            console.log(`[Monitor] Restarted stopped container ${containerName}`);
+          } else {
+            // Container doesn't exist → skip (don't try to recreate in monitoring)
+            // The user needs to recompile or the project will be recreated on next access
+            console.log(`[Monitor] ${containerName} not found — skipping`);
           }
         } catch (e) {
-          console.error(`[Monitor] Failed to restart ${containerName}:`, e.message);
+          // Silently skip — don't spam logs every 30s
         }
       }
     }
