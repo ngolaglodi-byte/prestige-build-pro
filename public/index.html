@@ -1071,11 +1071,18 @@ async function openWorkspace(id) {
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
+  // Hide workspace
   document.getElementById('workspace-view').classList.remove('active');
+  // Show dashboard + header
   document.getElementById('main-header').style.display = 'flex';
   document.getElementById('dashboard-view').classList.add('active');
+  document.getElementById('admin-view').classList.add('hidden');
+  // Reset state
   currentProject = null; generatedCode = '';
+  _liveFilesDiv = null;
   resetPreviewUI();
+  // Scroll to top and reload data
+  window.scrollTo(0, 0);
   loadProjects(); loadStats();
 }
 
