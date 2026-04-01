@@ -2838,6 +2838,66 @@ TOUS en UNE réponse.`;
       console.log('[SafetyNet] Created default Home.tsx');
     }
 
+    // 7. UNIVERSAL IMPORT RESOLVER: scan ALL files, find ALL broken imports, fix them
+    // This catches EVERYTHING: missing UI components, missing pages, missing libs
+    const allTsxFiles = [];
+    function scanTsx(dir) {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (f.isDirectory() && !['node_modules', 'ui', 'dist', '.git'].includes(f.name)) scanTsx(path.join(dir, f.name));
+        else if (f.isFile() && (f.name.endsWith('.tsx') || f.name.endsWith('.ts'))) allTsxFiles.push(path.join(dir, f.name));
+      }
+    }
+    scanTsx(srcDir);
+
+    for (const file of allTsxFiles) {
+      const content = fs.readFileSync(file, 'utf8');
+      const imports = content.match(/from ['"](@\/[^'"]+)['"]/g) || [];
+      for (const imp of imports) {
+        const importPath = imp.match(/from ['"](@\/([^'"]+))['"]/)?.[2];
+        if (!importPath) continue;
+
+        // Try to resolve the import
+        let resolved = path.join(srcDir, importPath);
+        if (!resolved.endsWith('.tsx') && !resolved.endsWith('.ts')) {
+          if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '/index.tsx') && !fs.existsSync(resolved + '/index.ts')) {
+            // Import doesn't resolve — create a stub
+            const ext = importPath.startsWith('components/ui/') ? '.tsx' : '.tsx';
+            const stubPath = resolved + ext;
+            const stubDir = path.dirname(stubPath);
+            if (!fs.existsSync(stubDir)) fs.mkdirSync(stubDir, { recursive: true });
+
+            if (importPath.startsWith('components/ui/')) {
+              // UI component stub — export the named exports the import expects
+              const namedImports = content.match(new RegExp(`import\\s*\\{([^}]+)\\}\\s*from\\s*['"]@\\/${importPath.replace(/\//g, '\\/')}['"]`));
+              const names = namedImports ? namedImports[1].split(',').map(n => n.trim()) : ['default'];
+              const exports = names.map(n => {
+                if (n === 'default') return '';
+                return `export function ${n}({ children, className, ...props }: any) {\n  return <div className={className} {...props}>{children}</div>;\n}`;
+              }).filter(Boolean).join('\n\n');
+              fs.writeFileSync(stubPath, `import * as React from "react";\nimport { cn } from "@/lib/utils";\n\n${exports}\n`);
+              console.log(`[SafetyNet] Created UI stub: ${importPath}${ext} (${names.join(', ')})`);
+            } else if (importPath.startsWith('pages/')) {
+              // Page stub
+              const pageName = path.basename(importPath);
+              fs.writeFileSync(stubPath, `export default function ${pageName}() {\n  return <div className="p-8"><h1 className="text-2xl font-bold">${pageName}</h1></div>;\n}\n`);
+              console.log(`[SafetyNet] Created page stub: ${importPath}${ext}`);
+            } else if (importPath.startsWith('components/')) {
+              // Component stub
+              const compName = path.basename(importPath);
+              fs.writeFileSync(stubPath, `export default function ${compName}({ children, ...props }: any) {\n  return <div {...props}>{children}</div>;\n}\n`);
+              console.log(`[SafetyNet] Created component stub: ${importPath}${ext}`);
+            } else {
+              // Generic stub
+              const name = path.basename(importPath);
+              fs.writeFileSync(stubPath, `export default function ${name}() { return null; }\nexport const ${name}Context = {};\n`);
+              console.log(`[SafetyNet] Created generic stub: ${importPath}${ext}`);
+            }
+          }
+        }
+      }
+    }
+
     console.log('[SafetyNet] All checks passed');
   })();
 
@@ -6793,14 +6853,47 @@ const server = http.createServer(async (req, res) => {
     // Track access for auto-sleep
     containerLastAccess.set(projectId, Date.now());
 
-    // Auto-fix CSS on first access (fixes projects created before the fix)
-    const cssPath = path.join(DOCKER_PROJECTS_DIR, String(projectId), 'src', 'index.css');
+    // Auto-fix on first access (fixes projects created before fixes were deployed)
+    const projAccessDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+    // Fix CSS
+    const cssPath = path.join(projAccessDir, 'src', 'index.css');
     if (fs.existsSync(cssPath)) {
       const css = fs.readFileSync(cssPath, 'utf8');
       if (css.includes('theme(') || !css.includes('@theme') || /@keyframes[^{]*\{[^}]*\{/.test(css)) {
         const fixed = fixIndexCss(css);
         fs.writeFileSync(cssPath, fixed);
-        console.log(`[AutoFix] Fixed index.css for project ${projectId} on access`);
+        console.log(`[AutoFix] Fixed index.css for project ${projectId}`);
+      }
+    }
+    // Fix missing UI components/pages (scan imports, create stubs for unresolved)
+    const srcAccessDir = path.join(projAccessDir, 'src');
+    if (fs.existsSync(srcAccessDir)) {
+      let needsFix = false;
+      const scanFiles = [];
+      const scanD = (d) => { if (!fs.existsSync(d)) return; for (const f of fs.readdirSync(d, { withFileTypes: true })) { if (f.isDirectory() && f.name !== 'ui' && f.name !== 'node_modules') scanD(path.join(d, f.name)); else if (f.isFile() && f.name.endsWith('.tsx')) scanFiles.push(path.join(d, f.name)); } };
+      scanD(srcAccessDir);
+      for (const file of scanFiles) {
+        const content = fs.readFileSync(file, 'utf8');
+        const imports = content.match(/from ['"](@\/[^'"]+)['"]/g) || [];
+        for (const imp of imports) {
+          const importPath = imp.match(/@\/([^'"]+)/)?.[1];
+          if (!importPath) continue;
+          const resolved = path.join(srcAccessDir, importPath);
+          if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved)) {
+            needsFix = true;
+            const stubPath = resolved + '.tsx';
+            const stubDir = path.dirname(stubPath);
+            if (!fs.existsSync(stubDir)) fs.mkdirSync(stubDir, { recursive: true });
+            if (importPath.startsWith('components/ui/')) {
+              const names = (content.match(new RegExp(`import\\s*\\{([^}]+)\\}\\s*from\\s*['"]@\\/${importPath.replace(/\//g, '\\/')}['"]`)) || ['','Component'])[1].split(',').map(n => n.trim());
+              fs.writeFileSync(stubPath, `import * as React from "react";\n${names.map(n => `export function ${n}({ children, className, ...props }: any) { return <div className={className} {...props}>{children}</div>; }`).join('\n')}\n`);
+            } else {
+              const name = path.basename(importPath);
+              fs.writeFileSync(stubPath, `export default function ${name}() { return <div className="p-8"><h1>${name}</h1></div>; }\n`);
+            }
+            console.log(`[AutoFix] Created stub: src/${importPath}.tsx for project ${projectId}`);
+          }
+        }
       }
     }
 
