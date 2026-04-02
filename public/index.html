@@ -1532,25 +1532,26 @@ function toggleCodePanel() { document.getElementById('code-panel').classList.tog
 
 // Auto-compile after code generation is complete
 async function autoCompile() {
-  if (!currentProject || !currentProject.id) {
-    console.error('[AUTOCOMPILE] Cannot compile: currentProject.id is missing');
-    return;
-  }
+  if (!currentProject || !currentProject.id) return;
 
-  // Files are already in the container (pushed via docker cp during generation/streaming).
-  // Vite HMR picks up changes automatically. Just reload the preview iframe.
-  try {
-    // Hot-reload: sync any remaining files to container + check Vite errors
-    const r = await api('/api/hot-reload', 'POST', { project_id: currentProject.id });
-    if (r.hot) {
-      console.log('[AUTOCOMPILE] Hot reload OK (' + (r.elapsed || 0) + 'ms)');
-    }
-  } catch (e) {
-    console.log('[AUTOCOMPILE] Hot reload skipped:', e.message);
-  }
+  // With bind mounts, files written to disk ARE the files Vite watches.
+  // Vite HMR detects changes automatically — NO reload needed.
+  // Just ensure the iframe is visible (it might be hidden during first generation).
+  const frame = document.getElementById('preview-frame');
+  const loading = document.getElementById('preview-loading');
 
-  // Always show the preview — Vite HMR handles the rest
-  loadDockerPreview(`/run/${currentProject.id}/`);
+  if (frame.src && frame.src.includes('/run/' + currentProject.id)) {
+    // Preview already loaded — Vite HMR handles the update INSTANTLY
+    // No reload, no spinner, no waiting. Just like Lovable.
+    frame.style.display = 'block';
+    loading.style.display = 'none';
+    document.getElementById('preview-status').className = 'preview-status live';
+    document.getElementById('preview-status').innerHTML = '<span>✓ En direct</span>';
+    console.log('[AUTOCOMPILE] HMR — no reload needed');
+  } else {
+    // First time: load the preview iframe
+    loadDockerPreview(`/run/${currentProject.id}/`);
+  }
 }
 
 async function compileProject() {
