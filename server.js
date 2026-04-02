@@ -7038,7 +7038,9 @@ const server = http.createServer(async (req, res) => {
     const cssPath = path.join(projAccessDir, 'src', 'index.css');
     if (fs.existsSync(cssPath)) {
       const css = fs.readFileSync(cssPath, 'utf8');
-      if (css.includes('theme(') || !css.includes('@theme') || /@keyframes[^{]*\{[^}]*\{/.test(css)) {
+      // Only fix if CSS is broken (TW4 syntax or missing @tailwind)
+      const needsFix = css.includes('@import "tailwindcss"') || css.includes('@theme') || (!css.includes('@tailwind') && !css.includes('--primary'));
+      if (needsFix) {
         const fixed = fixIndexCss(css);
         fs.writeFileSync(cssPath, fixed);
         console.log(`[AutoFix] Fixed index.css for project ${projectId}`);
