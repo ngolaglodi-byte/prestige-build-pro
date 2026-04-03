@@ -3125,18 +3125,15 @@ TOUS en UNE réponse.`;
   }
   try {
     const containerName = getContainerName(projectId);
-    if (fs.existsSync(path.join(projectDir, 'src')))
-      execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
-    if (fs.existsSync(path.join(projectDir, 'index.html')))
-      execSync(`docker cp ${projectDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+    // bind mounts: src/, index.html, server.js auto-visible in container
+    // Only restart Express if server.js changed (for new API routes/tables)
     if (fs.existsSync(path.join(projectDir, 'server.js'))) {
       const { spawnSync } = require('child_process');
       if (spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { timeout: 5000 }).status === 0) {
-        execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
         try { execSync(`docker exec ${containerName} sh -c 'kill $(cat /tmp/express.pid 2>/dev/null) 2>/dev/null; cp server.js server.cjs 2>/dev/null; node server.cjs & echo $! > /tmp/express.pid'`, { timeout: 10000 }); } catch {}
       }
     }
-    console.log(`[Gen] Final files pushed to container ${containerName}`);
+    console.log(`[Gen] Files visible via bind mount, Express restarted`);
   } catch(e) { console.warn(`[Gen] Container push: ${e.message}`); }
 
   // Read final state from disk and save to DB
@@ -4050,7 +4047,7 @@ Règles d'intégration automatique :
                   const fileDir = path.dirname(filePath);
                   if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
                   fs.writeFileSync(filePath, cleanContent);
-                  try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
+                  // bind mount — Vite HMR picks up changes automatically
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
                 job.progressMessage = `Modifie: ${input.path}`;
@@ -4065,7 +4062,7 @@ Règles d'intégration automatique :
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
                     fs.writeFileSync(filePath, content);
-                    try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
+                    // bind mount — Vite HMR picks up changes automatically
                   }
                 }
               } else if (currentToolName === 'line_replace' && input.path && input.start_line && input.new_content && job.project_id) {
@@ -4079,7 +4076,7 @@ Règles d'intégration automatique :
                   const end = Math.min(lines.length, input.end_line || input.start_line);
                   lines.splice(start, end - start, input.new_content);
                   fs.writeFileSync(filePath, lines.join('\n'));
-                  try { execSync(`docker cp ${filePath} ${getContainerName(job.project_id)}:/app/${input.path}`, { timeout: 5000 }); } catch {}
+                  // bind mount — Vite HMR picks up changes automatically
                 }
               } else if (currentToolName === 'write_file' && input.path) {
                 job.progressMessage = `Fichier: ${input.path}`;
@@ -4300,15 +4297,7 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
             const containerName = getContainerName(job.project_id);
             validateJsxFiles(projDir);
-            if (fs.existsSync(path.join(projDir, 'src')))
-              try { execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 }); } catch {}
-            if (fs.existsSync(path.join(projDir, 'index.html')))
-              try { execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 }); } catch {}
-            if (fs.existsSync(path.join(projDir, 'server.js'))) {
-              const { spawnSync } = require('child_process');
-              if (spawnSync('node', ['--check', path.join(projDir, 'server.js')], { timeout: 5000 }).status === 0)
-                try { execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 }); } catch {}
-            }
+            // bind mounts: src/, index.html, server.js are auto-visible in container
             const finalFiles = readProjectFilesRecursive(projDir);
             const finalCode = formatProjectCode(finalFiles);
             db.prepare("UPDATE projects SET generated_code=?,build_status='done',build_url=?,status='ready',updated_at=datetime('now') WHERE id=?")
@@ -5541,18 +5530,18 @@ async function writeFilesToContainer(projectId, code) {
 
   // Copy into running container
   if (fs.existsSync(path.join(projectDir, 'src'))) {
-    execSync(`docker cp ${projectDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+    // bind mount — no docker cp needed for src/
   }
   // Copy index.html (may have custom title or meta tags)
   if (fs.existsSync(path.join(projectDir, 'index.html'))) {
-    execSync(`docker cp ${projectDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+    // bind mount — no docker cp needed for index.html
   }
   if (fs.existsSync(path.join(projectDir, 'server.js'))) {
     // Validate syntax before copying
     const { spawnSync } = require('child_process');
     const check = spawnSync('node', ['--check', path.join(projectDir, 'server.js')], { encoding: 'utf8', timeout: 5000 });
     if (check.status === 0) {
-      execSync(`docker cp ${projectDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+      // bind mount — no docker cp needed for server.js
     }
   }
 
@@ -7483,11 +7472,11 @@ const server = http.createServer(async (req, res) => {
 
       // Copy React source files — Vite HMR detects changes automatically
       if (fs.existsSync(path.join(projDir, 'src'))) {
-        execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+        // bind mount — no docker cp needed for src/
       }
       // Root HTML and config (triggers full page reload via Vite if changed)
       if (fs.existsSync(path.join(projDir, 'index.html'))) {
-        execSync(`docker cp ${projDir}/index.html ${containerName}:/app/index.html`, { timeout: 10000 });
+        // bind mount — no docker cp needed for index.html
       }
       // NOTE: Do NOT copy vite.config.js during hot reload — it causes Vite to restart
       // and kill the container (wait -n in start-dev.sh). Config changes require full rebuild.
@@ -7497,7 +7486,7 @@ const server = http.createServer(async (req, res) => {
         const { spawnSync } = require('child_process');
         const syntaxCheck = spawnSync('node', ['--check', path.join(projDir, 'server.js')], { encoding: 'utf8', timeout: 5000 });
         if (syntaxCheck.status === 0) {
-          execSync(`docker cp ${projDir}/server.js ${containerName}:/app/server.js`, { timeout: 10000 });
+          // bind mount — no docker cp needed for server.js
           serverChanged = true;
         } else {
           console.warn(`[HMR] server.js has syntax errors — NOT copying to container`);
@@ -7549,7 +7538,7 @@ const server = http.createServer(async (req, res) => {
           if (fixCode) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
             writeGeneratedFiles(projDir, fixCode, project_id);
-            execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+            // bind mount — no docker cp needed for src/
             console.log(`[HMR] Auto-fixed Vite errors and re-applied`);
           }
         } catch (fixErr) {
@@ -7646,7 +7635,7 @@ const server = http.createServer(async (req, res) => {
                   const { execSync } = require('child_process');
                   const containerName = getContainerName(project_id);
                   try {
-                    execSync(`docker cp ${projDir}/src/. ${containerName}:/app/src/`, { timeout: 15000 });
+                    // bind mount — no docker cp needed for src/
                     console.log(`[Build] Vite error auto-fixed and hot-reloaded`);
                   } catch(e) { console.warn(`[Build] Hot-reload after fix failed: ${e.message}`); }
                 }
