@@ -6978,6 +6978,12 @@ const server = http.createServer(async (req, res) => {
     }
     const projectId = parseInt(runMatch[1]);
 
+    // Skip auth for WebSocket upgrades — handled by the upgrade handler
+    // Without this, Vite HMR WebSocket gets 401 and preview never updates
+    if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
+      return; // Let the server 'upgrade' event handler take over
+    }
+
     // Authentication check for Docker proxy
     const user = getAuth(req);
     if (!user) {
