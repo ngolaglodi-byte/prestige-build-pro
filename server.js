@@ -7086,7 +7086,9 @@ const server = http.createServer(async (req, res) => {
     if (fs.existsSync(cssPath)) {
       const css = fs.readFileSync(cssPath, 'utf8');
       // Only fix if CSS is broken (TW4 syntax or missing @tailwind)
-      const needsFix = css.includes('@import "tailwindcss"') || css.includes('@theme') || (!css.includes('@tailwind') && !css.includes('--primary'));
+      const bracesOpen = (css.match(/\{/g) || []).length;
+      const bracesClose = (css.match(/\}/g) || []).length;
+      const needsFix = css.includes('@import "tailwindcss"') || css.includes('@theme') || (!css.includes('@tailwind') && !css.includes('--primary')) || bracesOpen !== bracesClose;
       if (needsFix) {
         const fixed = fixIndexCss(css);
         fs.writeFileSync(cssPath, fixed);
