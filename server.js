@@ -1046,7 +1046,7 @@ function writeDefaultReactProject(projectDir) {
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, content);
+      if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
       console.log(`[Defaults] Wrote default ${filename}`);
     }
   }
@@ -2187,7 +2187,7 @@ function applyToolEdits(projectDir, edits) {
       const end = Math.min(lines.length, edit.endLine); // inclusive
       lines.splice(start, end - start, edit.newContent);
       content = lines.join('\n');
-      fs.writeFileSync(filePath, content);
+      if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
       applied++;
       console.log(`[ToolEdit] Line replace ${edit.startLine}-${edit.endLine} on ${edit.path}`);
       continue;
@@ -2260,7 +2260,7 @@ function applyToolEdits(projectDir, edits) {
     }
 
     if (matched) {
-      fs.writeFileSync(filePath, content);
+      if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
       applied++;
       console.log(`[ToolEdit] Applied edit to ${edit.path}`);
     } else {
@@ -3437,6 +3437,57 @@ function buildProjectStructure(code) {
 // Guarantees index.css works with Tailwind 4 no matter what the AI generates.
 // Uses the template as the safe base, extracts AI's custom colors, merges them.
 // ── TAILWIND 3 CSS FIX (simple — TW3 is mature, few issues) ──
+// ── SAFE WRITE: ALL auto-fixes applied on EVERY file write ──
+// This is the SINGLE point of truth for writing .tsx/.ts/.css files.
+// Every fix runs here — no matter if the file was written by edit_file,
+// write_file, line_replace, SafetyNet, or any other path.
+function safeWriteTsx(filePath, content) {
+  if (!content || !filePath) return;
+  const filename = path.basename(filePath);
+  const ext = path.extname(filePath);
+
+  if (ext === '.tsx' || ext === '.jsx' || ext === '.ts') {
+    // 1. Deduplicate imports
+    const uniqueImports = new Set();
+    content = content.replace(/^import .+$/gm, (match) => {
+      if (uniqueImports.has(match)) return ''; // remove duplicate
+      uniqueImports.add(match);
+      return match;
+    });
+    content = content.replace(/\n{3,}/g, '\n\n');
+
+    // 2. Fix picsum without seed
+    content = content.replace(/https:\/\/picsum\.photos\/(\d+)\/(\d+)/g, (match, w, h) => {
+      if (match.includes('/seed/')) return match;
+      const seed = filename.replace(/\.[^.]+$/, '') + '-' + w + 'x' + h;
+      return `https://picsum.photos/seed/${seed}/${w}/${h}`;
+    });
+
+    // 3. Add missing export default
+    if (!content.includes('export default') && !content.includes('export {') && !filePath.includes('/ui/') && !filePath.includes('/lib/') && !filePath.includes('/hooks/')) {
+      const funcMatch = content.match(/^function (\w+)/m);
+      if (funcMatch) content = content.replace(`function ${funcMatch[1]}`, `export default function ${funcMatch[1]}`);
+    }
+
+    // 4. Remove BrowserRouter from App.tsx (it's in main.tsx)
+    if (filename === 'App.tsx' && content.includes('BrowserRouter')) {
+      content = content.replace(/import\s*\{[^}]*BrowserRouter,?\s*/g, (match) => {
+        const others = match.match(/\{([^}]*)\}/)?.[1]?.split(',').map(s => s.trim()).filter(s => s && s !== 'BrowserRouter');
+        if (others && others.length > 0) return `import { ${others.join(', ')} `;
+        return '';
+      });
+      content = content.replace(/<BrowserRouter[^>]*>/g, '');
+      content = content.replace(/<\/BrowserRouter>/g, '');
+      content = content.replace(/\n{3,}/g, '\n\n');
+    }
+  }
+
+  // Write the file
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(filePath, content);
+}
+
 function fixIndexCss(content) {
   const templatePath = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
   // TW4 → TW3 conversion
@@ -3857,7 +3908,7 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
-    fs.writeFileSync(filePath, content);
+    if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
     filesWritten++;
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
@@ -4045,7 +4096,7 @@ Règles d'intégration automatique :
                   let content = fs.readFileSync(filePath, 'utf8');
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
-                    fs.writeFileSync(filePath, content);
+                    if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
                     // bind mount — Vite HMR picks up changes automatically
                   }
                 }
@@ -4839,7 +4890,7 @@ function savePreviewFiles(projectId, code) {
     const filePath = path.join(previewDir, filename);
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(filePath, content);
+    if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
   }
 
   return { success: true, dir: previewDir, framework, fileCount: Object.keys(files).length + 1 };
@@ -5626,7 +5677,7 @@ async function buildDockerProject(projectId, code, onProgress) {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(filePath, content);
+      if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
       console.log(`[Docker Build] Written: ${filename} (${content.length} bytes)`);
     }
 
@@ -8720,7 +8771,7 @@ export default defineConfig({
           const filePath = path.join(projDir, file.path);
           const fileDir = path.dirname(filePath);
           if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
-          fs.writeFileSync(filePath, content);
+          if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
           filesUpdated++;
         }
       }
