@@ -3760,13 +3760,15 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       if (!content.includes('@tailwind base')) {
         content = '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n' + content;
       }
-      // Ensure :root with HSL variables exists
-      if (!content.includes('--background:') && !content.includes('--primary:')) {
-        // Use template index.css as base
+      // Ensure :root with HSL variables exists — ONLY for new files (not modifications)
+      // If the file already exists on disk, DON'T replace — the AI might have just modified colors
+      const existingCssPath = projectId ? path.join(DOCKER_PROJECTS_DIR, String(projectId), 'src', 'index.css') : null;
+      const cssAlreadyExists = existingCssPath && fs.existsSync(existingCssPath);
+      if (!cssAlreadyExists && !content.includes('--background:') && !content.includes('--primary:')) {
         const templateCss = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
         if (fs.existsSync(templateCss)) {
           content = fs.readFileSync(templateCss, 'utf8');
-          console.log(`[WriteFiles] Replaced index.css with Tailwind 3 template`);
+          console.log(`[WriteFiles] New project — using Tailwind 3 template for index.css`);
         }
       }
     }
@@ -4298,8 +4300,11 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
               job.code = mergeModifiedCode(existingCode.generated_code, job.code);
             }
           }
-          // Validate and auto-fix syntax (like Lovable)
-          if (job.project_id) {
+          // Validate syntax ONLY for new generations (not modifications)
+          // Modifications use edit_file which writes directly to disk —
+          // running validateAndFixCode would OVERWRITE the AI's changes with template defaults
+          const isNewGeneration = !job.project_id || !db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id)?.generated_code;
+          if (isNewGeneration && job.project_id) {
             job.progressMessage = 'Vérification du code...';
             job.code = await validateAndFixCode(job.project_id, job.code);
           }
