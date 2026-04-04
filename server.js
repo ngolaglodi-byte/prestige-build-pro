@@ -218,19 +218,33 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
       let body = '';
       apiRes.on('data', c => body += c);
       apiRes.on('end', () => {
-        const friendlyMsg = API_ERROR_MESSAGES[status] || `Erreur API (${status}).`;
         console.error(`[API] HTTP ${status}: ${body.substring(0, 300)}`);
 
-        // Special handling for billing/quota (402)
-        if (status === 402) {
-          console.error('[API] ⚠️ BILLING ISSUE — Anthropic account needs funding');
-          if (job) job.progressMessage = '⚠️ Crédit API épuisé';
-        }
-
-        // Special handling for bad API key (401)
-        if (status === 401) {
-          console.error('[API] ⚠️ INVALID API KEY — check ANTHROPIC_API_KEY env var');
-        }
+        // Parse API error message for better user feedback
+        let friendlyMsg = API_ERROR_MESSAGES[status] || `Erreur API (${status}).`;
+        try {
+          const apiError = JSON.parse(body);
+          const apiMsg = apiError?.error?.message || '';
+          // Credit/billing issues — show clear message
+          if (apiMsg.includes('credit balance') || apiMsg.includes('billing')) {
+            friendlyMsg = 'Crédit API épuisé. Le compte Anthropic doit être rechargé. Contactez l\'administrateur.';
+            console.error('[API] ⚠️ BILLING ISSUE — Anthropic account needs funding');
+            if (job) job.progressMessage = '⚠️ Crédit API épuisé';
+          }
+          // Bad API key
+          else if (status === 401) {
+            friendlyMsg = 'Clé API Anthropic invalide. Contactez l\'administrateur.';
+            console.error('[API] ⚠️ INVALID API KEY');
+          }
+          // Model not found
+          else if (apiMsg.includes('model')) {
+            friendlyMsg = `Modèle non disponible: ${apiMsg}`;
+          }
+          // Token limit
+          else if (apiMsg.includes('token') || apiMsg.includes('too long')) {
+            friendlyMsg = 'Le message est trop long. Essayez avec un texte plus court.';
+          }
+        } catch {}
 
         onError(new Error(friendlyMsg));
       });
