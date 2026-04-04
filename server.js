@@ -567,58 +567,16 @@ const DEFAULT_INDEX_CSS = `@tailwind base;
 @tailwind utilities;
 
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
-  }
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
-  }
-}
-
-@layer base {
   * { @apply border-border; }
-  body { @apply bg-background text-foreground; font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
 }
 
 html { scroll-behavior: smooth; }
-*:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+*:focus-visible { @apply outline-none ring-2 ring-ring ring-offset-2; }
 `;
 
 const DEFAULT_APP_JSX = `import React from 'react';
@@ -2564,32 +2522,9 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
 
 Génère SEULEMENT ces 2 fichiers :
 ### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
-### src/index.css — Tailwind 3 avec variables HSL dans :root. FORMAT EXACT (shadcn/ui) :
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: [HSL du secteur];
-    --primary: [HSL couleur principale du secteur];
-    --primary-foreground: 210 40% 98%;
-    --secondary: [HSL];
-    --secondary-foreground: [HSL];
-    --muted: [HSL];
-    --muted-foreground: [HSL];
-    --accent: [HSL];
-    --accent-foreground: [HSL];
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: [HSL];
-    --input: [HSL];
-    --ring: [HSL identique a primary];
-    --radius: 0.5rem;
-  }
-}
-@layer base { * { @apply border-border; } body { @apply bg-background text-foreground; } }
-IMPORTANT : les couleurs sont en HSL SANS hsl() — juste "221 83% 53%". Le tailwind.config.js les wrappe avec hsl().
+### tailwind.config.js — Les couleurs du secteur. NE TOUCHE PAS index.css (il est fourni). Modifie SEULEMENT les couleurs dans tailwind.config.js. FORMAT :
+export default { darkMode: 'class', content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'], theme: { extend: { colors: { border: 'hsl([HSL secteur])', input: 'hsl([HSL])', ring: 'hsl([HSL primary])', background: 'hsl(0 0% 100%)', foreground: 'hsl([HSL sombre])', primary: { DEFAULT: 'hsl([HSL couleur principale])', foreground: 'hsl(210 40% 98%)' }, secondary: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, destructive: { DEFAULT: 'hsl(0 84.2% 60.2%)', foreground: 'hsl(210 40% 98%)' }, muted: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, accent: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, popover: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' }, card: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' } }, borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' } } }, plugins: [] };
+IMPORTANT : Les couleurs sont directement en hsl() dans tailwind.config.js. NE PAS mettre de couleurs dans index.css.
 
 Code COMPLET et fonctionnel. Pas de placeholder.`;
 

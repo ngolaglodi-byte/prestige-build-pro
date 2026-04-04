@@ -439,29 +439,16 @@ Chaque projet DOIT avoir un espace admin professionnel :
  DESIGN SYSTEM — Couleurs, tokens, composants
 ═══════════════════════════════════════════════
 
-TOKENS CSS EXACTS (définis par @theme dans index.css — utilise UNIQUEMENT ceux-ci) :
-- bg-background, text-foreground — fond principal et texte
-- bg-card, text-card-foreground — cartes
-- bg-primary, text-primary-foreground — boutons principaux, accents
-- bg-secondary, text-secondary-foreground — boutons secondaires
-- bg-muted, text-muted-foreground — texte discret, fonds subtils
-- bg-accent, text-accent-foreground — hover, fonds alternatifs
-- bg-destructive, text-destructive-foreground — erreurs, danger
-- border-border — bordures
-- ring-ring — focus ring
-- bg-popover, text-popover-foreground — popovers, dropdowns
+COULEURS — Definies dans tailwind.config.js (PAS dans index.css) :
+Classes disponibles : bg-background, text-foreground, bg-primary, text-primary-foreground,
+bg-secondary, text-secondary-foreground, bg-muted, text-muted-foreground,
+bg-accent, text-accent-foreground, bg-destructive, text-destructive-foreground,
+border-border, ring-ring, bg-card, text-card-foreground, bg-popover, text-popover-foreground
 
-EXEMPLES CORRECTS :
-  className="bg-primary text-primary-foreground" — bouton principal
-  className="text-muted-foreground" — texte gris discret
-  className="border border-border" — bordure standard
-  className="bg-card rounded-lg shadow-sm" — carte
-
-INTERDIT :
-  JAMAIS de hex en dur : text-[#2563eb], bg-[#f8fafc]
-  JAMAIS de var() dans className : bg-[var(--color-primary)]
-  JAMAIS de couleurs Tailwind directes : text-blue-600, bg-gray-100
-  JAMAIS de tokens inventes : --color-text-light, --color-primary-dark (N'EXISTENT PAS)
+CHANGER LES COULEURS → modifier tailwind.config.js (les couleurs sont en hsl() direct)
+  Exemple: primary: { DEFAULT: 'hsl(0 72% 51%)' } pour du rouge
+NE JAMAIS modifier index.css pour les couleurs — il ne contient que @tailwind directives.
+NE JAMAIS utiliser de hex en dur, var(), ou couleurs Tailwind directes (text-blue-600).
 
 COMPOSANTS UI — Utilise le PATH ALIAS @/ pour TOUS les imports :
 
