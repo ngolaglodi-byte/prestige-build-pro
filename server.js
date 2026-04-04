@@ -3508,11 +3508,22 @@ function fixIndexCss(content) {
   if (content.includes('@import "tailwindcss"')) {
     content = content.replace('@import "tailwindcss";', '@tailwind base;\n@tailwind components;\n@tailwind utilities;');
   }
-  content = content.replace(/@theme\s*\{[\s\S]*?\n\}/g, ''); // Remove @theme (TW4)
-  content = content.replace(/theme\([^)]+\)/g, ''); // Remove theme() (TW4)
-  // Ensure @tailwind directives
+  content = content.replace(/@theme\s*\{[\s\S]*?\n\}/g, '');
+  content = content.replace(/theme\([^)]+\)/g, '');
   if (!content.includes('@tailwind base')) {
     content = '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n' + content;
+  }
+  // Fix unbalanced braces
+  const opens = (content.match(/\{/g) || []).length;
+  const closes = (content.match(/\}/g) || []).length;
+  if (opens !== closes && fs.existsSync(templatePath)) {
+    const template = fs.readFileSync(templatePath, 'utf8');
+    const aiRoot = content.match(/:root\s*\{([^}]+)\}/);
+    const aiDark = content.match(/\.dark\s*\{([^}]+)\}/);
+    let fixed = template;
+    if (aiRoot) fixed = fixed.replace(/:root\s*\{[^}]+\}/, `:root {\n${aiRoot[1]}}`);
+    if (aiDark) fixed = fixed.replace(/\.dark\s*\{[^}]+\}/, `.dark {\n${aiDark[1]}}`);
+    return fixed;
   }
   // If no HSL variables, use template
   if (!content.includes('--background:') && !content.includes('--primary:')) {
@@ -3745,8 +3756,30 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     content = cleanGeneratedContent(content);
     if (!content) continue;
 
-    // ── CSS FIX: Ensure Tailwind 3 directives are present ──
+    // ── CSS FIX: Ensure valid Tailwind 3 CSS ──
     if (filename === 'src/index.css') {
+      // Fix unbalanced braces (AI common error: extra } or missing })
+      let opens = (content.match(/\{/g) || []).length;
+      let closes = (content.match(/\}/g) || []).length;
+      if (opens !== closes) {
+        console.log(`[WriteFiles] CSS braces unbalanced: ${opens} open, ${closes} close — fixing`);
+        // If CSS is broken, use the template as base and inject AI's :root colors
+        const templateCss = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
+        if (fs.existsSync(templateCss)) {
+          const template = fs.readFileSync(templateCss, 'utf8');
+          // Extract AI's :root block
+          const aiRoot = content.match(/:root\s*\{([^}]+)\}/);
+          const aiDark = content.match(/\.dark\s*\{([^}]+)\}/);
+          let fixed = template;
+          if (aiRoot) fixed = fixed.replace(/:root\s*\{[^}]+\}/, `:root {\n${aiRoot[1]}}`);
+          if (aiDark) fixed = fixed.replace(/\.dark\s*\{[^}]+\}/, `.dark {\n${aiDark[1]}}`);
+          // Extract font imports
+          const fonts = content.match(/@import url\([^)]+\)\s*;/g) || [];
+          if (fonts.length) fixed = fonts.join('\n') + '\n' + fixed;
+          content = fixed;
+          console.log(`[WriteFiles] CSS fixed: template + AI colors merged`);
+        }
+      }
       // TW4 syntax → convert to TW3
       if (content.includes('@import "tailwindcss"')) {
         content = content.replace('@import "tailwindcss";', '@tailwind base;\n@tailwind components;\n@tailwind utilities;');
