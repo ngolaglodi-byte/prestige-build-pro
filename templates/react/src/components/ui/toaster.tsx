@@ -1,20 +1,21 @@
-import { Toaster as SonnerToaster } from "sonner";
+import { Toaster as SonnerToaster } from "sonner"
 
 function Toaster() {
   return (
     <SonnerToaster
       position="bottom-right"
       toastOptions={{
-        style: {
-          background: "var(--color-background)",
-          color: "var(--color-text)",
-          border: "1px solid var(--color-border)",
+        classNames: {
+          toast: "group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg",
+          description: "group-[.toast]:text-muted-foreground",
+          actionButton: "group-[.toast]:bg-primary group-[.toast]:text-primary-foreground",
+          cancelButton: "group-[.toast]:bg-muted group-[.toast]:text-muted-foreground",
         },
       }}
       richColors
       closeButton
     />
-  );
+  )
 }
 
-export { Toaster };
+export { Toaster }

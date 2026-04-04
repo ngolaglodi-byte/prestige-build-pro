@@ -2561,7 +2561,7 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
 
 Brief: ${brief}
 
-COULEURS : utilise UNIQUEMENT les classes Tailwind du @theme :
+COULEURS : utilise UNIQUEMENT les classes Tailwind semantiques :
   bg-primary, text-primary-foreground, bg-secondary, text-secondary-foreground,
   bg-muted, text-muted-foreground, bg-card, text-card-foreground, border-border,
   bg-background, text-foreground, bg-destructive, text-destructive-foreground.
@@ -2977,22 +2977,16 @@ TOUS en UNE réponse.`;
       console.log('[SafetyNet] Created default Footer.tsx');
     }
 
-    // 5. index.css must have @theme (double check — writeGeneratedFiles should have added it)
+    // 5. index.css must have @tailwind directives (Tailwind 3)
     const cssPath = path.join(srcDir, 'index.css');
     if (fs.existsSync(cssPath)) {
       let css = fs.readFileSync(cssPath, 'utf8');
-      if (!css.includes('@theme')) {
-        // Copy the template index.css which has @theme
+      if (!css.includes('@tailwind base')) {
+        // Replace with template index.css which has correct @tailwind directives
         const templateCss = path.join(__dirname, 'templates', 'react', 'src', 'index.css');
         if (fs.existsSync(templateCss)) {
-          const templateContent = fs.readFileSync(templateCss, 'utf8');
-          // Extract @theme block from template and inject into AI's CSS
-          const themeMatch = templateContent.match(/@theme\s*\{[\s\S]*?\n\}/);
-          if (themeMatch) {
-            css = css.replace('@import "tailwindcss";', '@import "tailwindcss";\n\n' + themeMatch[0]);
-            fs.writeFileSync(cssPath, css);
-            console.log('[SafetyNet] Injected @theme from template into index.css');
-          }
+          fs.copyFileSync(templateCss, cssPath);
+          console.log('[SafetyNet] Replaced index.css with template (missing @tailwind directives)');
         }
       }
     }
@@ -3434,7 +3428,7 @@ function buildProjectStructure(code) {
 }
 
 // ─── UNIVERSAL INDEX.CSS FIX ───
-// Guarantees index.css works with Tailwind 4 no matter what the AI generates.
+// Guarantees index.css works with Tailwind 3 no matter what the AI generates.
 // Uses the template as the safe base, extracts AI's custom colors, merges them.
 // ── TAILWIND 3 CSS FIX (simple — TW3 is mature, few issues) ──
 // ── SAFE WRITE: ALL auto-fixes applied on EVERY file write ──
