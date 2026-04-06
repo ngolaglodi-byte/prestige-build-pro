@@ -2531,7 +2531,7 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
   package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx
 
 Génère SEULEMENT ces 2 fichiers :
-### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, bcrypt, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
+### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). SQLite via better-sqlite3 (SYNCHRONE, PAS de callbacks) : const Database = require('better-sqlite3'); const db = new Database('/app/data/app.db'); db.prepare('CREATE TABLE IF NOT EXISTS...').run(); db.prepare('SELECT * FROM...').all(); db.prepare('INSERT INTO...').run(). JAMAIS de sqlite3, JAMAIS de .verbose(), JAMAIS de .serialize(), JAMAIS de callbacks. bcryptjs (PAS bcrypt) : const bcrypt = require('bcryptjs'). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
 ### tailwind.config.js — Les couleurs du secteur. NE TOUCHE PAS index.css (il est fourni). Modifie SEULEMENT les couleurs dans tailwind.config.js. FORMAT :
 export default { darkMode: 'class', content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'], theme: { extend: { colors: { border: 'hsl([HSL secteur])', input: 'hsl([HSL])', ring: 'hsl([HSL primary])', background: 'hsl(0 0% 100%)', foreground: 'hsl([HSL sombre])', primary: { DEFAULT: 'hsl([HSL couleur principale])', foreground: 'hsl(210 40% 98%)' }, secondary: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, destructive: { DEFAULT: 'hsl(0 84.2% 60.2%)', foreground: 'hsl(210 40% 98%)' }, muted: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, accent: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, popover: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' }, card: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' } }, borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' } } }, plugins: [] };
 IMPORTANT : Les couleurs sont directement en hsl() dans tailwind.config.js. NE PAS mettre de couleurs dans index.css.
@@ -5345,7 +5345,14 @@ function cleanGeneratedContent(content) {
     }
   }
 
-  // 4) Fix Express wildcard patterns
+  // 4) Fix wrong SQLite package (sqlite3 → better-sqlite3)
+  // AI sometimes generates async sqlite3 code instead of sync better-sqlite3
+  cleaned = cleaned.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
+  cleaned = cleaned.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
+  cleaned = cleaned.replace(/new sqlite3\.Database\(/g, "new (require('better-sqlite3'))(");
+  cleaned = cleaned.replace(/require\(['"]bcrypt['"]\)/g, "require('bcryptjs')");
+
+  // 5) Fix Express wildcard patterns
   cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
   cleaned = cleaned.replace(/app\.use\(\s*['"](\*|\/\*)['"]\s*,/g, "app.use(/.*/,");
   cleaned = cleaned.replace(/router\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "router.get(/.*/,");
