@@ -2541,7 +2541,7 @@ Code COMPLET et fonctionnel. Pas de placeholder.`;
   // Phase 1 with retry (network timeouts happen)
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true });
+      const infraCode = await callClaudeAPI(systemBlocks, [{ role: 'user', content: infraPrompt }], 32000, { ...tracking, operation: 'generate' }, { useTools: true });
       allCode = infraCode;
       writeGeneratedFiles(projectDir, infraCode, projectId);
       try { await writeFilesToContainer(projectId, infraCode); } catch(e) {}
@@ -2631,8 +2631,8 @@ Chaque composant : export default function, responsive, lucide-react.`;
 
   // Launch BOTH in parallel — they don't depend on each other
   const [pagesResult, compsResult] = await Promise.allSettled([
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true }),
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 12000, { ...tracking, operation: 'generate' }, { useTools: true })
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 64000, { ...tracking, operation: 'generate' }, { useTools: true }),
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 32000, { ...tracking, operation: 'generate' }, { useTools: true })
   ]);
 
   // Merge pages result
