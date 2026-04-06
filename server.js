@@ -4104,16 +4104,14 @@ function writeGeneratedFiles(projectDir, code, projectId) {
         tsxFixes.push('WARN:raw-button');
       }
 
-      // G7. Duplicate imports
-      const importLines = content.match(/^import .+$/gm) || [];
-      const seenImports = new Set();
-      for (const line of importLines) {
-        if (seenImports.has(line)) {
-          content = content.replace(line + '\n', '');
-          tsxFixes.push('dedup-import');
-        }
-        seenImports.add(line);
-      }
+      // G7. Duplicate imports (single-pass, reliable)
+      const uniqueImports = new Set();
+      content = content.replace(/^import .+$/gm, (match) => {
+        if (uniqueImports.has(match)) { tsxFixes.push('dedup-import'); return ''; }
+        uniqueImports.add(match);
+        return match;
+      });
+      content = content.replace(/\n{3,}/g, '\n\n');
 
       // G8. window.location instead of react-router Link
       if (content.includes('window.location.href') && !filename.includes('Login') && !filename.includes('Admin')) {
@@ -4137,36 +4135,18 @@ function writeGeneratedFiles(projectDir, code, projectId) {
         return `https://picsum.photos/seed/${seed}/${w}/${h}`;
       });
 
-      // Fix duplicate imports (AI sometimes adds same import twice)
-      const importLines = content.match(/^import .+$/gm) || [];
-      const seen = new Set();
-      const deduped = [];
-      for (const line of importLines) {
-        if (!seen.has(line)) { seen.add(line); deduped.push(line); }
-      }
-      if (importLines.length !== deduped.length) {
-        for (const line of importLines) {
-          if (!deduped.includes(line)) {
-            content = content.replace(line + '\n', '');
-          }
-        }
-        // Remove the first occurrence of duplicates (keep the deduped ones)
-        const uniqueImports = new Set();
-        content = content.replace(/^import .+$/gm, (match) => {
-          if (uniqueImports.has(match)) return ''; // remove duplicate
-          uniqueImports.add(match);
-          return match;
-        });
-        content = content.replace(/\n{3,}/g, '\n\n');
-        console.log(`[WriteFiles] Removed duplicate imports from ${filename}`);
-      }
+      // Duplicate imports already handled by G7 above
 
       // Fix imports of packages not in package.json — remove them to prevent Vite crash
       const INSTALLED_PACKAGES = new Set([
         'react', 'react-dom', 'react-router-dom', 'lucide-react', 'clsx', 'tailwind-merge',
-        'sonner', 'cmdk', 'date-fns', 'recharts',
+        'sonner', 'cmdk', 'date-fns', 'recharts', 'embla-carousel-react', 'react-day-picker',
+        'input-otp', 'react-resizable-panels', 'tailwindcss-animate',
         '@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs',
         '@radix-ui/react-accordion', '@radix-ui/react-tooltip', '@radix-ui/react-popover',
+        '@radix-ui/react-context-menu', '@radix-ui/react-hover-card', '@radix-ui/react-menubar',
+        '@radix-ui/react-navigation-menu', '@radix-ui/react-toggle', '@radix-ui/react-toggle-group',
+        '@radix-ui/react-aspect-ratio', '@radix-ui/react-slot',
         '@radix-ui/react-checkbox', '@radix-ui/react-switch', '@radix-ui/react-radio-group',
         '@radix-ui/react-slider', '@radix-ui/react-progress', '@radix-ui/react-collapsible',
         '@radix-ui/react-scroll-area', '@radix-ui/react-separator', '@radix-ui/react-label',
@@ -4209,7 +4189,25 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     if (filename === 'server.js') {
       content = safeFixServerJs(content);
     }
+
+    // ── GUARD: Validate syntax before writing (rollback if broken) ──
+    const backup = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
+
+    // Syntax check for server.js (CommonJS — node --check works)
+    if (filename === 'server.js') {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`node --check "${filePath}"`, { timeout: 5000, stdio: 'pipe' });
+      } catch (syntaxErr) {
+        console.warn(`[Guard:syntax] server.js failed syntax check — rolling back`);
+        if (backup) fs.writeFileSync(filePath, backup);
+        else fs.unlinkSync(filePath);
+        // Don't count as written
+        continue;
+      }
+    }
+
     filesWritten++;
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
