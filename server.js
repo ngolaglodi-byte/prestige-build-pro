@@ -3493,6 +3493,171 @@ function buildProjectStructure(code) {
   return structure;
 }
 
+// ─── GUARD: safeFixServerJs — auto-correct ALL common AI errors in server.js ───
+function safeFixServerJs(content) {
+  const fixes = [];
+  const usesAsyncSqlite = content.includes('db.serialize') || content.includes('(err, rows)') || content.includes('(err, row)') || content.includes(".verbose()");
+
+  // ── 1. WRONG PACKAGES (simple string replace — always safe) ──
+  content = content.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
+  content = content.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
+  content = content.replace(/require\(['"]bcrypt['"]\)(?!js)/g, "require('bcryptjs')");
+
+  // ── 2. WRONG DB CONSTRUCTOR ──
+  content = content.replace(/new\s+sqlite3\.Database\([^)]*\)/g, "new (require('better-sqlite3'))('/app/data/app.db')");
+  content = content.replace(/['"]:\s*memory\s*:['"]/g, "'/app/data/app.db'");
+
+  // ── 3. IF CODE USES ASYNC SQLITE3 API → full rewrite via line-by-line transform ──
+  if (usesAsyncSqlite) {
+    fixes.push('async→sync rewrite');
+    const lines = content.split('\n');
+    const output = [];
+    let skipClosingBrace = 0; // track orphaned }); from callbacks
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // Remove db.serialize wrapper
+      if (/db\.serialize\s*\(/.test(line)) { skipClosingBrace++; continue; }
+
+      // db.run(SQL) for DDL → db.prepare(SQL).run()
+      line = line.replace(/db\.run\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*\)/, 'db.prepare($1).run()');
+
+      // db.run(SQL, [params]) → db.prepare(SQL).run(params)
+      line = line.replace(/db\.run\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\[([^\]]*)\]\s*\)/, 'db.prepare($1).run($2)');
+
+      // db.all(SQL, (err, rows) => { → const rows = db.prepare(SQL).all();
+      const allNoParams = line.match(/db\.all\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/);
+      if (allNoParams) {
+        line = line.replace(/db\.all\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/, 'try { const $2 = db.prepare($1).all();');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // db.all(SQL, [params], (err, rows) => { → const rows = db.prepare(SQL).all(params);
+      const allWithParams = line.match(/db\.all\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\[([^\]]*)\]\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/);
+      if (allWithParams) {
+        line = line.replace(/db\.all\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\[([^\]]*)\]\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/, 'try { const $3 = db.prepare($1).all($2);');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // db.get(SQL, (err, row) => { → const row = db.prepare(SQL).get();
+      const getNoParams = line.match(/db\.get\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/);
+      if (getNoParams) {
+        line = line.replace(/db\.get\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/, 'try { const $2 = db.prepare($1).get();');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // db.get(SQL, [params], (err, row) => { → const row = db.prepare(SQL).get(params);
+      const getWithParams = line.match(/db\.get\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\[([^\]]*)\]\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/);
+      if (getWithParams) {
+        line = line.replace(/db\.get\(\s*(`[^`]+`|'[^']+'|"[^"]+")\s*,\s*\[([^\]]*)\]\s*,\s*\(err,?\s*(\w+)\)\s*=>\s*\{/, 'try { const $3 = db.prepare($1).get($2);');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // bcrypt.compare(a, b, (err, match) => { → const match = bcrypt.compareSync(a, b);
+      if (/bcrypt\.compare\(/.test(line) && /=>\s*\{/.test(line)) {
+        line = line.replace(/bcrypt\.compare\(\s*([^,]+),\s*([^,]+),\s*(?:\([^)]*\)|[^)]*)\s*=>\s*\{/, '{ const match = bcrypt.compareSync($1, $2);');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // bcrypt.hash(a, n, (err, hash) => { → const hash = bcrypt.hashSync(a, n);
+      if (/bcrypt\.hash\(/.test(line) && /=>\s*\{/.test(line)) {
+        line = line.replace(/bcrypt\.hash\(\s*([^,]+),\s*(\d+)\s*,\s*(?:\([^)]*\)|[^)]*)\s*=>\s*\{/, '{ const hash = bcrypt.hashSync($1, $2);');
+        skipClosingBrace++;
+        output.push(line); continue;
+      }
+
+      // Remove if (err) checks
+      if (/^\s*if\s*\(\s*err\s*\)/.test(line)) {
+        // Skip this line and any single-line error handler
+        if (line.includes(';') && !line.includes('{')) continue;
+        if (line.includes('{') && line.includes('}')) continue;
+        if (line.includes('{')) { // multiline if(err) block — skip until }
+          let depth = 1;
+          while (++i < lines.length && depth > 0) {
+            depth += (lines[i].match(/\{/g) || []).length;
+            depth -= (lines[i].match(/\}/g) || []).length;
+          }
+          i--; continue;
+        }
+        continue;
+      }
+
+      // Replace orphaned }); with } catch(e) { res.status(500).json({error:e.message}); }
+      if (skipClosingBrace > 0 && /^\s*\}\s*\)\s*;?\s*$/.test(line)) {
+        output.push(line.replace(/\}\s*\)\s*;?/, '} catch(e) { if (res && !res.headersSent) res.status(500).json({error:e.message}); }'));
+        skipClosingBrace--;
+        continue;
+      }
+
+      // await bcrypt → sync
+      line = line.replace(/await\s+bcrypt\.hash\(([^,]+),\s*(\d+)\)/g, 'bcrypt.hashSync($1, $2)');
+      line = line.replace(/await\s+bcrypt\.compare\(([^,]+),\s*([^)]+)\)/g, 'bcrypt.compareSync($1, $2)');
+
+      output.push(line);
+    }
+    content = output.join('\n');
+  }
+
+  // ── 4. SIMPLE FIXES (always safe) ──
+
+  // Listen on 0.0.0.0
+  if (!content.includes("'0.0.0.0'") && !content.includes('"0.0.0.0"')) {
+    content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(\)/g, "app.listen($1, '0.0.0.0', ()");
+    content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(/g, "app.listen($1, '0.0.0.0', (");
+    content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*\)/g, "app.listen($1, '0.0.0.0', () => console.log('Server running on port ' + $1))");
+    fixes.push('listen→0.0.0.0');
+  }
+
+  // Missing /health
+  if (!content.includes('/health')) {
+    const idx = content.indexOf('express.json()');
+    if (idx > 0) { const at = content.indexOf(';', idx) + 1; content = content.substring(0, at) + "\napp.get('/health', (req, res) => res.json({ status: 'ok' }));" + content.substring(at); }
+    fixes.push('+/health');
+  }
+
+  // Missing static
+  if (!content.includes('express.static')) {
+    const idx = content.indexOf('express.json()');
+    if (idx > 0) { const at = content.indexOf(';', idx) + 1; content = content.substring(0, at) + "\napp.use(express.static('dist'));" + content.substring(at); }
+    fixes.push('+static');
+  }
+
+  // Missing SPA fallback
+  if (!content.includes("app.get('*'") && !content.includes('app.get("*"') && !content.includes('app.get(/.*/)')) {
+    const li = content.lastIndexOf('app.listen');
+    if (li > 0) { content = content.substring(0, li) + "app.get('*', (req, res) => res.sendFile(require('path').join(__dirname, 'dist', 'index.html')));\n\n" + content.substring(li); fixes.push('+SPA'); }
+  }
+
+  // ESM → CommonJS
+  if (/^import\s+\w+\s+from\s+/m.test(content)) {
+    content = content.replace(/import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?/g, "const $1 = require('$2');");
+    content = content.replace(/import\s*\{\s*([^}]+)\s*\}\s*from\s+['"]([^'"]+)['"]\s*;?/g, "const { $1 } = require('$2');");
+    content = content.replace(/export\s+default\s+/g, 'module.exports = ');
+    fixes.push('ESM→CJS');
+  }
+
+  // Trailing conversational text
+  const lastBrace = content.lastIndexOf('}');
+  const lastSemi = content.lastIndexOf(';');
+  const lastCode = Math.max(lastBrace, lastSemi);
+  if (lastCode > 0) {
+    const after = content.substring(lastCode + 1).trim();
+    if (after.length > 10 && /[a-zA-ZÀ-ÿ]/.test(after)) {
+      content = content.substring(0, lastCode + 1) + '\n';
+      fixes.push('trailing-text');
+    }
+  }
+
+  if (fixes.length > 0) console.log(`[Guard:server.js] Fixed: ${fixes.join(', ')}`);
+  return content;
+}
+
 // ─── UNIVERSAL INDEX.CSS FIX ───
 // Guarantees index.css works with Tailwind 3 no matter what the AI generates.
 // Uses the template as the safe base, extracts AI's custom colors, merges them.
@@ -4042,98 +4207,7 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
     // ── GUARD: Auto-fix server.js — every known AI mistake ──
     if (filename === 'server.js') {
-      const fixes = [];
-
-      // 1. Wrong packages
-      if (content.includes("require('sqlite3')") || content.includes('require("sqlite3")')) {
-        content = content.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
-        content = content.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
-        fixes.push('sqlite3→better-sqlite3');
-      }
-      if (content.includes("require('bcrypt')") || content.includes('require("bcrypt")')) {
-        content = content.replace(/require\(['"]bcrypt['"]\)/g, "require('bcryptjs')");
-        fixes.push('bcrypt→bcryptjs');
-      }
-
-      // 2. Wrong Database constructor
-      content = content.replace(/new\s+sqlite3\.Database\([^)]*\)/g, "new (require('better-sqlite3'))('/app/data/app.db')");
-      if (content.includes("':memory:'") || content.includes('":memory:"')) {
-        content = content.replace(/['"]:memory:['"]/g, "'/app/data/app.db'");
-        fixes.push(':memory:→/app/data/app.db');
-      }
-
-      // 3. Remove db.serialize wrapper (async sqlite3 pattern)
-      content = content.replace(/db\.serialize\(\s*(?:\(\)\s*=>|function\s*\(\))\s*\{/g, '// Database init {');
-
-      // 4. db.run(sql) → db.prepare(sql).run() for DDL
-      content = content.replace(/db\.run\(\s*`((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^`]*)`\s*\)/g, "db.prepare(`$1`).run()");
-      content = content.replace(/db\.run\(\s*'((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^']*)'\s*\)/g, "db.prepare('$1').run()");
-      content = content.replace(/db\.run\(\s*"((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^"]*)"\s*\)/g, 'db.prepare("$1").run()');
-
-      // 5. db.run(sql, [params], callback) → db.prepare(sql).run(...params)
-      content = content.replace(/db\.run\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{[^}]*\}\s*\)/g, 'db.prepare($1).run($2)');
-      content = content.replace(/db\.run\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*\)/g, 'db.prepare($1).run($2)');
-
-      // 6. db.get(sql, [params], callback) → db.prepare(sql).get(params)
-      content = content.replace(/db\.get\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).get($2);');
-      content = content.replace(/db\.get\(\s*('[^']+')\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).get($2);');
-
-      // 7. db.all(sql, [params], callback) → db.prepare(sql).all(params)
-      content = content.replace(/db\.all\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).all($2);');
-      content = content.replace(/db\.all\(\s*('[^']+')\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).all($2);');
-
-      // 8. db.all/db.get without params
-      content = content.replace(/db\.all\(\s*(`[^`]+`)\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $2 = db.prepare($1).all();');
-      content = content.replace(/db\.get\(\s*(`[^`]+`)\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $2 = db.prepare($1).get();');
-
-      // 9. bcrypt async → sync
-      content = content.replace(/bcrypt\.hash\(\s*([^,]+),\s*(\d+)\s*,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const hash = bcrypt.hashSync($1, $2);');
-      content = content.replace(/bcrypt\.compare\(\s*([^,]+),\s*([^,]+),\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const match = bcrypt.compareSync($1, $2);');
-      // Also fix standalone calls
-      content = content.replace(/await\s+bcrypt\.hash\(([^,]+),\s*(\d+)\)/g, 'bcrypt.hashSync($1, $2)');
-      content = content.replace(/await\s+bcrypt\.compare\(([^,]+),\s*([^)]+)\)/g, 'bcrypt.compareSync($1, $2)');
-
-      // 10. app.listen without 0.0.0.0
-      if (!content.includes("'0.0.0.0'") && !content.includes('"0.0.0.0"')) {
-        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(\)/g, "app.listen($1, '0.0.0.0', ()");
-        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(/g, "app.listen($1, '0.0.0.0', (");
-        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*\)/g, "app.listen($1, '0.0.0.0', () => console.log('Server running on port ' + $1))");
-        fixes.push('listen→0.0.0.0');
-      }
-
-      // 11. Missing /health endpoint
-      if (!content.includes('/health')) {
-        content = content.replace(/(app\.use\(express\.json\(\)\);?)/, "$1\napp.get('/health', (req, res) => res.json({ status: 'ok' }));");
-        fixes.push('+/health');
-      }
-
-      // 12. Missing static file serving
-      if (!content.includes("express.static('dist')") && !content.includes('express.static("dist")')) {
-        content = content.replace(/(app\.use\(express\.json\(\)\);?)/, "$1\napp.use(express.static('dist'));");
-        fixes.push('+static(dist)');
-      }
-
-      // 13. Missing SPA fallback
-      if (!content.includes("app.get('*'") && !content.includes('app.get("*"') && !content.includes('app.get(/.*/)')) {
-        const listenIdx = content.lastIndexOf('app.listen');
-        if (listenIdx > 0) {
-          content = content.substring(0, listenIdx) + "app.get('*', (req, res) => res.sendFile(require('path').join(__dirname, 'dist', 'index.html')));\n\n" + content.substring(listenIdx);
-          fixes.push('+SPA fallback');
-        }
-      }
-
-      // 14. ESM import instead of CommonJS require
-      if (content.includes('import express from') || content.includes("import express from")) {
-        content = content.replace(/import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?/g, "const $1 = require('$2');");
-        content = content.replace(/import\s*\{\s*([^}]+)\s*\}\s*from\s+['"]([^'"]+)['"]\s*;?/g, "const { $1 } = require('$2');");
-        content = content.replace(/export\s+default\s+/g, 'module.exports = ');
-        fixes.push('ESM→CommonJS');
-      }
-
-      // 15. Remove err checks from callback conversions (leftover from async→sync)
-      content = content.replace(/\s*if\s*\(\s*err\s*\)\s*\{?\s*(?:return\s+)?res\.status\(\d+\)\.json\(\{[^}]*\}\);?\s*\}?\s*/g, '\n');
-
-      if (fixes.length > 0) console.log(`[Guard:server.js] Fixed: ${fixes.join(', ')}`);
+      content = safeFixServerJs(content);
     }
     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
     filesWritten++;
