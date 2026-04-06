@@ -5332,10 +5332,18 @@ function cleanGeneratedContent(content) {
   if (firstCodeLine > 0) {
     cleaned = cleaned.substring(firstCodeLine);
   }
-  // Remove trailing conversational text after last closing brace/semicolon
-  cleaned = cleaned.replace(/\n(?:N'hésitez pas|N'hésite pas|Si vous|Tu peux|Bonne continuation)[^\n]*$/gm, '');
-  cleaned = cleaned.replace(/^\*\*[^*]+\*\*\s*$/gm, '');
-  cleaned = cleaned.replace(/^---+\s*$/gm, '');
+  // Remove ALL trailing text after last closing brace or semicolon
+  // Claude sometimes appends conversational text after the code
+  const lastBrace = cleaned.lastIndexOf('}');
+  const lastSemicolon = cleaned.lastIndexOf(';');
+  const lastCodeChar = Math.max(lastBrace, lastSemicolon);
+  if (lastCodeChar > 0) {
+    const after = cleaned.substring(lastCodeChar + 1).trim();
+    // If there's non-whitespace text after the last } or ;, it's conversational — remove it
+    if (after.length > 0 && /[a-zA-ZÀ-ÿ]/.test(after)) {
+      cleaned = cleaned.substring(0, lastCodeChar + 1) + '\n';
+    }
+  }
 
   // 4) Fix Express wildcard patterns
   cleaned = cleaned.replace(/app\.get\(\s*['"](\*|\/\*)['"]\s*,/g, "app.get(/.*/,");
