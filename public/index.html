@@ -1224,7 +1224,7 @@ async function sendChatMessage(message) {
     
     // Poll for job status (timeout after 10 minutes)
     let lastProgress = 0;
-    const pollDeadline = Date.now() + 10 * 60 * 1000;
+    const pollDeadline = Date.now() + 20 * 60 * 1000;
     while (Date.now() < pollDeadline) {
       await new Promise(r => setTimeout(r, 1000));
       let job;
@@ -1316,7 +1316,7 @@ async function generateFromImage(prompt) {
     
     // Poll for job status (timeout after 10 minutes)
     let lastProgress = 0;
-    const pollDeadline = Date.now() + 10 * 60 * 1000;
+    const pollDeadline = Date.now() + 20 * 60 * 1000;
     while (Date.now() < pollDeadline) {
       await new Promise(r => setTimeout(r, 1000));
       let job;
