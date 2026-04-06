@@ -5497,6 +5497,11 @@ async function launchTemplateContainer(projectId) {
   writeDefaultReactProject(projectDir);
   fs.writeFileSync(path.join(projectDir, 'package.json'), DEFAULT_PACKAGE_JSON);
   fs.writeFileSync(path.join(projectDir, 'vite.config.js'), DEFAULT_VITE_CONFIG);
+  // Write default tailwind.config.js (will be overwritten by AI with sector colors)
+  const templateTailwind = path.join(__dirname, 'templates', 'react', 'tailwind.config.js');
+  if (fs.existsSync(templateTailwind)) {
+    fs.copyFileSync(templateTailwind, path.join(projectDir, 'tailwind.config.js'));
+  }
   fs.writeFileSync(path.join(projectDir, 'index.html'), DEFAULT_INDEX_HTML);
   if (!fs.existsSync(path.join(projectDir, 'server.js'))) fs.writeFileSync(path.join(projectDir, 'server.js'), DEFAULT_SERVER_JS);
   const srcDir = path.join(projectDir, 'src');
