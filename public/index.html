@@ -1536,15 +1536,29 @@ async function autoCompile() {
 
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
-  const isFirstGeneration = !currentProject.generated_code || currentProject.build_status !== 'done';
+  const isFirstGeneration = currentProject.build_status !== 'done';
 
   if (isFirstGeneration) {
-    // First generation: wait for Vite to recompile with real files, then force reload
-    await new Promise(r => setTimeout(r, 2000));
-    loadDockerPreview(`/run/${currentProject.id}/`);
-    console.log('[AUTOCOMPILE] First generation — force reload after 2s');
+    // First generation: poll Vite until the real app is compiled (not the placeholder)
+    loading.style.display = 'flex';
+    loading.querySelector('.preview-loading-text').textContent = 'Compilation du preview...';
+    frame.style.display = 'none';
+    const url = `/run/${currentProject.id}/`;
+    for (let i = 0; i < 15; i++) {
+      try {
+        const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+        const html = await r.text();
+        // Real app has compiled React — placeholder has "en cours de construction"
+        if (r.ok && html.includes('src/main.tsx') && !html.includes('en cours de construction')) {
+          break;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    loadDockerPreview(url);
+    console.log('[AUTOCOMPILE] First generation — preview ready');
   } else if (frame.src && frame.src.includes('/run/' + currentProject.id)) {
-    // Modification: HMR handles updates instantly
+    // Modification: HMR handles updates instantly — no reload
     frame.style.display = 'block';
     loading.style.display = 'none';
     document.getElementById('preview-status').className = 'preview-status live';
