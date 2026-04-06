@@ -3883,13 +3883,85 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       content = content.replace(/\n{3,}/g, '\n\n');
     }
 
-    // AUTO-FIX: Ensure server.js listens on 0.0.0.0 (not just localhost)
-    if (filename === 'server.js' && !content.includes("'0.0.0.0'") && !content.includes('"0.0.0.0"')) {
-      content = content.replace(/app\.listen\(\s*(?:PORT|port|3000)\s*,\s*\(/g, "app.listen(PORT, '0.0.0.0', (");
-      content = content.replace(/app\.listen\(\s*(?:PORT|port|3000)\s*,\s*\(\)/g, "app.listen(PORT, '0.0.0.0', ()");
+    // ── GUARD: Auto-fix TSX/JSX — every known AI mistake ──
+    if (filename.endsWith('.tsx') || filename.endsWith('.jsx')) {
+      const tsxFixes = [];
+
+      // G1. Missing export default (pages and components must have it)
+      if (!filename.startsWith('src/components/ui/') && !filename.startsWith('src/lib/') && !filename.startsWith('src/hooks/')) {
+        if (!content.includes('export default') && !content.includes('export {')) {
+          const funcMatch = content.match(/^function\s+(\w+)/m);
+          if (funcMatch) {
+            content = content.replace(`function ${funcMatch[1]}`, `export default function ${funcMatch[1]}`);
+            tsxFixes.push('+export default');
+          }
+        }
+      }
+
+      // G2. Missing return JSX (function body without return)
+      if (filename.startsWith('src/pages/') || filename.startsWith('src/components/')) {
+        const funcBody = content.match(/export default function \w+[^{]*\{([\s\S]*)$/);
+        if (funcBody && !funcBody[1].includes('return') && !funcBody[1].includes('return (')) {
+          // Component function has no return — likely AI forgot it
+          tsxFixes.push('WARN:no-return');
+        }
+      }
+
+      // G3. Relative imports → @/ alias
+      content = content.replace(/from\s+['"]\.\.\/(components|pages|lib|hooks)\//g, "from '@/$1/");
+      content = content.replace(/from\s+['"]\.\/(components|pages|lib|hooks)\//g, "from '@/$1/");
+      if (content !== content) tsxFixes.push('relative→@/');
+
+      // G4. var(--color-*) CSS variables → semantic Tailwind classes
+      content = content.replace(/bg-\[var\(--color-primary\)\]/g, 'bg-primary');
+      content = content.replace(/text-\[var\(--color-primary\)\]/g, 'text-primary');
+      content = content.replace(/bg-\[var\(--color-background\)\]/g, 'bg-background');
+      content = content.replace(/text-\[var\(--color-text\)\]/g, 'text-foreground');
+      content = content.replace(/text-\[var\(--color-text-muted\)\]/g, 'text-muted-foreground');
+      content = content.replace(/border-\[var\(--color-border\)\]/g, 'border-border');
+      content = content.replace(/bg-\[var\(--color-surface\)\]/g, 'bg-muted');
+      content = content.replace(/bg-\[var\(--color-error\)\]/g, 'bg-destructive');
+
+      // G5. Hardcoded colors → semantic tokens
+      content = content.replace(/bg-white(?!\S)/g, 'bg-background');
+      content = content.replace(/text-black(?!\S)/g, 'text-foreground');
+      content = content.replace(/bg-gray-50(?!\S)/g, 'bg-muted');
+      content = content.replace(/bg-gray-100(?!\S)/g, 'bg-muted');
+      content = content.replace(/text-gray-500(?!\S)/g, 'text-muted-foreground');
+      content = content.replace(/text-gray-600(?!\S)/g, 'text-muted-foreground');
+      content = content.replace(/text-gray-900(?!\S)/g, 'text-foreground');
+      content = content.replace(/border-gray-200(?!\S)/g, 'border-border');
+      content = content.replace(/border-gray-300(?!\S)/g, 'border-border');
+
+      // G6. HTML brut → composants UI (className hints)
+      // Can't auto-replace <button> → <Button> safely (might break), but log warning
+      if (/<button\s+className/i.test(content) && !filename.startsWith('src/components/ui/')) {
+        tsxFixes.push('WARN:raw-button');
+      }
+
+      // G7. Duplicate imports
+      const importLines = content.match(/^import .+$/gm) || [];
+      const seenImports = new Set();
+      for (const line of importLines) {
+        if (seenImports.has(line)) {
+          content = content.replace(line + '\n', '');
+          tsxFixes.push('dedup-import');
+        }
+        seenImports.add(line);
+      }
+
+      // G8. window.location instead of react-router Link
+      if (content.includes('window.location.href') && !filename.includes('Login') && !filename.includes('Admin')) {
+        content = content.replace(/window\.location\.href\s*=\s*['"]\/([^'"]*)['"]/g, "navigate('/$1')");
+        if (!content.includes('useNavigate')) {
+          content = content.replace(/^(import .+ from 'react-router-dom'.*)$/m, "$1\nimport { useNavigate } from 'react-router-dom';");
+        }
+        tsxFixes.push('window.location→navigate');
+      }
+
+      if (tsxFixes.length > 0) console.log(`[Guard:tsx] ${filename}: ${tsxFixes.join(', ')}`);
     }
 
-    // ── UNIVERSAL TSX FIX: catch all common AI errors in components/pages ──
     if (filename.endsWith('.tsx') || filename.endsWith('.jsx')) {
       // Fix picsum.photos without seed (random images)
       content = content.replace(/https:\/\/picsum\.photos\/(\d+)\/(\d+)/g, (match, w, h) => {
@@ -3968,23 +4040,100 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
-    // Auto-fix server.js: wrong packages + async API → sync API
+    // ── GUARD: Auto-fix server.js — every known AI mistake ──
     if (filename === 'server.js') {
-      content = content.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
-      content = content.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
-      content = content.replace(/require\(['"]bcrypt['"]\)/g, "require('bcryptjs')");
-      // Fix: new sqlite3.Database(...) → new Database(...)
+      const fixes = [];
+
+      // 1. Wrong packages
+      if (content.includes("require('sqlite3')") || content.includes('require("sqlite3")')) {
+        content = content.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
+        content = content.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
+        fixes.push('sqlite3→better-sqlite3');
+      }
+      if (content.includes("require('bcrypt')") || content.includes('require("bcrypt")')) {
+        content = content.replace(/require\(['"]bcrypt['"]\)/g, "require('bcryptjs')");
+        fixes.push('bcrypt→bcryptjs');
+      }
+
+      // 2. Wrong Database constructor
       content = content.replace(/new\s+sqlite3\.Database\([^)]*\)/g, "new (require('better-sqlite3'))('/app/data/app.db')");
-      // Fix: db.serialize(() => { → remove wrapper
-      content = content.replace(/db\.serialize\(\s*\(\)\s*=>\s*\{/g, '// Database init');
-      content = content.replace(/db\.serialize\(\s*function\s*\(\)\s*\{/g, '// Database init');
-      // Fix: db.run(`CREATE TABLE...`) → db.prepare(...).run()
-      content = content.replace(/db\.run\(\s*`(CREATE\s+TABLE[^`]*)`\s*\)/g, "db.prepare(`$1`).run()");
-      content = content.replace(/db\.run\(\s*'(CREATE\s+TABLE[^']*)'\s*\)/g, "db.prepare('$1').run()");
-      // Fix: bcrypt.hash(pw, 10, (err, hash) => {...}) → bcrypt.hashSync(pw, 12)
-      content = content.replace(/bcrypt\.hash\(([^,]+),\s*\d+,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const hash = bcrypt.hashSync($1, 12);');
-      content = content.replace(/bcrypt\.compare\(([^,]+),\s*([^,]+),\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const match = bcrypt.compareSync($1, $2);');
-      console.log(`[WriteFiles] Auto-fixed server.js packages`);
+      if (content.includes("':memory:'") || content.includes('":memory:"')) {
+        content = content.replace(/['"]:memory:['"]/g, "'/app/data/app.db'");
+        fixes.push(':memory:→/app/data/app.db');
+      }
+
+      // 3. Remove db.serialize wrapper (async sqlite3 pattern)
+      content = content.replace(/db\.serialize\(\s*(?:\(\)\s*=>|function\s*\(\))\s*\{/g, '// Database init {');
+
+      // 4. db.run(sql) → db.prepare(sql).run() for DDL
+      content = content.replace(/db\.run\(\s*`((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^`]*)`\s*\)/g, "db.prepare(`$1`).run()");
+      content = content.replace(/db\.run\(\s*'((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^']*)'\s*\)/g, "db.prepare('$1').run()");
+      content = content.replace(/db\.run\(\s*"((?:CREATE|INSERT|UPDATE|DELETE|DROP|ALTER)[^"]*)"\s*\)/g, 'db.prepare("$1").run()');
+
+      // 5. db.run(sql, [params], callback) → db.prepare(sql).run(...params)
+      content = content.replace(/db\.run\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{[^}]*\}\s*\)/g, 'db.prepare($1).run($2)');
+      content = content.replace(/db\.run\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*\)/g, 'db.prepare($1).run($2)');
+
+      // 6. db.get(sql, [params], callback) → db.prepare(sql).get(params)
+      content = content.replace(/db\.get\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).get($2);');
+      content = content.replace(/db\.get\(\s*('[^']+')\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).get($2);');
+
+      // 7. db.all(sql, [params], callback) → db.prepare(sql).all(params)
+      content = content.replace(/db\.all\(\s*(`[^`]+`)\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).all($2);');
+      content = content.replace(/db\.all\(\s*('[^']+')\s*,\s*\[([^\]]*)\]\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $3 = db.prepare($1).all($2);');
+
+      // 8. db.all/db.get without params
+      content = content.replace(/db\.all\(\s*(`[^`]+`)\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $2 = db.prepare($1).all();');
+      content = content.replace(/db\.get\(\s*(`[^`]+`)\s*,\s*\(err,\s*(\w+)\)\s*=>\s*\{/g, '{ const $2 = db.prepare($1).get();');
+
+      // 9. bcrypt async → sync
+      content = content.replace(/bcrypt\.hash\(\s*([^,]+),\s*(\d+)\s*,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const hash = bcrypt.hashSync($1, $2);');
+      content = content.replace(/bcrypt\.compare\(\s*([^,]+),\s*([^,]+),\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const match = bcrypt.compareSync($1, $2);');
+      // Also fix standalone calls
+      content = content.replace(/await\s+bcrypt\.hash\(([^,]+),\s*(\d+)\)/g, 'bcrypt.hashSync($1, $2)');
+      content = content.replace(/await\s+bcrypt\.compare\(([^,]+),\s*([^)]+)\)/g, 'bcrypt.compareSync($1, $2)');
+
+      // 10. app.listen without 0.0.0.0
+      if (!content.includes("'0.0.0.0'") && !content.includes('"0.0.0.0"')) {
+        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(\)/g, "app.listen($1, '0.0.0.0', ()");
+        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*,\s*\(/g, "app.listen($1, '0.0.0.0', (");
+        content = content.replace(/app\.listen\(\s*(PORT|port|\d+)\s*\)/g, "app.listen($1, '0.0.0.0', () => console.log('Server running on port ' + $1))");
+        fixes.push('listen→0.0.0.0');
+      }
+
+      // 11. Missing /health endpoint
+      if (!content.includes('/health')) {
+        content = content.replace(/(app\.use\(express\.json\(\)\);?)/, "$1\napp.get('/health', (req, res) => res.json({ status: 'ok' }));");
+        fixes.push('+/health');
+      }
+
+      // 12. Missing static file serving
+      if (!content.includes("express.static('dist')") && !content.includes('express.static("dist")')) {
+        content = content.replace(/(app\.use\(express\.json\(\)\);?)/, "$1\napp.use(express.static('dist'));");
+        fixes.push('+static(dist)');
+      }
+
+      // 13. Missing SPA fallback
+      if (!content.includes("app.get('*'") && !content.includes('app.get("*"') && !content.includes('app.get(/.*/)')) {
+        const listenIdx = content.lastIndexOf('app.listen');
+        if (listenIdx > 0) {
+          content = content.substring(0, listenIdx) + "app.get('*', (req, res) => res.sendFile(require('path').join(__dirname, 'dist', 'index.html')));\n\n" + content.substring(listenIdx);
+          fixes.push('+SPA fallback');
+        }
+      }
+
+      // 14. ESM import instead of CommonJS require
+      if (content.includes('import express from') || content.includes("import express from")) {
+        content = content.replace(/import\s+(\w+)\s+from\s+['"]([^'"]+)['"]\s*;?/g, "const $1 = require('$2');");
+        content = content.replace(/import\s*\{\s*([^}]+)\s*\}\s*from\s+['"]([^'"]+)['"]\s*;?/g, "const { $1 } = require('$2');");
+        content = content.replace(/export\s+default\s+/g, 'module.exports = ');
+        fixes.push('ESM→CommonJS');
+      }
+
+      // 15. Remove err checks from callback conversions (leftover from async→sync)
+      content = content.replace(/\s*if\s*\(\s*err\s*\)\s*\{?\s*(?:return\s+)?res\.status\(\d+\)\.json\(\{[^}]*\}\);?\s*\}?\s*/g, '\n');
+
+      if (fixes.length > 0) console.log(`[Guard:server.js] Fixed: ${fixes.join(', ')}`);
     }
     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
     filesWritten++;
