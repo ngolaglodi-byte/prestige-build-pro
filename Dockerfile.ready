@@ -11,7 +11,7 @@ WORKDIR /app
 COPY templates/react/ .
 
 # Install ALL dependencies — build tools are needed for better-sqlite3 (native)
-RUN npm install && echo "npm install OK — $(ls node_modules | wc -l) packages"
+RUN npm install --legacy-peer-deps && echo "npm install OK — $(ls node_modules | wc -l) packages"
 
 # Verify critical packages are installed (--input-type=commonjs because package.json has type:module)
 RUN node --input-type=commonjs -e "require('react'); require('express'); require('better-sqlite3'); console.log('All packages OK')"

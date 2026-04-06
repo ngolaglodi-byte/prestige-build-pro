@@ -30,7 +30,7 @@ function DatePicker({ date, onDateChange, placeholder = "Pick a date", className
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0">
-        <Calendar mode="single" selected={selectedDate} onSelect={handleSelect} initialFocus />
+        <Calendar mode="single" selected={selectedDate} onSelect={handleSelect} autoFocus />
       </PopoverContent>
     </Popover>
   )
