@@ -587,13 +587,10 @@ const DEFAULT_APP_JSX = `import React from 'react';
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-center p-8">
-        <h1 className="text-4xl font-bold text-gray-900 mb-4">Bienvenue</h1>
-        <p className="text-lg text-gray-600 mb-8">Votre application React est en cours de construction.</p>
-        <a href="/health" className="inline-block px-6 py-3 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 transition-colors">
-          Vérifier le statut
-        </a>
+    <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="text-center p-8 animate-pulse">
+        <div className="w-12 h-12 mx-auto mb-6 rounded-full border-4 border-primary border-t-transparent animate-spin" />
+        <p className="text-muted-foreground text-sm">Chargement...</p>
       </div>
     </div>
   );
@@ -2928,16 +2925,17 @@ TOUS en UNE réponse.`;
     const appPath = path.join(srcDir, 'App.tsx');
     if (fs.existsSync(appPath)) {
       let app = fs.readFileSync(appPath, 'utf8');
-      const allFiles = (fs.existsSync(path.join(srcDir, 'pages')) ? fs.readdirSync(path.join(srcDir, 'pages'), { withFileTypes: true }) : []).concat(
-        fs.existsSync(path.join(srcDir, 'components')) ? fs.readdirSync(path.join(srcDir, 'components'), { withFileTypes: true }) : []
-      );
       let usesToast = false;
-      for (const f of allFiles) {
-        if (!f.isFile()) continue;
-        try {
-          const content = fs.readFileSync(path.join(f.parentPath || path.join(srcDir, 'pages'), f.name), 'utf8');
-          if (content.includes('toast(') || content.includes('toast.')) usesToast = true;
-        } catch {}
+      for (const sub of ['pages', 'components']) {
+        const dir = path.join(srcDir, sub);
+        if (!fs.existsSync(dir)) continue;
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.endsWith('.tsx') && !f.endsWith('.jsx')) continue;
+          try {
+            const content = fs.readFileSync(path.join(dir, f), 'utf8');
+            if (content.includes('toast(') || content.includes('toast.')) usesToast = true;
+          } catch {}
+        }
       }
       if (usesToast && !app.includes('Toaster')) {
         app = "import { Toaster } from 'sonner';\n" + app;
