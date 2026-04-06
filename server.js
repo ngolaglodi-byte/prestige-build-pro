@@ -2531,7 +2531,62 @@ FICHIERS AUTOMATIQUES (NE PAS GÉNÉRER — fournis par le serveur) :
   package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx
 
 Génère SEULEMENT ces 2 fichiers :
-### server.js — COMMONJS OBLIGATOIRE (const express = require('express') — JAMAIS import). SQLite via better-sqlite3 (SYNCHRONE, PAS de callbacks) : const Database = require('better-sqlite3'); const db = new Database('/app/data/app.db'); db.prepare('CREATE TABLE IF NOT EXISTS...').run(); db.prepare('SELECT * FROM...').all(); db.prepare('INSERT INTO...').run(). JAMAIS de sqlite3, JAMAIS de .verbose(), JAMAIS de .serialize(), JAMAIS de callbacks. bcryptjs (PAS bcrypt) : const bcrypt = require('bcryptjs'). Express complet: tables SQLite adaptées au brief, routes API CRUD, auth JWT, /health, sert dist/. app.listen(PORT, '0.0.0.0', ...). Ordre: static → public routes → auth → protected /api → SPA fallback. FIN: // CREDENTIALS: email=admin@project.com password=[fort]
+### server.js — COPIE CE SQUELETTE EXACTEMENT, remplis les TODO :
+
+const express = require('express');
+const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const path = require('path');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'prestige-secret-key';
+const db = new Database('/app/data/app.db');
+db.pragma('journal_mode = WAL');
+
+app.use(cors()); app.use(helmet({ contentSecurityPolicy: false })); app.use(compression());
+app.use(express.json()); app.use(express.static('dist'));
+
+// TODO: Cree les tables avec db.prepare('CREATE TABLE IF NOT EXISTS ...').run()
+// TODO: Insere les donnees demo avec db.prepare('INSERT OR IGNORE INTO ...').run(...)
+// TODO: Hash admin password: const hash = bcrypt.hashSync('MotDePasse', 12)
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+// TODO: Routes publiques (GET /api/services, GET /api/programs, POST /api/contact)
+
+// Auth
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+  if (!user || !bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Identifiants invalides' });
+  const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+});
+
+const auth = (req, res, next) => {
+  const t = req.headers.authorization?.split(' ')[1];
+  if (!t) return res.status(401).json({ error: 'Non autorise' });
+  try { req.user = jwt.verify(t, JWT_SECRET); next(); } catch { res.status(401).json({ error: 'Token invalide' }); }
+};
+
+// TODO: Routes protegees (GET /api/admin/stats, etc.) avec auth middleware
+
+app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
+app.listen(PORT, '0.0.0.0', () => console.log('Server running on port ' + PORT));
+// CREDENTIALS: email=admin@project.com password=MotDePasse
+
+API better-sqlite3 OBLIGATOIRE — EXEMPLES :
+  db.prepare('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)').run();
+  db.prepare('INSERT INTO users (name) VALUES (?)').run('Jean');
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(1);
+  const all = db.prepare('SELECT * FROM users').all();
+  const info = db.prepare('INSERT INTO users (name) VALUES (?)').run('Marie'); // info.lastInsertRowid
+  JAMAIS de callbacks. JAMAIS de .serialize(). JAMAIS de .verbose(). JAMAIS de require('sqlite3'). JAMAIS de require('bcrypt').
 ### tailwind.config.js — Les couleurs du secteur. NE TOUCHE PAS index.css (il est fourni). Modifie SEULEMENT les couleurs dans tailwind.config.js. FORMAT :
 export default { darkMode: 'class', content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'], theme: { extend: { colors: { border: 'hsl([HSL secteur])', input: 'hsl([HSL])', ring: 'hsl([HSL primary])', background: 'hsl(0 0% 100%)', foreground: 'hsl([HSL sombre])', primary: { DEFAULT: 'hsl([HSL couleur principale])', foreground: 'hsl(210 40% 98%)' }, secondary: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, destructive: { DEFAULT: 'hsl(0 84.2% 60.2%)', foreground: 'hsl(210 40% 98%)' }, muted: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, accent: { DEFAULT: 'hsl([HSL])', foreground: 'hsl([HSL])' }, popover: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' }, card: { DEFAULT: 'hsl(0 0% 100%)', foreground: 'hsl([HSL])' } }, borderRadius: { lg: '0.5rem', md: 'calc(0.5rem - 2px)', sm: 'calc(0.5rem - 4px)' } } }, plugins: [] };
 IMPORTANT : Les couleurs sont directement en hsl() dans tailwind.config.js. NE PAS mettre de couleurs dans index.css.
@@ -3913,6 +3968,24 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
     if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+    // Auto-fix server.js: wrong packages + async API → sync API
+    if (filename === 'server.js') {
+      content = content.replace(/require\(['"]sqlite3['"]\)\.verbose\(\)/g, "require('better-sqlite3')");
+      content = content.replace(/require\(['"]sqlite3['"]\)/g, "require('better-sqlite3')");
+      content = content.replace(/require\(['"]bcrypt['"]\)/g, "require('bcryptjs')");
+      // Fix: new sqlite3.Database(...) → new Database(...)
+      content = content.replace(/new\s+sqlite3\.Database\([^)]*\)/g, "new (require('better-sqlite3'))('/app/data/app.db')");
+      // Fix: db.serialize(() => { → remove wrapper
+      content = content.replace(/db\.serialize\(\s*\(\)\s*=>\s*\{/g, '// Database init');
+      content = content.replace(/db\.serialize\(\s*function\s*\(\)\s*\{/g, '// Database init');
+      // Fix: db.run(`CREATE TABLE...`) → db.prepare(...).run()
+      content = content.replace(/db\.run\(\s*`(CREATE\s+TABLE[^`]*)`\s*\)/g, "db.prepare(`$1`).run()");
+      content = content.replace(/db\.run\(\s*'(CREATE\s+TABLE[^']*)'\s*\)/g, "db.prepare('$1').run()");
+      // Fix: bcrypt.hash(pw, 10, (err, hash) => {...}) → bcrypt.hashSync(pw, 12)
+      content = content.replace(/bcrypt\.hash\(([^,]+),\s*\d+,\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const hash = bcrypt.hashSync($1, 12);');
+      content = content.replace(/bcrypt\.compare\(([^,]+),\s*([^,]+),\s*(?:function\s*\([^)]*\)|[^)]*=>)\s*\{/g, '{ const match = bcrypt.compareSync($1, $2);');
+      console.log(`[WriteFiles] Auto-fixed server.js packages`);
+    }
     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
     filesWritten++;
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
