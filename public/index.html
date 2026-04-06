@@ -1536,17 +1536,27 @@ async function autoCompile() {
 
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
+  const previewAlreadyLoaded = frame.src && frame.src.includes('/run/' + currentProject.id);
 
-  if (frame.src && frame.src.includes('/run/' + currentProject.id)) {
-    // Preview already loaded — Vite HMR handles updates via usePolling in Docker
+  if (previewAlreadyLoaded) {
+    // Modification: HMR handles updates via usePolling — just ensure visible
     frame.style.display = 'block';
     loading.style.display = 'none';
     document.getElementById('preview-status').className = 'preview-status live';
     document.getElementById('preview-status').innerHTML = '<span>✓ En direct</span>';
-    console.log('[AUTOCOMPILE] HMR — no reload needed');
+    // Force one reload to pick up file changes (HMR may miss large rewrites)
+    try { frame.contentWindow.location.reload(); } catch {}
+    console.log('[AUTOCOMPILE] Modification — reload');
   } else {
-    // First load — Vite needs a moment to recompile after files are written
+    // First generation: load preview, then reload once after Vite compiles new files
     loadDockerPreview(`/run/${currentProject.id}/`);
+    // Vite polling detects changes in 500ms, compilation takes 2-3s → reload at 4s
+    setTimeout(() => {
+      if (currentProject) {
+        console.log('[AUTOCOMPILE] First gen — reloading for compiled content');
+        loadDockerPreview(`/run/${currentProject.id}/`);
+      }
+    }, 4000);
   }
 }
 
