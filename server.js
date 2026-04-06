@@ -5540,8 +5540,8 @@ async function launchTemplateContainer(projectId) {
   // Wait for health (should be very fast — everything is pre-installed)
   const healthy = await waitForContainerHealth(projectId, 10000);
   if (healthy) {
-    db.prepare("UPDATE projects SET build_status='done',build_url=? WHERE id=?").run(`/run/${projectId}/`, projectId);
-    console.log(`[Template] Container ready for project ${projectId} (instant launch)`);
+    db.prepare("UPDATE projects SET build_status='building',build_url=? WHERE id=?").run(`/run/${projectId}/`, projectId);
+    console.log(`[Template] Container ready for project ${projectId} — waiting for AI generation`);
     return { success: true, url: `/run/${projectId}/` };
   }
   console.warn(`[Template] Container unhealthy for project ${projectId}`);
