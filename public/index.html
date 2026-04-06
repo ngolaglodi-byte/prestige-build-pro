@@ -1534,22 +1534,23 @@ function toggleCodePanel() { document.getElementById('code-panel').classList.tog
 async function autoCompile() {
   if (!currentProject || !currentProject.id) return;
 
-  // With bind mounts, files written to disk ARE the files Vite watches.
-  // Vite HMR detects changes automatically — NO reload needed.
-  // Just ensure the iframe is visible (it might be hidden during first generation).
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
+  const isFirstGeneration = !currentProject.generated_code || currentProject.build_status !== 'done';
 
-  if (frame.src && frame.src.includes('/run/' + currentProject.id)) {
-    // Preview already loaded — Vite HMR handles the update INSTANTLY
-    // No reload, no spinner, no waiting. Just like Lovable.
+  if (isFirstGeneration) {
+    // First generation: wait for Vite to recompile with real files, then force reload
+    await new Promise(r => setTimeout(r, 2000));
+    loadDockerPreview(`/run/${currentProject.id}/`);
+    console.log('[AUTOCOMPILE] First generation — force reload after 2s');
+  } else if (frame.src && frame.src.includes('/run/' + currentProject.id)) {
+    // Modification: HMR handles updates instantly
     frame.style.display = 'block';
     loading.style.display = 'none';
     document.getElementById('preview-status').className = 'preview-status live';
     document.getElementById('preview-status').innerHTML = '<span>✓ En direct</span>';
     console.log('[AUTOCOMPILE] HMR — no reload needed');
   } else {
-    // First time: load the preview iframe
     loadDockerPreview(`/run/${currentProject.id}/`);
   }
 }
