@@ -2327,29 +2327,38 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             const serverCalls = parsed.serverToolCalls.length;
             console.log(`[callClaudeAPI] Tools: ${fileCount} write + ${editCount} edit + ${serverCalls} server, usage: ${JSON.stringify(r.usage || {})}`);
 
-            // Execute server-side tools (fetch_website, read_console_logs, security_check)
-            // and return results to Claude in a follow-up call if needed
-            if (serverCalls > 0 && (opts._depth || 0) < 5) {
+            // Continue conversation with tool results so Claude generates ALL files
+            // Without this, Claude stops after the first batch of write_file calls
+            const allToolCalls = r.content.filter(b => b.type === 'tool_use');
+            if (allToolCalls.length > 0 && (opts._depth || 0) < 8) {
               (async () => {
                 try {
                   const toolResults = [];
-                  // Inject project directory for file-based tools
                   const projDir = trackingInfo?.projectId ? path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId)) : null;
-                  for (const tc of parsed.serverToolCalls) {
-                    const input = { ...tc.input };
-                    if (projDir) input._projectDir = projDir;
-                    if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
-                    const result = await executeServerTool(tc.name, input);
-                    toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
-                    console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
+                  // Send tool_results for ALL tool calls (write_file, edit_file, server tools)
+                  for (const tc of allToolCalls) {
+                    if (['write_file', 'edit_file', 'line_replace'].includes(tc.name)) {
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: `OK — ${tc.name} ${tc.input?.path || ''}` });
+                    } else {
+                      // Server-side tools: execute and return result
+                      const input = { ...tc.input };
+                      if (projDir) input._projectDir = projDir;
+                      if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
+                      const result = await executeServerTool(tc.name, input);
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
+                      console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
+                    }
                   }
                   // Continue conversation with tool results (all in one user message per Anthropic API spec)
+                  const currentCode = toolResponseToCode(parsed);
                   const followUp = await callClaudeAPI(systemBlocks, [
                     ...messages,
                     { role: 'assistant', content: r.content },
                     { role: 'user', content: toolResults }
                   ], maxTokens, trackingInfo, { ...opts, _depth: (opts._depth || 0) + 1 });
-                  resolve(followUp);
+                  // Merge current files with continuation files
+                  const merged = currentCode && followUp ? currentCode + '\n\n' + followUp : (followUp || currentCode || '');
+                  resolve(merged);
                 } catch (e) {
                   // Server tool failed — still return what we have
                   const code = toolResponseToCode(parsed);
