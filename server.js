@@ -535,6 +535,10 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     allowedHosts: true,
+    watch: {
+      usePolling: true,
+      interval: 500,
+    },
     proxy: {
       '/api': 'http://localhost:3000',
       '/health': 'http://localhost:3000'
@@ -5528,7 +5532,9 @@ async function launchTemplateContainer(projectId) {
         `${dataDir}:/app/data`,
         `${projectDir}/src:/app/src`,
         `${projectDir}/server.js:/app/server.js`,
-        `${projectDir}/index.html:/app/index.html`
+        `${projectDir}/index.html:/app/index.html`,
+        `${projectDir}/tailwind.config.js:/app/tailwind.config.js`,
+        `${projectDir}/vite.config.js:/app/vite.config.js`
       ],
       Memory: 512 * 1024 * 1024,
       NanoCpus: 500000000,
