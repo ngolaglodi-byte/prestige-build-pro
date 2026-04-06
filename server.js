@@ -2928,7 +2928,7 @@ TOUS en UNE réponse.`;
     const appPath = path.join(srcDir, 'App.tsx');
     if (fs.existsSync(appPath)) {
       let app = fs.readFileSync(appPath, 'utf8');
-      const allFiles = fs.readdirSync(path.join(srcDir, 'pages'), { withFileTypes: true }).concat(
+      const allFiles = (fs.existsSync(path.join(srcDir, 'pages')) ? fs.readdirSync(path.join(srcDir, 'pages'), { withFileTypes: true }) : []).concat(
         fs.existsSync(path.join(srcDir, 'components')) ? fs.readdirSync(path.join(srcDir, 'components'), { withFileTypes: true }) : []
       );
       let usesToast = false;
