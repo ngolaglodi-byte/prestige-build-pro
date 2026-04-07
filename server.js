@@ -2525,16 +2525,78 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
     dashboard:  { primary: '215 60% 50%',  accent: '215 40% 60%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
     fitness:    { primary: '15 90% 55%',   accent: '142 70% 45%', muted: '15 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
   };
-  // Detect sector key from profile prompt
+  // ── STEP 1: Extract colors from brief (user-specified colors override everything) ──
+  const COLOR_NAMES = {
+    rouge: '0 80% 50%', red: '0 80% 50%',
+    bleu: '220 80% 50%', blue: '220 80% 50%',
+    vert: '142 70% 45%', green: '142 70% 45%',
+    jaune: '45 95% 55%', yellow: '45 95% 55%',
+    orange: '25 90% 55%',
+    violet: '270 70% 55%', purple: '270 70% 55%',
+    rose: '330 80% 60%', pink: '330 80% 60%',
+    noir: '0 0% 10%', black: '0 0% 10%',
+    blanc: '0 0% 100%', white: '0 0% 100%',
+    marron: '24 60% 35%', brown: '24 60% 35%',
+    beige: '35 40% 85%',
+    or: '42 80% 50%', gold: '42 80% 50%', dore: '42 80% 50%',
+    gris: '0 0% 50%', gray: '0 0% 50%', grey: '0 0% 50%',
+    turquoise: '174 70% 45%', cyan: '185 80% 45%',
+    bordeaux: '345 70% 30%', burgundy: '345 70% 30%',
+    corail: '16 80% 60%', coral: '16 80% 60%',
+    indigo: '240 60% 50%',
+    emeraude: '160 70% 40%', emerald: '160 70% 40%',
+    saumon: '6 70% 65%', salmon: '6 70% 65%',
+    lavande: '270 50% 70%', lavender: '270 50% 70%',
+    marine: '215 70% 25%', navy: '215 70% 25%',
+    olive: '80 40% 40%',
+    creme: '40 30% 92%', cream: '40 30% 92%',
+  };
+  // Also parse hex colors from brief
+  function hexToHsl(hex) {
+    const r = parseInt(hex.slice(1,3),16)/255, g = parseInt(hex.slice(3,5),16)/255, b = parseInt(hex.slice(5,7),16)/255;
+    const max = Math.max(r,g,b), min = Math.min(r,g,b), l = (max+min)/2;
+    if (max === min) return `0 0% ${Math.round(l*100)}%`;
+    const d = max-min, s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+    let h = 0;
+    if (max === r) h = ((g-b)/d + (g < b ? 6 : 0)) * 60;
+    else if (max === g) h = ((b-r)/d + 2) * 60;
+    else h = ((r-g)/d + 4) * 60;
+    return `${Math.round(h)} ${Math.round(s*100)}% ${Math.round(l*100)}%`;
+  }
+
+  const briefLower = brief.toLowerCase();
+  const extractedColors = [];
+  // Extract named colors (theme: rouge, blanc, noir) — match whole words only
+  for (const [name, hsl] of Object.entries(COLOR_NAMES)) {
+    const regex = new RegExp(`\\b${name}\\b`, 'i');
+    if (regex.test(briefLower) && hsl !== '0 0% 100%') extractedColors.push({ name, hsl });
+  }
+  // Extract hex colors (#FF0000, #333)
+  const hexMatches = brief.match(/#[0-9a-fA-F]{6}\b/g) || [];
+  for (const hex of hexMatches) extractedColors.push({ name: hex, hsl: hexToHsl(hex) });
+
+  // Build custom palette from extracted colors
+  let briefPalette = null;
+  if (extractedColors.length >= 1) {
+    const primary = extractedColors[0].hsl;
+    const accent = extractedColors.length >= 2 ? extractedColors[1].hsl : primary.replace(/\d+%$/, '60%');
+    const fg = extractedColors.find(c => c.name === 'noir' || c.name === 'black')?.hsl || primary.replace(/(\d+)\s+(\d+)%\s+(\d+)%/, '$1 50% 10%');
+    briefPalette = { primary, accent, muted: primary.replace(/(\d+)\s+(\d+)%\s+(\d+)%/, '$1 15% 96%'), card: '0 0% 100%', foreground: fg };
+    console.log(`[Gen] Colors extracted from brief: ${extractedColors.map(c => c.name).join(', ')} → primary: hsl(${primary})`);
+  }
+
+  // ── STEP 2: Detect sector (fallback if no colors in brief) ──
   let sectorKey = null;
-  if (sectorProfile && ai) {
-    const b = brief.toLowerCase();
+  if (ai) {
     for (const [key, profile] of Object.entries(ai.SECTOR_PROFILES || {})) {
-      if (profile.keywords && profile.keywords.some(k => b.includes(k.toLowerCase()))) { sectorKey = key; break; }
+      if (profile.keywords && profile.keywords.some(k => briefLower.includes(k.toLowerCase()))) { sectorKey = key; break; }
     }
   }
-  const palette = SECTOR_PALETTES[sectorKey] || null;
-  if (palette) {
+
+  // ── STEP 3: Choose palette — brief colors > sector > neutral default ──
+  const DEFAULT_PALETTE = { primary: '220 70% 50%', accent: '215 50% 60%', muted: '220 15% 96%', card: '0 0% 100%', foreground: '220 50% 10%' };
+  const palette = briefPalette || SECTOR_PALETTES[sectorKey] || DEFAULT_PALETTE;
+  {
     const tailwindConfig = `/** @type {import('tailwindcss').Config} */
 export default {
   darkMode: 'class',
@@ -2601,7 +2663,8 @@ export default {
 };
 `;
     fs.writeFileSync(path.join(projectDir, 'tailwind.config.js'), tailwindConfig);
-    console.log(`[Gen] Sector palette applied: ${sectorKey} (primary: hsl(${palette.primary}))`);
+    const source = briefPalette ? 'brief colors' : (sectorKey ? `sector:${sectorKey}` : 'default');
+    console.log(`[Gen] Palette applied (${source}): primary hsl(${palette.primary})`);
   }
 
   // Helper: save partial code to DB after each successful phase
