@@ -478,6 +478,17 @@ if (!adminExists) {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+// Caddy on_demand TLS check — validates that a subdomain is allowed
+app.get('/api/tls-check', (req, res) => {
+  const domain = req.query.domain || '';
+  // Allow preview-{id}.app.prestige-build.dev and {subdomain}.prestige-build.dev
+  if (domain.endsWith('.app.prestige-build.dev') || domain.endsWith('.prestige-build.dev')) {
+    res.status(200).end();
+  } else {
+    res.status(403).end();
+  }
+});
+
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
