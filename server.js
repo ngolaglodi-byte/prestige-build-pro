@@ -2509,6 +2509,101 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
   const startTime = Date.now();
   const sectorProfile = ai ? ai.detectSectorProfile(brief) : null;
 
+  // ── SECTOR COLORS: Generate tailwind.config.js with sector-specific palette ──
+  // Like Lovable: colors are injected server-side, not by the AI
+  const SECTOR_PALETTES = {
+    health:     { primary: '199 100% 36%', accent: '168 76% 47%', muted: '199 20% 96%', card: '0 0% 100%', foreground: '199 50% 10%' },
+    restaurant: { primary: '24 80% 45%',   accent: '38 90% 55%',  muted: '30 30% 95%',  card: '30 20% 99%', foreground: '24 40% 10%' },
+    ecommerce:  { primary: '262 80% 50%',  accent: '330 80% 55%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
+    corporate:  { primary: '215 70% 30%',  accent: '215 50% 45%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
+    saas:       { primary: '262 83% 58%',  accent: '230 90% 60%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
+    education:  { primary: '220 70% 50%',  accent: '30 90% 55%',  muted: '220 15% 96%', card: '0 0% 100%', foreground: '220 50% 10%' },
+    realestate: { primary: '40 70% 45%',   accent: '0 0% 15%',    muted: '40 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
+    hotel:      { primary: '35 60% 50%',   accent: '40 80% 55%',  muted: '35 20% 96%',  card: '35 10% 99%', foreground: '35 40% 10%' },
+    portfolio:  { primary: '0 0% 15%',     accent: '0 0% 40%',    muted: '0 0% 96%',    card: '0 0% 100%', foreground: '0 0% 5%' },
+    nonprofit:  { primary: '142 70% 40%',  accent: '38 90% 55%',  muted: '142 15% 96%', card: '0 0% 100%', foreground: '142 40% 10%' },
+    dashboard:  { primary: '215 60% 50%',  accent: '215 40% 60%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
+    fitness:    { primary: '15 90% 55%',   accent: '142 70% 45%', muted: '15 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
+  };
+  // Detect sector key from profile prompt
+  let sectorKey = null;
+  if (sectorProfile && ai) {
+    const b = brief.toLowerCase();
+    for (const [key, profile] of Object.entries(ai.SECTOR_PROFILES || {})) {
+      if (profile.keywords && profile.keywords.some(k => b.includes(k.toLowerCase()))) { sectorKey = key; break; }
+    }
+  }
+  const palette = SECTOR_PALETTES[sectorKey] || null;
+  if (palette) {
+    const tailwindConfig = `/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: 'class',
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  theme: {
+    extend: {
+      colors: {
+        border: 'hsl(${palette.foreground.replace(/\d+%$/, '90%')})',
+        input: 'hsl(${palette.foreground.replace(/\d+%$/, '90%')})',
+        ring: 'hsl(${palette.primary})',
+        background: 'hsl(0 0% 100%)',
+        foreground: 'hsl(${palette.foreground})',
+        primary: {
+          DEFAULT: 'hsl(${palette.primary})',
+          foreground: 'hsl(0 0% 98%)',
+        },
+        secondary: {
+          DEFAULT: 'hsl(${palette.muted})',
+          foreground: 'hsl(${palette.foreground})',
+        },
+        destructive: {
+          DEFAULT: 'hsl(0 84.2% 60.2%)',
+          foreground: 'hsl(0 0% 98%)',
+        },
+        muted: {
+          DEFAULT: 'hsl(${palette.muted})',
+          foreground: 'hsl(${palette.foreground.replace(/\d+%$/, '46%')})',
+        },
+        accent: {
+          DEFAULT: 'hsl(${palette.accent})',
+          foreground: 'hsl(0 0% 98%)',
+        },
+        popover: {
+          DEFAULT: 'hsl(0 0% 100%)',
+          foreground: 'hsl(${palette.foreground})',
+        },
+        card: {
+          DEFAULT: 'hsl(${palette.card})',
+          foreground: 'hsl(${palette.foreground})',
+        },
+      },
+      borderRadius: {
+        lg: '0.5rem',
+        md: 'calc(0.5rem - 2px)',
+        sm: 'calc(0.5rem - 4px)',
+      },
+      keyframes: {
+        'fade-in': { from: { opacity: '0', transform: 'translateY(8px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
+        'slide-in-from-bottom': { from: { opacity: '0', transform: 'translateY(0.5rem)' }, to: { opacity: '1', transform: 'translateY(0)' } },
+        'accordion-down': { from: { height: '0' }, to: { height: 'var(--radix-accordion-content-height)' } },
+        'accordion-up': { from: { height: 'var(--radix-accordion-content-height)' }, to: { height: '0' } },
+        'caret-blink': { '0%,70%,100%': { opacity: '1' }, '20%,50%': { opacity: '0' } },
+      },
+      animation: {
+        'fade-in': 'fade-in 0.3s ease-out',
+        'slide-in': 'slide-in-from-bottom 0.3s ease-out',
+        'accordion-down': 'accordion-down 0.2s ease-out',
+        'accordion-up': 'accordion-up 0.2s ease-out',
+        'caret-blink': 'caret-blink 1.25s ease-out infinite',
+      },
+    },
+  },
+  plugins: [require("tailwindcss-animate")],
+};
+`;
+    fs.writeFileSync(path.join(projectDir, 'tailwind.config.js'), tailwindConfig);
+    console.log(`[Gen] Sector palette applied: ${sectorKey} (primary: hsl(${palette.primary}))`);
+  }
+
   // Helper: save partial code to DB after each successful phase
   function savePartialToDb() {
     try {
