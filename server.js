@@ -7386,11 +7386,13 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // Authorization check: user must own the project or be admin
-    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
-    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
-      json(res, 403, { error: 'Accès refusé à ce projet.' });
-      return;
+    // Authorization check: user must own the project or be admin (skip for Vite assets)
+    if (!isViteAsset) {
+      const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+      if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+        json(res, 403, { error: 'Accès refusé à ce projet.' });
+        return;
+      }
     }
 
     // Build the target path: keep /run/{id}/ prefix (Vite uses --base /run/{id}/)
