@@ -6838,7 +6838,7 @@ async function monitorContainers() {
 
       // Auto-sleep: stop idle pbp-project-* containers only (never the main Prestige container)
       const targetContainer = getContainerName(project.id);
-      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && lastAccess > 0 && targetContainer.startsWith('pbp-project-')) {
+      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && targetContainer.startsWith('pbp-project-')) {
         console.log(`[Sleep] Stopping idle ${targetContainer} (idle ${Math.round(idle / 60000)}min)`);
         try {
           const container = docker.getContainer(targetContainer);
@@ -8789,6 +8789,16 @@ export default defineConfig({
     } else {
       json(res, 500, { error: 'Échec du redémarrage. Essayez de recompiler le projet.' });
     }
+    return;
+  }
+
+  // ─── CLOSE WORKSPACE (stop container after idle timeout) ───
+  if (url.match(/^\/api\/projects\/\d+\/close$/) && req.method==='POST') {
+    const id = parseInt(url.split('/')[3]);
+    // Set lastAccess to now — the monitoring loop will stop it after SLEEP_TIMEOUT_MS
+    containerLastAccess.set(id, Date.now());
+    console.log(`[Close] Workspace closed for project ${id} — container will auto-stop in ${SLEEP_TIMEOUT_MS/60000}min`);
+    json(res, 200, { ok: true });
     return;
   }
 

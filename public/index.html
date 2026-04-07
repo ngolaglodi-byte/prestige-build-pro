@@ -1072,6 +1072,10 @@ async function openWorkspace(id) {
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
+  // Notify server to mark container idle (triggers auto-sleep after timeout)
+  if (currentProject && currentProject.id && token) {
+    fetch('/api/projects/' + currentProject.id + '/close', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }).catch(() => {});
+  }
   // Hide workspace
   document.getElementById('workspace-view').classList.remove('active');
   // Show dashboard + header
