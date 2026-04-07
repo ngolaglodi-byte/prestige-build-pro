@@ -7344,7 +7344,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Authentication check for Docker proxy
-    const user = getAuth(req);
+    // Skip auth for Vite sub-resources (JS, CSS, HMR) — they come from the authenticated iframe
+    // Only the initial HTML page load needs auth (it sets the cookie for subsequent requests)
+    const reqPath = runMatch[2] || '/';
+    const isViteAsset = /\.(tsx|ts|jsx|js|css|svg|png|jpg|ico|woff|woff2|ttf|eot|map)(\?|$)/.test(reqPath)
+      || reqPath.includes('@vite') || reqPath.includes('@react-refresh')
+      || reqPath.includes('node_modules') || reqPath.includes('__vite');
+    const user = isViteAsset ? { id: 0, role: 'preview' } : getAuth(req);
     if (!user) {
       const hasHeader = !!(req.headers['authorization'] || '').replace('Bearer ', '');
       const hasQuery = req.url.includes('token=');
