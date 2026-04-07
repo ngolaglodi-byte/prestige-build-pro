@@ -2512,18 +2512,36 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
   // ── SECTOR COLORS: Generate tailwind.config.js with sector-specific palette ──
   // Like Lovable: colors are injected server-side, not by the AI
   const SECTOR_PALETTES = {
-    health:     { primary: '199 100% 36%', accent: '168 76% 47%', muted: '199 20% 96%', card: '0 0% 100%', foreground: '199 50% 10%' },
-    restaurant: { primary: '24 80% 45%',   accent: '38 90% 55%',  muted: '30 30% 95%',  card: '30 20% 99%', foreground: '24 40% 10%' },
-    ecommerce:  { primary: '262 80% 50%',  accent: '330 80% 55%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
-    corporate:  { primary: '215 70% 30%',  accent: '215 50% 45%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
-    saas:       { primary: '262 83% 58%',  accent: '230 90% 60%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
-    education:  { primary: '220 70% 50%',  accent: '30 90% 55%',  muted: '220 15% 96%', card: '0 0% 100%', foreground: '220 50% 10%' },
-    realestate: { primary: '40 70% 45%',   accent: '0 0% 15%',    muted: '40 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
-    hotel:      { primary: '35 60% 50%',   accent: '40 80% 55%',  muted: '35 20% 96%',  card: '35 10% 99%', foreground: '35 40% 10%' },
-    portfolio:  { primary: '0 0% 15%',     accent: '0 0% 40%',    muted: '0 0% 96%',    card: '0 0% 100%', foreground: '0 0% 5%' },
-    nonprofit:  { primary: '142 70% 40%',  accent: '38 90% 55%',  muted: '142 15% 96%', card: '0 0% 100%', foreground: '142 40% 10%' },
-    dashboard:  { primary: '215 60% 50%',  accent: '215 40% 60%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
-    fitness:    { primary: '15 90% 55%',   accent: '142 70% 45%', muted: '15 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
+    // Original 12
+    health:      { primary: '199 100% 36%', accent: '168 76% 47%', muted: '199 20% 96%', card: '0 0% 100%', foreground: '199 50% 10%' },
+    restaurant:  { primary: '24 80% 45%',   accent: '38 90% 55%',  muted: '30 30% 95%',  card: '30 20% 99%', foreground: '24 40% 10%' },
+    ecommerce:   { primary: '262 80% 50%',  accent: '330 80% 55%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
+    corporate:   { primary: '215 70% 30%',  accent: '215 50% 45%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
+    saas:        { primary: '262 83% 58%',  accent: '230 90% 60%', muted: '262 15% 96%', card: '0 0% 100%', foreground: '262 40% 10%' },
+    education:   { primary: '220 70% 50%',  accent: '30 90% 55%',  muted: '220 15% 96%', card: '0 0% 100%', foreground: '220 50% 10%' },
+    realestate:  { primary: '40 70% 45%',   accent: '0 0% 15%',    muted: '40 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
+    hotel:       { primary: '35 60% 50%',   accent: '40 80% 55%',  muted: '35 20% 96%',  card: '35 10% 99%', foreground: '35 40% 10%' },
+    portfolio:   { primary: '0 0% 15%',     accent: '0 0% 40%',    muted: '0 0% 96%',    card: '0 0% 100%', foreground: '0 0% 5%' },
+    nonprofit:   { primary: '142 70% 40%',  accent: '38 90% 55%',  muted: '142 15% 96%', card: '0 0% 100%', foreground: '142 40% 10%' },
+    dashboard:   { primary: '215 60% 50%',  accent: '215 40% 60%', muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 50% 10%' },
+    fitness:     { primary: '15 90% 55%',   accent: '142 70% 45%', muted: '15 15% 96%',  card: '0 0% 100%', foreground: '0 0% 10%' },
+    // +16 nouveaux secteurs
+    legal:       { primary: '215 40% 25%',  accent: '40 60% 45%',  muted: '215 10% 96%', card: '0 0% 100%', foreground: '215 30% 10%' },
+    beauty:      { primary: '330 50% 55%',  accent: '280 40% 65%', muted: '330 20% 96%', card: '330 10% 99%', foreground: '330 30% 10%' },
+    automotive:  { primary: '0 0% 15%',     accent: '0 80% 50%',   muted: '0 5% 96%',    card: '0 0% 100%', foreground: '0 0% 10%' },
+    event:       { primary: '340 70% 55%',  accent: '42 80% 50%',  muted: '340 15% 96%', card: '0 0% 100%', foreground: '340 40% 10%' },
+    media:       { primary: '0 80% 45%',    accent: '0 0% 15%',    muted: '0 10% 96%',   card: '0 0% 100%', foreground: '0 0% 10%' },
+    construction:{ primary: '35 70% 45%',   accent: '215 50% 40%', muted: '35 15% 96%',  card: '0 0% 100%', foreground: '35 40% 10%' },
+    agriculture: { primary: '100 50% 40%',  accent: '35 60% 50%',  muted: '100 15% 96%', card: '100 10% 99%', foreground: '100 30% 10%' },
+    transport:   { primary: '215 70% 45%',  accent: '25 80% 50%',  muted: '215 15% 96%', card: '0 0% 100%', foreground: '215 40% 10%' },
+    religious:   { primary: '270 30% 35%',  accent: '42 60% 50%',  muted: '270 10% 96%', card: '270 5% 99%', foreground: '270 20% 10%' },
+    gaming:      { primary: '270 90% 55%',  accent: '160 90% 45%', muted: '270 15% 96%', card: '270 10% 5%', foreground: '0 0% 95%' },
+    music:       { primary: '280 70% 50%',  accent: '330 80% 55%', muted: '280 15% 96%', card: '0 0% 100%', foreground: '280 40% 10%' },
+    travel:      { primary: '195 80% 45%',  accent: '25 80% 55%',  muted: '195 15% 96%', card: '0 0% 100%', foreground: '195 40% 10%' },
+    childcare:   { primary: '195 70% 55%',  accent: '45 90% 55%',  muted: '195 20% 96%', card: '195 10% 99%', foreground: '195 40% 10%' },
+    veterinary:  { primary: '142 60% 40%',  accent: '25 70% 50%',  muted: '142 15% 96%', card: '0 0% 100%', foreground: '142 30% 10%' },
+    finance:     { primary: '160 50% 30%',  accent: '215 40% 40%', muted: '160 10% 96%', card: '0 0% 100%', foreground: '160 30% 10%' },
+    fashion:     { primary: '0 0% 10%',     accent: '330 60% 55%', muted: '0 0% 96%',    card: '0 0% 100%', foreground: '0 0% 5%' },
   };
   // ── STEP 1: Extract colors from brief (user-specified colors override everything) ──
   const COLOR_NAMES = {
@@ -2586,11 +2604,45 @@ async function generateMultiTurn(projectId, brief, jobId, job, projectDir, syste
   }
 
   // ── STEP 2: Detect sector (fallback if no colors in brief) ──
+  // Extended keywords for all 28 sectors (12 from ai.js + 16 new)
+  // Keywords ordered: SPECIFIC sectors first, GENERIC sectors last
+  // This prevents "entreprise btp" matching corporate instead of construction
+  const SECTOR_KEYWORDS = [
+    // Specific sectors (multi-word keywords match first)
+    ['veterinary', ['vétérinaire','clinique animale','toilettage','pension animale','animalerie']],
+    ['legal', ['avocat','notaire','juridique','cabinet avocat','huissier','tribunal','contentieux']],
+    ['beauty', ['coiffure','coiffeur','barbier','esthétique','manucure','maquillage','onglerie','soin visage']],
+    ['automotive', ['garage','automobile','concessionnaire','carrosserie','mécanique auto','location voiture']],
+    ['event', ['mariage','wedding','événement','cérémonie','réception','séminaire','dj']],
+    ['media', ['télévision','chaîne tv','radio','podcast','presse','audiovisuel','diffusion']],
+    ['construction', ['btp','architecte','rénovation','chantier','maçon','plombier','électricien']],
+    ['agriculture', ['agriculture','ferme','élevage','plantation','agricole','coopérative']],
+    ['transport', ['logistique','déménagement','taxi','vtc','coursier','fret','expédition']],
+    ['religious', ['église','mosquée','temple','paroisse','diocèse','culte','pastoral']],
+    ['gaming', ['gaming','esport','jeux vidéo','streamer','gamer','tournoi esport']],
+    ['music', ['musique','label','concert','chanteur','rappeur','studio musique','album']],
+    ['travel', ['agence voyage','croisière','circuits','destination','excursion','tourisme voyage']],
+    ['childcare', ['crèche','garderie','maternelle','périscolaire','nounou','ludothèque']],
+    ['fashion', ['fashion','styliste','mannequin','défilé','couture','prêt-à-porter','collection mode']],
+    ['finance', ['assurance','banque','comptable','courtier','investissement','fiscalité','patrimoine']],
+    // Original sectors (broader keywords)
+    ['realestate', ['immobilier','appartements','maisons','propriété','logement','agence immobilière']],
+    ['hotel', ['hôtel','resort','hébergement','vacances','séjour']],
+    ['restaurant', ['restaurant','café','bistro','boulangerie','pâtisserie','pizzeria','brasserie','gastronomie','traiteur']],
+    ['health', ['hôpital','clinique','médecin','santé','dentiste','pharmacie','médical','soins','patient']],
+    ['fitness', ['fitness','salle de sport','musculation','gym','crossfit','yoga','coach sportif']],
+    ['education', ['école','formation','cours','université','académie','enseignement']],
+    ['saas', ['saas','startup','logiciel','plateforme','software','cloud']],
+    ['portfolio', ['portfolio','photographe','designer','artiste','créatif','freelance','graphiste']],
+    ['nonprofit', ['association','ong','humanitaire','fondation','bénévolat','solidarité']],
+    ['dashboard', ['dashboard','back-office','erp','tableau de bord','analytics','crm']],
+    ['ecommerce', ['boutique','shop','magasin','e-commerce','panier','commande']],
+    // Most generic — match last
+    ['corporate', ['entreprise','société','b2b','consulting','conseil','cabinet','agence','industrie','groupe']],
+  ];
   let sectorKey = null;
-  if (ai) {
-    for (const [key, profile] of Object.entries(ai.SECTOR_PROFILES || {})) {
-      if (profile.keywords && profile.keywords.some(k => briefLower.includes(k.toLowerCase()))) { sectorKey = key; break; }
-    }
+  for (const [key, keywords] of SECTOR_KEYWORDS) {
+    if (keywords.some(k => briefLower.includes(k.toLowerCase()))) { sectorKey = key; break; }
   }
 
   // ── STEP 3: Choose palette — brief colors > sector > neutral default ──
