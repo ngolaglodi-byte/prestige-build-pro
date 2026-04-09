@@ -632,9 +632,10 @@ const correctionInProgress = new Set();
 // Ensure previews directory exists
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
-let compiler, ai;
+let compiler, ai, coherence;
 try { compiler = require('./src/compiler'); } catch(e) {}
 try { ai = require('./src/ai'); } catch(e) {}
+try { coherence = require('./src/coherence'); } catch(e) { console.warn('[Init] coherence module not loaded:', e.message); }
 
 // ─── DATABASE ───
 let db;
@@ -3197,6 +3198,54 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
     }
   }
 
+  // ── COHERENCE CHECKS (V1: warning-only, no auto-fix) ──
+  // 3 AST-style cross-file checks: imports, DB columns, API routes.
+  // Detects bugs that the multi-turn pipeline can introduce (Phase 1 creates table X,
+  // Phase 2 references column Y that doesn't exist). Pure regex parsing — never crashes.
+  if (coherence && coherence.runCoherenceChecks) {
+    try {
+      const filesForCheck = readProjectFilesRecursive(projectDir);
+      const coherenceResult = coherence.runCoherenceChecks(filesForCheck);
+      if (coherenceResult.issues.length > 0) {
+        const byType = {};
+        for (const i of coherenceResult.issues) byType[i.type] = (byType[i.type] || 0) + 1;
+        log('warn', 'coherence', 'cross-file issues detected (warning-only)', {
+          jobId, projectId, total: coherenceResult.issues.length, byType
+        });
+        // Surface to job for frontend visibility
+        job.coherence_warnings = coherenceResult.issues.map(i => ({
+          file: i.file, type: i.type, message: i.message, hint: i.hint
+        }));
+      } else {
+        console.log(`[Gen] Coherence checks passed — 0 issues`);
+      }
+    } catch (e) {
+      log('warn', 'coherence', 'check threw (non-fatal)', { jobId, error: e.message });
+    }
+  }
+
+  // ── RUNTIME HEALTH CHECK (V1: warning-only, no auto-fix) ──
+  // Live HTTP fetch on the container's Vite dev server + parses recent docker logs.
+  // Catches: container crashed, white screen (broken HTML shell), Vite compilation errors.
+  // Designed to be tolerant: 3 retries with backoff, never blocks the response.
+  try {
+    const runtimeResult = await runRuntimeHealthCheck(projectId);
+    if (!runtimeResult.ok) {
+      log('warn', 'runtime', 'health check failed (warning-only)', {
+        jobId, projectId,
+        httpStatus: runtimeResult.httpStatus,
+        htmlOk: runtimeResult.htmlOk,
+        issueCount: runtimeResult.issues.length,
+        duration_ms: runtimeResult.duration_ms
+      });
+      job.runtime_warnings = runtimeResult.issues;
+    } else {
+      console.log(`[Gen] Runtime health check OK (${runtimeResult.duration_ms}ms)`);
+    }
+  } catch (e) {
+    log('warn', 'runtime', 'health check threw (non-fatal)', { jobId, error: e.message });
+  }
+
   // ── SEMANTIC VERIFICATION: GPT-4 Mini checks if brief is fully satisfied ──
   // Like Lovable: after generation, verify the OUTPUT matches the INPUT (brief)
   // Not syntax checks (back-tests do that) — this checks MEANING.
@@ -4582,6 +4631,113 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
   console.log(`[WriteFiles] Total: ${filesWritten} files written, SSE pushed to WC`);
+}
+
+// ─── RUNTIME HEALTH CHECK ───
+// Performs a live HTTP fetch on the project container's Vite dev server and reads
+// recent docker logs to detect compilation/runtime errors that wouldn't be caught
+// by static checks. WARNING-MODE: never blocks generation, never triggers auto-fix
+// in V1. Just produces structured `issues` for visibility.
+//
+// Returns: { ok: boolean, issues: [{type, severity, message}], httpStatus, htmlOk }
+async function runRuntimeHealthCheck(projectId, opts = {}) {
+  const result = {
+    ok: true,
+    issues: [],
+    httpStatus: null,
+    htmlOk: null,
+    duration_ms: 0
+  };
+  if (!coherence) {
+    result.issues.push({ type: 'COHERENCE_UNAVAILABLE', severity: 'warning', message: 'coherence module not loaded' });
+    return result;
+  }
+  const containerName = getContainerName(projectId);
+  const t0 = Date.now();
+
+  // 1. HTTP fetch with retry+backoff (Vite HMR may need a beat after file writes)
+  const maxAttempts = opts.maxAttempts || 3;
+  const baseDelayMs = opts.baseDelayMs || 2000;
+  let html = null;
+  let httpStatus = null;
+  let httpErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const fetched = await fetchContainerHttp(containerName, 5173, '/', 8000);
+      httpStatus = fetched.status;
+      html = fetched.body;
+      if (httpStatus >= 200 && httpStatus < 400) break;
+    } catch (e) {
+      httpErr = e.message;
+    }
+    if (attempt < maxAttempts) {
+      await new Promise(r => setTimeout(r, baseDelayMs * attempt));
+    }
+  }
+  result.httpStatus = httpStatus;
+
+  if (httpStatus === null || httpStatus >= 500 || httpErr) {
+    result.ok = false;
+    result.issues.push({
+      type: 'CONTAINER_UNREACHABLE',
+      severity: 'warning',
+      message: `Container ${containerName} unreachable or returned error after ${maxAttempts} attempts: ${httpErr || 'HTTP ' + httpStatus}`
+    });
+  } else if (html) {
+    // 2. Validate HTML shell structure
+    const htmlCheck = coherence.validateHtmlStructure(html);
+    result.htmlOk = htmlCheck.ok;
+    if (!htmlCheck.ok) {
+      result.ok = false;
+      result.issues.push({
+        type: 'HTML_STRUCTURE_INVALID',
+        severity: 'warning',
+        message: `Served HTML invalid: ${htmlCheck.reason}`
+      });
+    }
+  }
+
+  // 3. Read docker logs for Vite/runtime errors
+  try {
+    const logs = execSync(`docker logs --tail 100 ${containerName} 2>&1`, { timeout: 5000, encoding: 'utf8' });
+    const logCheck = coherence.parseViteLogs(logs);
+    if (logCheck.hasErrors) {
+      result.ok = false;
+      // Cap to first 5 errors to avoid log spam
+      const sampled = logCheck.errors.slice(0, 5);
+      result.issues.push({
+        type: 'VITE_RUNTIME_ERRORS',
+        severity: 'warning',
+        message: `${logCheck.errors.length} error(s) in Vite logs`,
+        details: sampled
+      });
+    }
+  } catch (e) {
+    // Docker logs unavailable — don't crash, just note it
+    log('warn', 'runtime', 'docker logs failed', { projectId, error: e.message });
+  }
+
+  result.duration_ms = Date.now() - t0;
+  return result;
+}
+
+// Helper: fetch over the docker network. Used by runRuntimeHealthCheck.
+// The Prestige server joins the pbp-projects network, so it can resolve containers by DNS.
+function fetchContainerHttp(host, port, path, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host, port, path, method: 'GET',
+      timeout: timeoutMs,
+      headers: { 'Accept': 'text/html' }
+    }, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.end();
+  });
 }
 
 // ─── PLAN MODE — set of plan IDs already executed (anti-double-approve guard) ───
@@ -8152,7 +8308,9 @@ const server = http.createServer(async (req, res) => {
       suggestions: job.suggestions || null,
       chat_message: job.chat_message || null,
       plan_markdown: job.plan_markdown || null,
-      plan_id: job.plan_id || null
+      plan_id: job.plan_id || null,
+      coherence_warnings: job.coherence_warnings || null,
+      runtime_warnings: job.runtime_warnings || null
     });
     return;
   }
