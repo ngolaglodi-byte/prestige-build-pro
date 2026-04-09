@@ -1745,6 +1745,7 @@ async function sendPlanMessage(message) {
 
       if (job.status === 'done' && job.plan_markdown) {
         renderPlanInContainer(planDiv, job.plan_markdown, job.plan_id, true);
+        attachFeedbackButtons(planDiv, job_id);
         break;
       }
       if (job.status === 'error') {
@@ -1861,6 +1862,7 @@ async function approvePlan(planId, container, actionsEl) {
         const editor = document.getElementById('code-editor');
         if (editor) editor.textContent = generatedCode;
         await autoCompile();
+        attachFeedbackButtons(container, job_id);
         break;
       }
       if (job.status === 'error') {
@@ -1946,6 +1948,7 @@ async function generateFromImage(prompt) {
         }
         if (job.suggestions) addSuggestions(job.suggestions);
         await autoCompile();
+        attachFeedbackButtons(assistantDiv, job_id);
         break;
       }
 
@@ -2284,6 +2287,7 @@ async function sendChatMessageWithSkip(message, existingContainer) {
         if (currentProject) currentProject.generated_code = job.code;
         await autoCompile();
         if (currentProject) currentProject.build_status = 'done';
+        attachFeedbackButtons(existingContainer, job_id);
         break;
       }
       if (job.status === 'error') {
@@ -2344,6 +2348,7 @@ async function sendPlanMessageWithSkip(message, existingContainer) {
       }
       if (job.status === 'done' && job.plan_markdown) {
         renderPlanInContainer(existingContainer, job.plan_markdown, job.plan_id, true);
+        attachFeedbackButtons(existingContainer, job_id);
         break;
       }
       if (job.status === 'error') {
