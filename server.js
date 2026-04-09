@@ -3310,6 +3310,29 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
     log('warn', 'runtime', 'health check threw (non-fatal)', { jobId, error: e.message });
   }
 
+  // ── VISUAL VERIFICATION (Sprint D — FEATURE-FLAGGED OFF by default) ──
+  // Browser-based check via Playwright in a separate container. Catches white screens,
+  // JS console errors, API failures. Skipped silently if ENABLE_VISUAL_VERIFY != 'true'.
+  if (VISUAL_VERIFY_ENABLED) {
+    try {
+      const visualResult = await runVisualVerification(projectId);
+      if (visualResult && !visualResult.ok) {
+        log('warn', 'visual', 'verification failed (warning-only)', {
+          jobId, projectId,
+          issueCount: visualResult.issues.length,
+          consoleErrors: visualResult.console_errors?.length || 0,
+          networkErrors: visualResult.network_errors?.length || 0,
+          duration_ms: visualResult.duration_ms
+        });
+        job.visual_warnings = visualResult.issues;
+      } else if (visualResult) {
+        console.log(`[Gen] Visual verification OK (${visualResult.duration_ms}ms)`);
+      }
+    } catch (e) {
+      log('warn', 'visual', 'check threw (non-fatal)', { jobId, error: e.message });
+    }
+  }
+
   // ── SEMANTIC VERIFICATION: GPT-4 Mini checks if brief is fully satisfied ──
   // Like Lovable: after generation, verify the OUTPUT matches the INPUT (brief)
   // Not syntax checks (back-tests do that) — this checks MEANING.
@@ -4695,6 +4718,58 @@ function writeGeneratedFiles(projectDir, code, projectId) {
     console.log(`[WriteFiles] Wrote ${filename} (${content.length} bytes)`);
   }
   console.log(`[WriteFiles] Total: ${filesWritten} files written, SSE pushed to WC`);
+}
+
+// ─── VISUAL VERIFICATION (Sprint D — FEATURE-FLAGGED) ───
+// Optionally calls the screenshot verifier container to check for white screens,
+// JS errors, and API failures that static checks cannot catch.
+//
+// Disabled by default: set ENABLE_VISUAL_VERIFY=true and VISUAL_VERIFY_URL=http://pbp-screenshot-verifier:4000
+// to enable. See scripts/screenshot-verifier/README.md for setup.
+//
+// Returns: { ok, issues, console_errors, network_errors, duration_ms } or null if disabled
+const VISUAL_VERIFY_ENABLED = process.env.ENABLE_VISUAL_VERIFY === 'true';
+const VISUAL_VERIFY_URL = process.env.VISUAL_VERIFY_URL || 'http://pbp-screenshot-verifier:4000';
+const VISUAL_VERIFY_TIMEOUT_MS = 20000;
+
+async function runVisualVerification(projectId) {
+  if (!VISUAL_VERIFY_ENABLED) return null; // Feature flag OFF — skip silently
+  const containerName = getContainerName(projectId);
+  const targetUrl = `http://${containerName}:5173/`;
+
+  return new Promise((resolve) => {
+    const payload = JSON.stringify({ url: targetUrl, projectId, timeout: 15000 });
+    const u = new URL(VISUAL_VERIFY_URL + '/verify');
+    const req = http.request({
+      hostname: u.hostname, port: u.port || 80, path: u.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: VISUAL_VERIFY_TIMEOUT_MS
+    }, (res) => {
+      let body = '';
+      res.on('data', c => body += c);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body);
+          resolve(result);
+        } catch (e) {
+          log('warn', 'visual', 'parse error', { projectId, error: e.message });
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', e => {
+      log('warn', 'visual', 'verifier unreachable', { projectId, error: e.message });
+      resolve(null);
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      log('warn', 'visual', 'verifier timeout', { projectId });
+      resolve(null);
+    });
+    req.write(payload);
+    req.end();
+  });
 }
 
 // ─── RUNTIME HEALTH CHECK ───
@@ -8377,7 +8452,8 @@ const server = http.createServer(async (req, res) => {
       plan_markdown: job.plan_markdown || null,
       plan_id: job.plan_id || null,
       coherence_warnings: job.coherence_warnings || null,
-      runtime_warnings: job.runtime_warnings || null
+      runtime_warnings: job.runtime_warnings || null,
+      visual_warnings: job.visual_warnings || null
     });
     return;
   }

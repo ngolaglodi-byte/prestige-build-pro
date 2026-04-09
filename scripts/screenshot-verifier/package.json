@@ -1,0 +1,16 @@
+{
+  "name": "pbp-screenshot-verifier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated Playwright container for visual health checks of generated projects.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "playwright": "1.47.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
