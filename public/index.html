@@ -194,6 +194,54 @@ button.card { padding: 0; }
 .chat-send { width: 40px; height: 40px; background: var(--gold); border: none; border-radius: var(--radius-md); color: var(--marine); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--transition-fast); }
 .chat-send:hover { background: #e5b921; }
 .chat-send:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-plan-btn { height: 40px; padding: 0 14px; background: transparent; border: 1px solid var(--gold); border-radius: var(--radius-md); color: var(--gold); cursor: pointer; font-family: var(--font-ui); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.03em; transition: var(--transition-fast); }
+.chat-plan-btn:hover { background: var(--gold-dim); }
+.chat-plan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-box { border: 1px solid var(--gold); border-radius: var(--radius-md); padding: var(--space-md); background: rgba(212, 168, 32, 0.05); margin-top: 4px; }
+.plan-box-label { font-size: 0.7rem; color: var(--gold); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-weight: 600; }
+.plan-box h3 { margin: 14px 0 8px 0; color: var(--text-primary); font-size: 1rem; font-weight: 600; }
+.plan-box h4 { margin: 12px 0 6px 0; color: var(--gold); font-size: 0.9rem; font-weight: 600; }
+.plan-box ul, .plan-box ol { margin: 4px 0 8px 18px; padding: 0; }
+.plan-box li { margin: 3px 0; line-height: 1.45; }
+.plan-actions { display: flex; gap: 8px; margin-top: 10px; }
+.plan-approve-btn { background: var(--gold); color: var(--marine); border: none; padding: 8px 16px; border-radius: var(--radius-md); font-weight: 600; cursor: pointer; font-size: 0.85rem; transition: var(--transition-fast); }
+.plan-approve-btn:hover:not(:disabled) { background: #e5b921; }
+.plan-approve-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-reject-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--bg-elevated); padding: 8px 16px; border-radius: var(--radius-md); cursor: pointer; font-size: 0.85rem; transition: var(--transition-fast); }
+.plan-reject-btn:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-muted); }
+.plan-status { color: var(--gold); font-size: 0.8rem; margin-top: 8px; }
+.plan-status.error { color: #ef4444; }
+.clarify-box { border: 1px solid var(--gold-border); border-radius: var(--radius-md); padding: var(--space-md); background: rgba(212, 168, 32, 0.04); margin-top: 4px; }
+.clarify-label { font-size: 0.7rem; color: var(--gold); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-weight: 600; }
+.clarify-intro { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 12px; line-height: 1.45; }
+.clarify-question { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.clarify-question label { font-size: 0.85rem; color: var(--text-primary); font-weight: 500; line-height: 1.4; }
+.clarify-question input { padding: 8px 10px; background: var(--bg-elevated); border: var(--border-default); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font-ui); font-size: 0.85rem; }
+.clarify-question input:focus { outline: none; border-color: var(--gold); }
+.clarify-actions { display: flex; gap: 8px; margin-top: 8px; }
+.clarify-submit-btn { background: var(--gold); color: var(--marine); border: none; padding: 8px 16px; border-radius: var(--radius-md); font-weight: 600; cursor: pointer; font-size: 0.85rem; }
+.clarify-submit-btn:hover:not(:disabled) { background: #e5b921; }
+.clarify-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.clarify-skip-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--bg-elevated); padding: 8px 16px; border-radius: var(--radius-md); cursor: pointer; font-size: 0.85rem; }
+.clarify-skip-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.queue-indicator { display: none; padding: var(--space-sm) var(--space-md); background: rgba(212, 168, 32, 0.08); border: 1px solid var(--gold-border); border-radius: var(--radius-md); margin-bottom: var(--space-sm); cursor: pointer; transition: var(--transition-fast); }
+.queue-indicator.has-items { display: block; }
+.queue-indicator:hover { background: rgba(212, 168, 32, 0.12); }
+.queue-indicator-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.queue-indicator-label { color: var(--gold); font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.queue-indicator-count { color: var(--text-secondary); font-size: 0.75rem; }
+.queue-list { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--gold-border); }
+.queue-list.expanded { display: block; }
+.queue-item { display: flex; align-items: center; gap: 6px; padding: 6px 0; font-size: 0.8rem; color: var(--text-secondary); border-bottom: 1px solid rgba(212,168,32,0.1); }
+.queue-item:last-child { border-bottom: none; }
+.queue-item-type { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; flex-shrink: 0; }
+.queue-item-type.chat { background: var(--gold); color: var(--marine); }
+.queue-item-type.plan { background: transparent; color: var(--gold); border: 1px solid var(--gold); }
+.queue-item-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.queue-item-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.queue-item-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 2px 5px; border-radius: 3px; font-size: 0.85rem; line-height: 1; }
+.queue-item-btn:hover:not(:disabled) { color: var(--gold); background: rgba(212,168,32,0.1); }
+.queue-item-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 .files-tree { padding: var(--space-md); flex: 1; }
 .file-item { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-sm); cursor: pointer; font-size: 0.875rem; color: var(--text-secondary); transition: var(--transition-fast); }
 .file-item:hover { background: var(--gold-dim); color: var(--text-primary); }
@@ -505,8 +553,15 @@ button.card { padding: 0; }
             <div id="chat-panel" class="sidebar-panel active">
               <div class="chat-messages" id="chat-messages"></div>
               <div class="chat-input-container">
+                <div class="queue-indicator" id="queue-indicator" onclick="toggleQueuePanel()">
+                  <div class="queue-indicator-row">
+                    <span class="queue-indicator-label">En attente</span>
+                    <span class="queue-indicator-count" id="queue-indicator-count">0 message</span>
+                  </div>
+                  <div class="queue-list" id="queue-list"></div>
+                </div>
                 <div class="chat-suggestions" id="chat-suggestions"><span class="chat-suggestion" onclick="insertSuggestion('/couleurs ')">/couleurs</span><span class="chat-suggestion" onclick="insertSuggestion('/style ')">/style</span><span class="chat-suggestion" onclick="insertSuggestion('/section ')">/section</span><span class="chat-suggestion" onclick="insertSuggestion('/mobile')">/mobile</span><span class="chat-suggestion" onclick="insertSuggestion('/animations')">/animations</span><span class="chat-suggestion" onclick="insertSuggestion('/seo')">/seo</span><span class="chat-suggestion" onclick="insertSuggestion('/dark')">/dark</span><span class="chat-suggestion" onclick="insertSuggestion('/premium')">/premium</span></div>
-                <div class="chat-input-row"><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="2"></textarea><button class="chat-send" id="chat-send-btn" onclick="sendChatMessage()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
+                <div class="chat-input-row"><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="2"></textarea><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
                 <div style="margin-top:var(--space-sm);"><label class="btn btn-secondary" style="cursor:pointer;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Uploader une maquette<input type="file" id="image-upload" accept="image/*" style="display:none;"/></label></div>
               </div>
             </div>
@@ -721,6 +776,14 @@ let projectSSE = null;
 let generatedCode = '';
 let uploadedImage = null;
 let projectCredentials = null;
+// Tracks the in-flight generation/plan job so the Stop button can target it
+let currentJobId = null;
+let currentJobCancelled = false;
+// Client-side message queue: messages typed while a job is running are queued
+// and auto-processed when the current job finishes. Reorderable + removable.
+const messageQueue = [];
+let queueExpanded = false;
+let queueCounter = 0;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API HELPER
@@ -1146,16 +1209,26 @@ function loadChatHistory() {
   const container = document.getElementById('chat-messages');
   container.innerHTML = '';
   if (currentProject && currentProject.messages) {
-    currentProject.messages.forEach(m => addChatMessage(m.role, m.content.length > 500 ? m.content.substring(0, 500) + '...' : m.content));
+    currentProject.messages.forEach(m => {
+      // Plans must NOT be truncated — they need their full markdown structure to render correctly
+      const content = (m.role === 'plan' || m.content.length <= 500)
+        ? m.content
+        : m.content.substring(0, 500) + '...';
+      addChatMessage(m.role, content);
+    });
   }
 }
 
 function addChatMessage(role, content) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
-  div.className = 'chat-message ' + role;
-  // Rich text for assistant messages
-  if (role === 'assistant') {
+  // Plans are rendered as assistant-style bubbles with the gold plan-box inside
+  div.className = 'chat-message ' + (role === 'plan' ? 'assistant' : role);
+  if (role === 'plan') {
+    div.style.maxWidth = '95%';
+    // History plans never get action buttons (already approved or expired in another session)
+    renderPlanInContainer(div, content, null, false);
+  } else if (role === 'assistant') {
     let html = escapeHtml(content);
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(212,168,32,0.1);padding:1px 4px;border-radius:3px;font-size:0.85em;">$1</code>');
@@ -1195,11 +1268,17 @@ document.getElementById('chat-input').addEventListener('keydown', (e) => {
 
 async function sendChatMessage(message) {
   const input = document.getElementById('chat-input');
-  const msg = message || input.value.trim();
+  const msg = (typeof message === 'string' ? message : input.value).trim();
   if (!msg || !currentProject) return;
-  input.value = '';
+  // If a job is already running, queue this message instead of sending immediately
+  if (currentJobId !== null) {
+    if (typeof message !== 'string') input.value = '';
+    enqueueMessage('chat', msg);
+    return;
+  }
+  if (typeof message !== 'string') input.value = '';
   addChatMessage('user', msg);
-  setGeneratingState(true);
+  currentJobCancelled = false;
 
   const assistantDiv = document.createElement('div');
   assistantDiv.className = 'chat-message assistant';
@@ -1212,7 +1291,7 @@ async function sendChatMessage(message) {
   document.getElementById('chat-messages').appendChild(assistantDiv);
   document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
   _liveFilesDiv = document.getElementById('ai-live-files');
-  
+
   try {
     // Start generation job
     const startRes = await fetch('/api/generate/start', {
@@ -1224,7 +1303,22 @@ async function sendChatMessage(message) {
       const err = await startRes.json().catch(() => ({ error: 'Erreur de connexion' }));
       throw new Error(err.error || 'Erreur du serveur');
     }
-    const { job_id } = await startRes.json();
+    const startData = await startRes.json();
+
+    // ─── CLARIFICATION PROTOCOL ───
+    // Backend detected the brief is too vague — render questions, wait for answers,
+    // then re-call /api/generate/start with skip_clarification=true and enriched message.
+    if (startData.type === 'clarification_needed') {
+      renderClarificationQuestions(assistantDiv, startData.questions || [], startData.original_message || msg, /*planMode*/ false);
+      currentJobId = null;
+      currentJobCancelled = false;
+      setGeneratingState(false);
+      return;
+    }
+
+    const { job_id } = startData;
+    currentJobId = job_id;
+    setGeneratingState(true); // toggles send→stop now that we have a jobId
     
     // Poll for job status (timeout after 10 minutes)
     let lastProgress = 0;
@@ -1288,12 +1382,284 @@ async function sendChatMessage(message) {
         assistantDiv.textContent = 'Erreur: ' + (job.error || 'Erreur inconnue');
         break;
       }
+      if (job.status === 'cancelled') {
+        assistantDiv.innerHTML = '<span style="color:var(--text-muted);">⊘ Génération annulée. Les fichiers déjà écrits ont été conservés.</span>';
+        // Refresh preview so the user sees what was partially written before the abort
+        try { await autoCompile(); } catch(_) {}
+        break;
+      }
     }
     if (Date.now() >= pollDeadline) {
       assistantDiv.textContent = 'La génération a pris trop de temps. Réessayez avec un brief plus simple.';
     }
   } catch (e) { addChatMessage('assistant', 'Erreur: ' + e.message); }
+  currentJobId = null;
+  currentJobCancelled = false;
   setGeneratingState(false);
+  processNextInQueue();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLAN MODE — propose a markdown plan, user approves, then code is generated
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Lightweight markdown renderer for plan content. Sanitizes via escapeHtml first,
+// then re-introduces a controlled subset of formatting (headings, lists, bold, code).
+// Never injects raw user HTML.
+function renderPlanMarkdown(md) {
+  if (!md) return '';
+  let html = escapeHtml(md);
+  // Inline formatting (applied before list processing because lines stay intact)
+  html = html.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/`([^`]+?)`/g, '<code>$1</code>');
+
+  // Process line by line for headings and lists
+  const lines = html.split('\n');
+  const out = [];
+  let inUl = false, inOl = false;
+  const closeLists = () => {
+    if (inUl) { out.push('</ul>'); inUl = false; }
+    if (inOl) { out.push('</ol>'); inOl = false; }
+  };
+  for (const raw of lines) {
+    const line = raw;
+    let m;
+    if ((m = line.match(/^##\s+(.+)$/))) { closeLists(); out.push('<h4>' + m[1] + '</h4>'); continue; }
+    if ((m = line.match(/^#\s+(.+)$/)))  { closeLists(); out.push('<h3>' + m[1] + '</h3>'); continue; }
+    if ((m = line.match(/^[-*]\s+(.+)$/))) {
+      if (inOl) { out.push('</ol>'); inOl = false; }
+      if (!inUl) { out.push('<ul>'); inUl = true; }
+      out.push('<li>' + m[1] + '</li>'); continue;
+    }
+    if ((m = line.match(/^\d+\.\s+(.+)$/))) {
+      if (inUl) { out.push('</ul>'); inUl = false; }
+      if (!inOl) { out.push('<ol>'); inOl = true; }
+      out.push('<li>' + m[1] + '</li>'); continue;
+    }
+    closeLists();
+    if (line.trim()) out.push('<div>' + line + '</div>');
+  }
+  closeLists();
+  return out.join('');
+}
+
+async function sendPlanMessage(message) {
+  const input = document.getElementById('chat-input');
+  const msg = (typeof message === 'string' ? message : input.value).trim();
+  if (!msg) return;
+  if (!currentProject) {
+    addChatMessage('assistant', 'Sélectionnez un projet avant de planifier.');
+    return;
+  }
+  // If a job is already running, queue this plan request instead
+  if (currentJobId !== null) {
+    if (typeof message !== 'string') input.value = '';
+    enqueueMessage('plan', msg);
+    return;
+  }
+  if (typeof message !== 'string') input.value = '';
+  addChatMessage('user', msg);
+  currentJobCancelled = false;
+  // chat-plan-btn disabled (no concurrent plans). chat-send-btn becomes Stop once jobId is set.
+  document.getElementById('chat-plan-btn').disabled = true;
+
+  const planDiv = document.createElement('div');
+  planDiv.className = 'chat-message assistant';
+  planDiv.style.cssText = 'max-width:95%;';
+  planDiv.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
+    + '<div style="width:8px;height:8px;background:var(--gold);border-radius:50%;animation:pulse 1.5s infinite;"></div>'
+    + '<span style="color:var(--text-muted);font-size:0.85rem;" id="plan-status-text">Création du plan...</span>'
+    + '</div>';
+  document.getElementById('chat-messages').appendChild(planDiv);
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+
+  try {
+    const startRes = await fetch('/api/plan/start', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: currentProject.id, message: msg })
+    });
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Erreur du serveur');
+    }
+    const startData = await startRes.json();
+
+    // Clarification protocol — same as sendChatMessage
+    if (startData.type === 'clarification_needed') {
+      renderClarificationQuestions(planDiv, startData.questions || [], startData.original_message || msg, /*planMode*/ true);
+      currentJobId = null;
+      currentJobCancelled = false;
+      document.getElementById('chat-plan-btn').disabled = false;
+      setGeneratingState(false);
+      return;
+    }
+
+    const { job_id } = startData;
+    currentJobId = job_id;
+    setGeneratingState(true); // toggles send→stop now that we have a jobId
+
+    // Poll up to 3 minutes (plans are short, ~5-15s)
+    const pollDeadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!pollRes.ok) throw new Error();
+        job = await pollRes.json();
+      } catch (_) { continue; }
+
+      if (job.progress_message) {
+        const statusEl = document.getElementById('plan-status-text');
+        if (statusEl) statusEl.textContent = job.progress_message;
+      }
+
+      if (job.status === 'done' && job.plan_markdown) {
+        renderPlanInContainer(planDiv, job.plan_markdown, job.plan_id, true);
+        break;
+      }
+      if (job.status === 'error') {
+        planDiv.innerHTML = '<span style="color:#ef4444;">Erreur : ' + escapeHtml(job.error || 'inconnue') + '</span>';
+        break;
+      }
+      if (job.status === 'cancelled') {
+        planDiv.innerHTML = '<span style="color:var(--text-muted);">⊘ Plan annulé.</span>';
+        break;
+      }
+    }
+    if (Date.now() >= pollDeadline) {
+      planDiv.innerHTML = '<span style="color:#ef4444;">Le plan a pris trop de temps à générer.</span>';
+    }
+  } catch (e) {
+    planDiv.innerHTML = '<span style="color:#ef4444;">Erreur : ' + escapeHtml(e.message) + '</span>';
+  } finally {
+    currentJobId = null;
+    currentJobCancelled = false;
+    setGeneratingState(false);
+    document.getElementById('chat-plan-btn').disabled = false;
+    processNextInQueue();
+  }
+}
+
+// Renders the plan inside a container. If withActions=true, shows Approve/Reject buttons.
+// If false (e.g., when restoring from history), only the plan box is shown.
+function renderPlanInContainer(container, markdown, planId, withActions) {
+  container.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'plan-box';
+  const label = document.createElement('div');
+  label.className = 'plan-box-label';
+  label.textContent = 'Plan proposé';
+  box.appendChild(label);
+  const body = document.createElement('div');
+  body.innerHTML = renderPlanMarkdown(markdown);
+  box.appendChild(body);
+  container.appendChild(box);
+
+  if (withActions && planId) {
+    const actions = document.createElement('div');
+    actions.className = 'plan-actions';
+    const approveBtn = document.createElement('button');
+    approveBtn.className = 'plan-approve-btn';
+    approveBtn.textContent = 'Approuver et générer';
+    const rejectBtn = document.createElement('button');
+    rejectBtn.className = 'plan-reject-btn';
+    rejectBtn.textContent = 'Rejeter';
+    actions.appendChild(approveBtn);
+    actions.appendChild(rejectBtn);
+    container.appendChild(actions);
+
+    approveBtn.addEventListener('click', () => approvePlan(planId, container, actions));
+    rejectBtn.addEventListener('click', () => {
+      actions.remove();
+      const note = document.createElement('div');
+      note.className = 'plan-status';
+      note.style.color = 'var(--text-muted)';
+      note.textContent = 'Plan rejeté.';
+      container.appendChild(note);
+    });
+  }
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+async function approvePlan(planId, container, actionsEl) {
+  // Disable buttons immediately to prevent double-click race
+  const approveBtn = actionsEl.querySelector('.plan-approve-btn');
+  const rejectBtn = actionsEl.querySelector('.plan-reject-btn');
+  if (approveBtn) approveBtn.disabled = true;
+  if (rejectBtn) rejectBtn.disabled = true;
+
+  const status = document.createElement('div');
+  status.className = 'plan-status';
+  status.textContent = 'Plan approuvé — démarrage de la génération...';
+  container.appendChild(status);
+
+  currentJobCancelled = false;
+
+  try {
+    const res = await fetch('/api/plan/' + planId + '/approve', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Erreur du serveur');
+    }
+    const { job_id } = await res.json();
+    currentJobId = job_id;
+    setGeneratingState(true); // toggles send→stop now that we have a jobId
+
+    // Poll the resulting generation job (long-running, up to 20 min like normal generation)
+    const pollDeadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!pollRes.ok) throw new Error();
+        job = await pollRes.json();
+      } catch (_) { continue; }
+
+      if (job.progress_message) status.textContent = job.progress_message;
+
+      if (job.status === 'done') {
+        status.textContent = '✓ Plan exécuté avec succès.';
+        if (currentProject) {
+          currentProject.generated_code = job.code;
+          currentProject.build_status = 'done';
+        }
+        generatedCode = job.code;
+        const editor = document.getElementById('code-editor');
+        if (editor) editor.textContent = generatedCode;
+        await autoCompile();
+        break;
+      }
+      if (job.status === 'error') {
+        status.className = 'plan-status error';
+        status.textContent = 'Erreur : ' + (job.error || 'inconnue');
+        break;
+      }
+      if (job.status === 'cancelled') {
+        status.style.color = 'var(--text-muted)';
+        status.textContent = '⊘ Génération annulée. Les fichiers déjà écrits ont été conservés.';
+        try { await autoCompile(); } catch(_) {}
+        break;
+      }
+    }
+    if (Date.now() >= pollDeadline) {
+      status.className = 'plan-status error';
+      status.textContent = 'La génération a pris trop de temps.';
+    }
+  } catch (e) {
+    status.className = 'plan-status error';
+    status.textContent = 'Erreur : ' + e.message;
+  } finally {
+    currentJobId = null;
+    currentJobCancelled = false;
+    setGeneratingState(false);
+    processNextInQueue();
+  }
 }
 
 async function generateFromImage(prompt) {
@@ -1369,8 +1735,7 @@ async function generateFromImage(prompt) {
 }
 
 function setGeneratingState(generating) {
-  // Only update the status bar — NOT the preview loading area
-  // Only update status bar, not the preview iframe
+  // Update the preview status bar
   const status = document.getElementById('preview-status');
   if (generating) {
     status.className = 'preview-status generating';
@@ -1379,6 +1744,397 @@ function setGeneratingState(generating) {
     status.className = 'preview-status';
     status.innerHTML = '<span>Prêt</span>';
   }
+
+  // Toggle the chat send button between paper-plane and stop-square icon
+  const sendBtn = document.getElementById('chat-send-btn');
+  if (sendBtn) {
+    if (generating && currentJobId) {
+      sendBtn.dataset.mode = 'stop';
+      sendBtn.title = 'Arrêter la génération';
+      sendBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>';
+      sendBtn.style.background = '#ef4444';
+      sendBtn.style.color = '#fff';
+    } else {
+      sendBtn.dataset.mode = 'send';
+      sendBtn.title = '';
+      sendBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+      sendBtn.style.background = '';
+      sendBtn.style.color = '';
+    }
+  }
+}
+
+// The chat-send-btn doubles as a stop button when a job is in flight.
+// onclick=handleSendClick() inspects dataset.mode and routes accordingly.
+function handleSendClick() {
+  const btn = document.getElementById('chat-send-btn');
+  if (btn && btn.dataset.mode === 'stop') {
+    stopCurrentJob();
+    return;
+  }
+  sendChatMessage();
+}
+
+async function stopCurrentJob() {
+  if (!currentJobId) return;
+  const jobIdSnapshot = currentJobId;
+  currentJobCancelled = true;
+  try {
+    const res = await fetch('/api/generate/' + encodeURIComponent(jobIdSnapshot) + '/stop', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.warn('[stop] non-OK:', err);
+    }
+  } catch (e) {
+    console.warn('[stop] network error:', e.message);
+  }
+  // The polling loop in sendChatMessage/sendPlanMessage/approvePlan will detect
+  // status='cancelled' on the next tick and exit gracefully.
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MESSAGE QUEUE — client-side, in-memory. Messages typed while a job runs are
+// queued and auto-processed when the current job finishes. Reorderable.
+// ═══════════════════════════════════════════════════════════════════════════
+function enqueueMessage(type, message) {
+  if (!message || !currentProject) return;
+  messageQueue.push({
+    id: ++queueCounter,
+    type, // 'chat' or 'plan'
+    message,
+    addedAt: Date.now()
+  });
+  renderQueueIndicator();
+}
+
+function renderQueueIndicator() {
+  const indicator = document.getElementById('queue-indicator');
+  const countEl = document.getElementById('queue-indicator-count');
+  const listEl = document.getElementById('queue-list');
+  if (!indicator || !countEl || !listEl) return;
+  if (messageQueue.length === 0) {
+    indicator.classList.remove('has-items');
+    listEl.classList.remove('expanded');
+    queueExpanded = false;
+    return;
+  }
+  indicator.classList.add('has-items');
+  countEl.textContent = messageQueue.length + (messageQueue.length > 1 ? ' messages' : ' message');
+  if (queueExpanded) {
+    listEl.classList.add('expanded');
+    listEl.innerHTML = '';
+    messageQueue.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'queue-item';
+      const typeBadge = document.createElement('span');
+      typeBadge.className = 'queue-item-type ' + (item.type === 'plan' ? 'plan' : 'chat');
+      typeBadge.textContent = item.type === 'plan' ? 'Plan' : 'Chat';
+      const text = document.createElement('span');
+      text.className = 'queue-item-text';
+      text.textContent = item.message;
+      text.title = item.message;
+      const actions = document.createElement('span');
+      actions.className = 'queue-item-actions';
+      const upBtn = document.createElement('button');
+      upBtn.className = 'queue-item-btn';
+      upBtn.textContent = '↑';
+      upBtn.title = 'Monter';
+      upBtn.disabled = idx === 0;
+      upBtn.addEventListener('click', (e) => { e.stopPropagation(); moveQueueItem(item.id, -1); });
+      const downBtn = document.createElement('button');
+      downBtn.className = 'queue-item-btn';
+      downBtn.textContent = '↓';
+      downBtn.title = 'Descendre';
+      downBtn.disabled = idx === messageQueue.length - 1;
+      downBtn.addEventListener('click', (e) => { e.stopPropagation(); moveQueueItem(item.id, 1); });
+      const rmBtn = document.createElement('button');
+      rmBtn.className = 'queue-item-btn';
+      rmBtn.textContent = '×';
+      rmBtn.title = 'Supprimer';
+      rmBtn.addEventListener('click', (e) => { e.stopPropagation(); removeQueueItem(item.id); });
+      actions.appendChild(upBtn);
+      actions.appendChild(downBtn);
+      actions.appendChild(rmBtn);
+      row.appendChild(typeBadge);
+      row.appendChild(text);
+      row.appendChild(actions);
+      listEl.appendChild(row);
+    });
+  } else {
+    listEl.classList.remove('expanded');
+  }
+}
+
+function toggleQueuePanel() {
+  if (messageQueue.length === 0) return;
+  queueExpanded = !queueExpanded;
+  renderQueueIndicator();
+}
+
+function moveQueueItem(id, delta) {
+  const idx = messageQueue.findIndex(i => i.id === id);
+  if (idx < 0) return;
+  const newIdx = idx + delta;
+  if (newIdx < 0 || newIdx >= messageQueue.length) return;
+  const [item] = messageQueue.splice(idx, 1);
+  messageQueue.splice(newIdx, 0, item);
+  renderQueueIndicator();
+}
+
+function removeQueueItem(id) {
+  const idx = messageQueue.findIndex(i => i.id === id);
+  if (idx < 0) return;
+  messageQueue.splice(idx, 1);
+  renderQueueIndicator();
+}
+
+// Called from the finally block of every job-running function. Pops the next
+// queue item and dispatches it. Defensive: only fires when currentJobId is null.
+function processNextInQueue() {
+  if (currentJobId !== null) return; // a job is still in flight, ignore
+  if (messageQueue.length === 0) return;
+  const next = messageQueue.shift();
+  renderQueueIndicator();
+  // Use setTimeout(0) to break out of the current call stack and avoid
+  // recursive depth on long queues
+  setTimeout(() => {
+    if (next.type === 'plan') sendPlanMessage(next.message);
+    else sendChatMessage(next.message);
+  }, 0);
+}
+
+// Renders 2-3 clarification questions with text inputs.
+// On submit: builds an enriched brief and re-calls generate (or plan) with skip_clarification=true.
+// On skip: re-calls immediately with the original brief and skip_clarification=true.
+function renderClarificationQuestions(container, questions, originalMessage, planMode) {
+  if (!questions || questions.length === 0) {
+    // Edge case: backend returned clarification_needed with no questions — fall back to direct send
+    if (planMode) sendPlanMessageWithSkip(originalMessage, container);
+    else sendChatMessageWithSkip(originalMessage, container);
+    return;
+  }
+  container.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'clarify-box';
+
+  const label = document.createElement('div');
+  label.className = 'clarify-label';
+  label.textContent = 'Quelques précisions';
+  box.appendChild(label);
+
+  const intro = document.createElement('div');
+  intro.className = 'clarify-intro';
+  intro.textContent = 'Pour générer un résultat de qualité, merci de répondre brièvement à ces questions. Vous pouvez aussi passer cette étape.';
+  box.appendChild(intro);
+
+  const inputs = [];
+  questions.slice(0, 3).forEach((q, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'clarify-question';
+    const lbl = document.createElement('label');
+    lbl.htmlFor = 'clarify-q-' + i;
+    lbl.textContent = q;
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.id = 'clarify-q-' + i;
+    inp.maxLength = 300;
+    inp.placeholder = 'Votre réponse...';
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitBtn.click(); }
+    });
+    wrap.appendChild(lbl);
+    wrap.appendChild(inp);
+    box.appendChild(wrap);
+    inputs.push({ question: q, input: inp });
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'clarify-actions';
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'clarify-submit-btn';
+  submitBtn.textContent = planMode ? 'Créer le plan' : 'Générer';
+  const skipBtn = document.createElement('button');
+  skipBtn.className = 'clarify-skip-btn';
+  skipBtn.textContent = 'Passer';
+  actions.appendChild(submitBtn);
+  actions.appendChild(skipBtn);
+  box.appendChild(actions);
+  container.appendChild(box);
+
+  // Focus first input
+  if (inputs[0]) setTimeout(() => inputs[0].input.focus(), 50);
+
+  submitBtn.addEventListener('click', async () => {
+    const answered = inputs.filter(({ input }) => input.value.trim().length > 0);
+    if (answered.length === 0) {
+      // Nothing answered — treat as skip
+      skipBtn.click();
+      return;
+    }
+    const enrichedParts = [originalMessage, '', 'Précisions :'];
+    for (const { question, input } of answered) {
+      enrichedParts.push(`- ${question} → ${input.value.trim()}`);
+    }
+    const enriched = enrichedParts.join('\n');
+    submitBtn.disabled = true;
+    skipBtn.disabled = true;
+    if (planMode) await sendPlanMessageWithSkip(enriched, container);
+    else await sendChatMessageWithSkip(enriched, container);
+  });
+
+  skipBtn.addEventListener('click', async () => {
+    submitBtn.disabled = true;
+    skipBtn.disabled = true;
+    if (planMode) await sendPlanMessageWithSkip(originalMessage, container);
+    else await sendChatMessageWithSkip(originalMessage, container);
+  });
+
+  document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+}
+
+// Re-runs sendChatMessage but with skip_clarification=true and reuses the existing
+// container instead of creating a new assistant bubble. Mirrors the polling logic.
+async function sendChatMessageWithSkip(message, existingContainer) {
+  if (!currentProject) return;
+  existingContainer.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+    + '<div style="width:8px;height:8px;background:var(--gold);border-radius:50%;animation:pulse 1.5s infinite;"></div>'
+    + '<span style="color:var(--text-muted);font-size:0.85rem;" id="ai-status-text">Prestige AI analyse votre demande...</span>'
+    + '</div><div id="ai-live-files" style="margin-top:4px;"></div>';
+  _liveFilesDiv = document.getElementById('ai-live-files');
+  currentJobCancelled = false;
+
+  try {
+    const startRes = await fetch('/api/generate/start', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: currentProject.id, message, skip_clarification: true })
+    });
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Erreur du serveur');
+    }
+    const { job_id } = await startRes.json();
+    currentJobId = job_id;
+    setGeneratingState(true);
+
+    const pollDeadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!pollRes.ok) throw new Error();
+        job = await pollRes.json();
+      } catch (_) { continue; }
+      if (job.progress_message) {
+        const statusEl = document.getElementById('ai-status-text');
+        if (statusEl) statusEl.textContent = job.progress_message;
+      }
+      if (job.status === 'done') {
+        generatedCode = job.code;
+        document.getElementById('code-editor').textContent = generatedCode;
+        _liveFilesDiv = null;
+        const fileCount = existingContainer.querySelectorAll('[data-file]').length;
+        if (job.chat_message) {
+          let html = escapeHtml(job.chat_message);
+          html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+          html = html.replace(/\n/g, '<br>');
+          existingContainer.innerHTML = html;
+        } else {
+          let summary = (currentProject && currentProject.build_status === 'done') ? 'Modifications appliquées' : 'Projet généré';
+          if (fileCount > 0) summary += ` — ${fileCount} fichier${fileCount > 1 ? 's' : ''}`;
+          existingContainer.innerHTML = `<div style="color:var(--gold);font-weight:600;">${summary}</div>`;
+        }
+        if (job.credentials) {
+          projectCredentials = job.credentials;
+          addChatMessage('assistant', '\u2705 Connectez-vous avec : **' + job.credentials.email + '** / **' + job.credentials.password + '**');
+        }
+        if (job.suggestions) addSuggestions(job.suggestions);
+        if (currentProject) currentProject.generated_code = job.code;
+        await autoCompile();
+        if (currentProject) currentProject.build_status = 'done';
+        break;
+      }
+      if (job.status === 'error') {
+        existingContainer.textContent = 'Erreur: ' + (job.error || 'Erreur inconnue');
+        break;
+      }
+      if (job.status === 'cancelled') {
+        existingContainer.innerHTML = '<span style="color:var(--text-muted);">⊘ Génération annulée. Les fichiers déjà écrits ont été conservés.</span>';
+        try { await autoCompile(); } catch(_) {}
+        break;
+      }
+    }
+  } catch (e) {
+    existingContainer.textContent = 'Erreur: ' + e.message;
+  }
+  currentJobId = null;
+  currentJobCancelled = false;
+  setGeneratingState(false);
+  processNextInQueue();
+}
+
+// Same idea for plan mode
+async function sendPlanMessageWithSkip(message, existingContainer) {
+  if (!currentProject) return;
+  existingContainer.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
+    + '<div style="width:8px;height:8px;background:var(--gold);border-radius:50%;animation:pulse 1.5s infinite;"></div>'
+    + '<span style="color:var(--text-muted);font-size:0.85rem;" id="plan-status-text">Création du plan...</span>'
+    + '</div>';
+  document.getElementById('chat-plan-btn').disabled = true;
+  currentJobCancelled = false;
+
+  try {
+    const startRes = await fetch('/api/plan/start', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: currentProject.id, message, skip_clarification: true })
+    });
+    if (!startRes.ok) {
+      const err = await startRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Erreur du serveur');
+    }
+    const { job_id } = await startRes.json();
+    currentJobId = job_id;
+    setGeneratingState(true);
+
+    const pollDeadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < pollDeadline) {
+      await new Promise(r => setTimeout(r, 1000));
+      let job;
+      try {
+        const pollRes = await fetch('/api/jobs/' + job_id, { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!pollRes.ok) throw new Error();
+        job = await pollRes.json();
+      } catch (_) { continue; }
+      if (job.progress_message) {
+        const statusEl = document.getElementById('plan-status-text');
+        if (statusEl) statusEl.textContent = job.progress_message;
+      }
+      if (job.status === 'done' && job.plan_markdown) {
+        renderPlanInContainer(existingContainer, job.plan_markdown, job.plan_id, true);
+        break;
+      }
+      if (job.status === 'error') {
+        existingContainer.innerHTML = '<span style="color:#ef4444;">Erreur : ' + escapeHtml(job.error || 'inconnue') + '</span>';
+        break;
+      }
+      if (job.status === 'cancelled') {
+        existingContainer.innerHTML = '<span style="color:var(--text-muted);">⊘ Plan annulé.</span>';
+        break;
+      }
+    }
+  } catch (e) {
+    existingContainer.innerHTML = '<span style="color:#ef4444;">Erreur : ' + escapeHtml(e.message) + '</span>';
+  }
+  currentJobId = null;
+  currentJobCancelled = false;
+  document.getElementById('chat-plan-btn').disabled = false;
+  setGeneratingState(false);
+  processNextInQueue();
 }
 
 document.getElementById('image-upload').addEventListener('change', async (e) => {

@@ -5,11 +5,11 @@
 const SYSTEM_PROMPT = `Tu es Prestige AI. Tu crees et modifies des applications web React en temps reel.
 
 WORKFLOW (chaque reponse) :
-1. Lis le contexte — ne relis pas un fichier deja visible
+1. CONTEXTE VERROUILLE — les fichiers visibles ci-dessous sont DEJA charges. INTERDIT d'appeler view_file dessus. Utilise leur contenu directement.
 2. Discussion par defaut — code uniquement sur mot d'action (cree, ajoute, modifie, change, supprime, corrige, fais)
 3. Si ambigu, pose UNE question avant de coder
 4. Verifie que la feature n'existe pas deja
-5. Regroupe TOUS les tool calls en une seule reponse
+5. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
 6. Reponse texte : 1-2 lignes. Pas d'emoji.
 
 OUTILS :
@@ -382,11 +382,11 @@ function getModelForProject() {
 const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI. Tu modifies des applications React existantes. Francais uniquement.
 
 WORKFLOW (chaque reponse) :
-1. Lis le contexte — ne relis pas un fichier deja visible
+1. CONTEXTE VERROUILLE — les fichiers visibles ci-dessous sont DEJA charges. INTERDIT d'appeler view_file dessus. Utilise leur contenu directement.
 2. Discussion par defaut — code uniquement sur mot d'action (cree, ajoute, modifie, corrige, supprime)
 3. Si ambiguite → pose UNE question AVANT de coder
 4. Verifie que la feature n'existe pas deja
-5. REGROUPE tous les tool calls en une seule reponse
+5. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
 6. Reponse texte : 2 lignes max
 
 OUTILS (du plus efficace au plus couteux) :
@@ -959,18 +959,188 @@ function runBackTests(files) {
     }
   }
 
+  // ─── STRICT DESIGN-SYSTEM CHECKS (warning-only — visible in logs, not auto-fixed) ───
+  // Goal: enforce semantic tokens like Lovable. Warnings won't trigger expensive auto-fix loops
+  // but will surface in server logs so we can tighten them later if false-positive rate is low.
+
+  // Test 16 (warning): raw absolute colors (white/black) — should use bg-background, text-foreground
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const matches = content.match(/className="[^"]*\b(bg|text|border)-(white|black)\b[^"]*"/g) || [];
+    if (matches.length > 0) {
+      issues.push({
+        file: fn,
+        issue: 'RAW_WHITE_BLACK',
+        severity: 'warning',
+        message: `${matches.length} usage(s) de bg-white/text-black/etc — preferer bg-background, text-foreground (semantic tokens)`
+      });
+    }
+  }
+
+  // Test 17 (warning): inline style with color/background — should use Tailwind classes
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const inlineColor = content.match(/style=\{\{[^}]*\b(color|background|backgroundColor|borderColor)\s*:/g) || [];
+    if (inlineColor.length > 0) {
+      issues.push({
+        file: fn,
+        issue: 'INLINE_STYLE_COLOR',
+        severity: 'warning',
+        message: `${inlineColor.length} style={{}} avec color/background — utiliser des classes Tailwind semantiques`
+      });
+    }
+  }
+
+  // Test 18 (warning): extended hardcoded Tailwind palette beyond Test 10
+  // (Test 10 catches gray/blue/red/green; this catches the rest)
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const extendedPalette = /className="[^"]*\b(bg|text|border|ring|from|to|via)-(yellow|orange|amber|lime|emerald|teal|cyan|sky|indigo|violet|purple|fuchsia|pink|rose|slate|zinc|neutral|stone)-\d+/.test(content);
+    if (extendedPalette) {
+      issues.push({
+        file: fn,
+        issue: 'EXTENDED_HARDCODED_PALETTE',
+        severity: 'warning',
+        message: 'Couleurs Tailwind brutes (yellow/purple/pink/etc.) — preferer les tokens semantiques (bg-primary, bg-accent, bg-secondary)'
+      });
+    }
+  }
+
   return issues;
 }
 
+// ─── PLAN MODE — produces a markdown plan, NEVER code ───
+// Used by /api/plan/start. Claude is called with NO tools and this prompt.
+// The plan is then shown to the user for approval before any code is generated.
+const PLAN_SYSTEM_PROMPT = `Tu es Prestige AI en MODE PLANIFICATION. Tu ne codes pas. Tu produis UNIQUEMENT un plan d'action en Markdown.
+
+REGLES STRICTES :
+- ZERO outil. Pas de write_file, edit_file, view_file. Markdown uniquement.
+- Reponse 100% en francais.
+- 600 mots maximum, concis.
+- Pas de blocs de code (\`\`\`). Juste du texte structure.
+- Si la demande est ambigue, propose 2 interpretations dans la section Objectif au lieu d'inventer.
+
+STRUCTURE IMPOSEE (4 sections, dans cet ordre exact) :
+
+## Objectif
+1-2 phrases qui reformulent ce que l'utilisateur veut.
+
+## Fichiers concernes
+Liste a puces. Pour chaque fichier : nom + en 1 ligne ce qui sera cree ou modifie.
+Exemple :
+- src/pages/Dashboard.tsx — nouvelle page avec stats utilisateurs
+- src/App.tsx — ajouter la route /dashboard
+- server.js — ajouter GET /api/stats
+
+## Etapes
+Liste numerotee, chronologique. Chaque etape doit etre concrete et verifiable.
+
+## Risques et points d'attention
+Liste a puces : pieges, dependances, interactions a surveiller. Si rien : ecrire "Aucun risque majeur."`;
+
+// ─── PLAN CONTEXT BUILDER (lighter than buildConversationContext) ───
+// For Plan Mode we send file LIST + structure only — never full file contents.
+// Plans are cheap (< 4000 tokens output) and fast (~2-4s).
+function buildPlanContext(project, history, userMessage) {
+  const lines = [];
+
+  if (project && project.brief) {
+    lines.push(`# Contexte projet`);
+    lines.push(`Brief initial : ${project.brief}`);
+    if (project.title) lines.push(`Titre : ${project.title}`);
+    lines.push('');
+  }
+
+  // File list (no content) extracted from generated_code
+  let hasCode = false;
+  if (project && project.generated_code && project.generated_code.length > 100) {
+    try {
+      const files = parseCodeFiles(project.generated_code);
+      const fileNames = Object.keys(files);
+      if (fileNames.length > 0) {
+        hasCode = true;
+        lines.push(`# Fichiers existants (${fileNames.length})`);
+        for (const fn of fileNames.slice(0, 60)) {
+          const lineCount = ((files[fn] || '').match(/\n/g) || []).length + 1;
+          lines.push(`- ${fn} (${lineCount} lignes)`);
+        }
+        if (fileNames.length > 60) lines.push(`- ... et ${fileNames.length - 60} autres`);
+        lines.push('');
+
+        // Extract routes / tables for richer planning context
+        const appContent = files['src/App.tsx'] || files['src/App.jsx'] || '';
+        const serverContent = files['server.js'] || '';
+        const routes = (appContent.match(/<Route\s+path="([^"]+)"/g) || [])
+          .map(r => (r.match(/path="([^"]+)"/) || [])[1])
+          .filter(Boolean);
+        const tables = (serverContent.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || [])
+          .map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+        const apiRoutes = (serverContent.match(/app\.(get|post|put|delete)\(['"]([^'"]+)['"]/g) || [])
+          .map(r => (r.match(/['"]([^'"]+)['"]/) || [])[1])
+          .filter(Boolean);
+
+        if (routes.length) {
+          lines.push(`# Routes frontend existantes`);
+          routes.forEach(r => lines.push(`- ${r}`));
+          lines.push('');
+        }
+        if (tables.length) {
+          lines.push(`# Tables SQLite existantes`);
+          tables.forEach(t => lines.push(`- ${t}`));
+          lines.push('');
+        }
+        if (apiRoutes.length) {
+          lines.push(`# Routes API existantes`);
+          apiRoutes.slice(0, 30).forEach(r => lines.push(`- ${r}`));
+          if (apiRoutes.length > 30) lines.push(`- ... et ${apiRoutes.length - 30} autres`);
+          lines.push('');
+        }
+      }
+    } catch (e) {
+      // parseCodeFiles failed — fall through to "new project"
+    }
+  }
+  if (!hasCode) {
+    lines.push(`# Etat du projet`);
+    lines.push(`Aucun code genere pour le moment — c'est un projet neuf.`);
+    lines.push('');
+  }
+
+  // Recent conversation context (last 4 user/plan messages, content truncated)
+  const recent = (history || [])
+    .filter(m => m && (m.role === 'user' || m.role === 'plan'))
+    .slice(-4);
+  if (recent.length > 0) {
+    lines.push(`# Conversation recente`);
+    for (const m of recent) {
+      const snippet = (m.content || '').substring(0, 220).replace(/\s+/g, ' ');
+      lines.push(`- ${m.role} : ${snippet}${(m.content || '').length > 220 ? '...' : ''}`);
+    }
+    lines.push('');
+  }
+
+  lines.push(`# Demande actuelle`);
+  lines.push(userMessage || '(vide)');
+
+  return [{ role: 'user', content: lines.join('\n') }];
+}
+
 // Build auto-fix prompt from back-test issues
+// Warnings (severity: 'warning') are EXCLUDED — they're logged for visibility but never auto-fixed.
 function buildAutoFixPrompt(issues) {
   if (!issues || issues.length === 0) return null;
+  const errors = issues.filter(i => i.severity !== 'warning');
+  if (errors.length === 0) return null;
   const grouped = {};
-  for (const i of issues) {
+  for (const i of errors) {
     if (!grouped[i.file]) grouped[i.file] = [];
     grouped[i.file].push(i.message);
   }
-  let prompt = `Le projet a ${issues.length} problème(s) détecté(s) automatiquement. Corrige-les :\n\n`;
+  let prompt = `Le projet a ${errors.length} problème(s) détecté(s) automatiquement. Corrige-les :\n\n`;
   for (const [file, msgs] of Object.entries(grouped)) {
     prompt += `### ${file}\n${msgs.map(m => `- ${m}`).join('\n')}\n\n`;
   }
@@ -982,6 +1152,8 @@ RAPPEL : server.js = CommonJS (require). Couleurs = classes Tailwind semantiques
 module.exports = {
   SYSTEM_PROMPT,
   CHAT_SYSTEM_PROMPT,
+  PLAN_SYSTEM_PROMPT,
+  buildPlanContext,
   SECTOR_PROFILES,
   detectSectorProfile,
   getSuggestionsForSector,

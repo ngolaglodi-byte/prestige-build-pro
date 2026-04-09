@@ -191,6 +191,12 @@ const API_ERROR_MESSAGES = {
 };
 
 function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 0) {
+  // Defensive onError wrapper — anthropicRequest is called from many sites,
+  // some of which historically did not pass onError. Without this wrapper a
+  // network error would crash the process via "onError is not a function".
+  const safeOnError = (typeof onError === 'function')
+    ? onError
+    : (e) => { console.error(`[anthropicRequest] unhandled (no onError): ${e.message}`); if (job) { job.status = job.status || 'error'; job.error = job.error || e.message; } };
   const r = https.request(opts, apiRes => {
     const status = apiRes.statusCode;
 
@@ -246,7 +252,7 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
           }
         } catch {}
 
-        onError(new Error(friendlyMsg));
+        safeOnError(new Error(friendlyMsg));
       });
       return;
     }
@@ -254,16 +260,23 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
     onResponse(apiRes);
   });
   r.on('error', e => {
+    // User-initiated AbortController.abort() — never retry, propagate immediately so
+    // the caller can mark the job as 'cancelled' (not 'error').
+    if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.code === 'ERR_CANCELED')) {
+      console.log(`[API] Request aborted by user`);
+      safeOnError(e);
+      return;
+    }
     if (retryCount < 2) {
       console.log(`[API] Network error, retrying in 5s: ${e.message}`);
       setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), 5000);
     } else {
-      onError(new Error('Erreur réseau. Vérifiez la connexion internet du serveur.'));
+      safeOnError(new Error('Erreur réseau. Vérifiez la connexion internet du serveur.'));
     }
   });
   r.setTimeout(CLAUDE_CODE_TIMEOUT_MS, () => {
     r.destroy();
-    onError(new Error('Délai dépassé (5 min). Le brief est peut-être trop complexe — essayez en le simplifiant.'));
+    safeOnError(new Error('Délai dépassé (5 min). Le brief est peut-être trop complexe — essayez en le simplifiant.'));
   });
   r.write(payload);
   r.end();
@@ -2302,6 +2315,25 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
       apiPayload.tool_choice = { type: 'auto' }; // let Claude decide when to use tools
     }
     const payload = JSON.stringify(apiPayload);
+
+    // ── Job abort signal propagation ──
+    // If a jobId is set (in opts or trackingInfo), look up the AbortController stored
+    // on the job. The signal is forwarded to https.request via reqOpts.signal so user
+    // can cancel mid-flight. Recursive tool-loop calls inherit via {...opts} spread.
+    let abortSignal = opts.signal || null;
+    const linkedJobId = opts.jobId || trackingInfo?.jobId;
+    if (!abortSignal && linkedJobId) {
+      const linkedJob = generationJobs.get(linkedJobId);
+      if (linkedJob && linkedJob.abortController) abortSignal = linkedJob.abortController.signal;
+    }
+    // Fast-fail if user already aborted before we even sent the request
+    if (abortSignal && abortSignal.aborted) {
+      const e = new Error('Requête annulée.');
+      e.name = 'AbortError';
+      reject(e);
+      return;
+    }
+
     const reqOpts = {
       hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
       headers: {
@@ -2310,6 +2342,8 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
         'Content-Length': Buffer.byteLength(payload)
       }
     };
+    if (abortSignal) reqOpts.signal = abortSignal;
+
     anthropicRequest(payload, reqOpts, (apiRes) => {
       if (apiRes.statusCode !== 200) {
         let errBody = '';
@@ -2371,6 +2405,11 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                   const merged = currentCode && followUp ? currentCode + '\n\n' + followUp : (followUp || currentCode || '');
                   resolve(merged);
                 } catch (e) {
+                  // User abort propagates up the recursion — must reject, not silently resolve
+                  if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.code === 'ERR_CANCELED')) {
+                    reject(e);
+                    return;
+                  }
                   // Server tool failed — still return what we have
                   const code = toolResponseToCode(parsed);
                   resolve(code || parsed.text || '');
@@ -2439,6 +2478,97 @@ function callGPT4Mini(prompt, maxTokens = 500) {
   });
 }
 
+// ─── CLARIFICATION PROTOCOL ───
+// Detects when a brief is too vague to generate cleanly, and produces 2-3 targeted
+// questions to disambiguate BEFORE consuming a full generation. Triggered only on
+// NEW projects (no existing code) and when skip_clarification is not set.
+//
+// Heuristic for triggering: short brief AND low signal density. We deliberately keep
+// the heuristic simple — false positives (clarifying when not needed) are far less
+// expensive than false negatives (generating from a bad brief and getting trash).
+
+const TECHNICAL_KEYWORDS = [
+  'page', 'route', 'composant', 'component', 'table', 'api', 'endpoint',
+  'database', 'auth', 'login', 'admin', 'dashboard', 'form', 'formulaire',
+  'header', 'footer', 'hero', 'menu', 'sidebar', 'card', 'modal', 'sql',
+  'crud', 'rest', 'jwt', 'stripe', 'payment', 'checkout', 'panier', 'cart',
+  'utilisateur', 'user', 'profil', 'profile', 'inscription', 'register',
+  'liste', 'list', 'détail', 'detail', 'recherche', 'search', 'filtre', 'filter',
+  'contact', 'services', 'reservation', 'rdv', 'galerie', 'gallery',
+  'newsletter', 'blog', 'article', 'avis', 'review', 'temoignage', 'testimonial',
+  'equipe', 'team', 'about', 'apropos', 'tarif', 'pricing', 'faq'
+];
+
+function needsClarification(message, project) {
+  if (!message || typeof message !== 'string') return false;
+  const trimmed = message.trim();
+  // Existing project (modification context) → never ask, the project itself disambiguates
+  if (project && project.generated_code && project.generated_code.length > 500) return false;
+  // Tokenize on word boundaries (handles accents and unicode)
+  const tokens = trimmed.toLowerCase().split(/[^a-zà-ÿ0-9]+/).filter(Boolean);
+  const wordCount = tokens.length;
+  // Very short briefs always need clarification
+  if (wordCount < 6) return true;
+  // Medium-short briefs need clarification only if they lack ANY technical signals.
+  // Use SET membership (word boundary) to avoid substring false positives like
+  // "form" matching "plateforme" or "list" matching "ecclesiastique".
+  if (wordCount < 14) {
+    const tokenSet = new Set(tokens);
+    const techHits = TECHNICAL_KEYWORDS.filter(k => tokenSet.has(k)).length;
+    if (techHits < 1) return true;
+  }
+  return false;
+}
+
+const CLARIFICATION_SYSTEM_PROMPT = `Tu es Prestige AI. Le brief de l'utilisateur est trop vague pour generer une application de qualite. Tu dois lui poser EXACTEMENT 3 questions courtes et concretes pour clarifier son besoin.
+
+REGLES STRICTES :
+- 3 questions, ni plus ni moins
+- Format : une question par ligne, pas de numerotation, pas de tirets
+- Chaque question doit etre actionnable et fermee (oui/non, choix court, ou identification d'un element manquant)
+- Francais uniquement
+- AUCUN texte avant ou apres les questions
+- Ne pose JAMAIS de question sur les couleurs ou le design (ce sera fait automatiquement)
+
+EXEMPLES de bonnes questions :
+- Quel est le secteur d'activite ? (restaurant, sante, ecommerce, autre)
+- Avez-vous besoin d'un espace administrateur pour gerer le contenu ?
+- Quelles sont les 3 sections principales que la page d'accueil doit contenir ?
+
+EXEMPLES de mauvaises questions (a EVITER) :
+- Quelle palette de couleurs preferez-vous ? (interdit)
+- Aimez-vous le design moderne ? (trop vague)
+- Quel est le but de votre projet ? (trop vague et ouvert)`;
+
+const FALLBACK_CLARIFICATION_QUESTIONS = [
+  "Quel est le secteur d'activite (restaurant, sante, ecommerce, services, autre) ?",
+  "Avez-vous besoin d'un espace administrateur pour gerer le contenu ?",
+  "Quelles sont les 3 sections principales que doit contenir la page d'accueil ?"
+];
+
+async function generateClarificationQuestions(message, userId, projectId) {
+  // Try Claude first for context-aware questions; fall back to generic ones on any error.
+  try {
+    const sys = [{ type: 'text', text: CLARIFICATION_SYSTEM_PROMPT }];
+    const msgs = [{ role: 'user', content: `Brief original : "${message}"\n\nGenere les 3 questions de clarification.` }];
+    const reply = await callClaudeAPI(sys, msgs, 400, { userId, projectId, operation: 'clarify' }, {});
+    if (!reply || typeof reply !== 'string') return FALLBACK_CLARIFICATION_QUESTIONS;
+    // Parse: split by line, keep non-empty, drop bullets/numbering, limit to 3
+    const questions = reply
+      .split('\n')
+      .map(l => l.trim().replace(/^[-*•\d.)]+\s*/, '').replace(/^Q\d+\s*[:.-]\s*/i, ''))
+      .filter(l => l.length > 8 && l.length < 220 && /[?]/.test(l))
+      .slice(0, 3);
+    if (questions.length === 0) return FALLBACK_CLARIFICATION_QUESTIONS;
+    // Pad with generic if Claude returned fewer than 3
+    while (questions.length < 3) questions.push(FALLBACK_CLARIFICATION_QUESTIONS[questions.length]);
+    return questions;
+  } catch (e) {
+    log('warn', 'clarify', 'LLM call failed, using fallback', { error: e.message });
+    return FALLBACK_CLARIFICATION_QUESTIONS;
+  }
+}
+
 // Select relevant files using GPT-4 Mini (fast, cheap) before sending to Claude Sonnet
 // Returns array of file paths to include in context
 async function selectFilesWithLLM(projectStructure, userMessage) {
@@ -2495,6 +2625,15 @@ function generateViaAPI(projectId, brief, jobId) {
   // Phase 1: Plan (file list) → Phase 2: Infrastructure → Phase 3: Components+Pages
   // Each phase builds on the previous, preventing truncation
   generateMultiTurn(projectId, brief, jobId, job, projectDir, systemBlocks).catch(err => {
+    // User-initiated abort: mark as cancelled, NOT error
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR' || err.code === 'ERR_CANCELED')) {
+      console.log(`[MultiTurn] Cancelled by user: job ${jobId}`);
+      if (job.status !== 'done') {
+        job.status = 'cancelled';
+        job.progressMessage = 'Génération annulée';
+      }
+      return;
+    }
     console.error(`[MultiTurn] Fatal error: ${err.message}`);
     if (job.status === 'running') {
       job.status = 'error';
@@ -2505,7 +2644,8 @@ function generateViaAPI(projectId, brief, jobId) {
 
 async function generateMultiTurn(projectId, brief, jobId, job, projectDir, systemBlocks) {
   let allCode = '';
-  const tracking = { userId: job.user_id, projectId };
+  // jobId in tracking → callClaudeAPI auto-propagates AbortController.signal across all phases
+  const tracking = { userId: job.user_id, projectId, jobId };
   const startTime = Date.now();
   const sectorProfile = ai ? ai.detectSectorProfile(brief) : null;
 
@@ -3025,9 +3165,14 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   if (ai && ai.runBackTests) {
     const testFiles = readProjectFilesRecursive(projectDir);
     const backTestIssues = ai.runBackTests(testFiles);
+    const warnings = backTestIssues.filter(i => i.severity === 'warning');
+    const errors = backTestIssues.filter(i => i.severity !== 'warning');
+    if (warnings.length > 0) {
+      console.log(`[Gen] Back-test warnings (non-blocking, ${warnings.length}): ${warnings.map(w => `${w.file}:${w.issue}`).join(', ')}`);
+    }
     if (backTestIssues.length > 0) {
-      console.log(`[Gen] Back-test found ${backTestIssues.length} issue(s): ${backTestIssues.map(i => i.issue).join(', ')}`);
-      job.progressMessage = `Correction de ${backTestIssues.length} problème(s) qualité...`;
+      console.log(`[Gen] Back-test found ${errors.length} error(s) + ${warnings.length} warning(s): ${backTestIssues.map(i => i.issue).join(', ')}`);
+      job.progressMessage = `Correction de ${errors.length} problème(s) qualité...`;
       const fixPrompt = ai.buildAutoFixPrompt(backTestIssues);
       if (fixPrompt) {
         try {
@@ -4435,6 +4580,106 @@ function writeGeneratedFiles(projectDir, code, projectId) {
   console.log(`[WriteFiles] Total: ${filesWritten} files written, SSE pushed to WC`);
 }
 
+// ─── PLAN MODE — set of plan IDs already executed (anti-double-approve guard) ───
+// Plans can only be approved once. Stored in-memory; on server restart users can re-approve
+// (acceptable: they would just regenerate, no data loss). Pruned implicitly when set grows
+// beyond MAX_TRACKED_EXECUTED_PLANS to avoid unbounded memory growth.
+const executedPlans = new Set();
+const MAX_TRACKED_EXECUTED_PLANS = 10000;
+
+// ─── PLAN MODE — background plan generation (markdown only, no tools) ───
+// Mirrors generateClaude's job lifecycle: status pending → running → done|error.
+// On success: persists plan to project_messages with role='plan' and exposes job.plan_markdown + job.plan_id.
+// Token usage tracked automatically via callClaudeAPI(trackingInfo).
+async function generatePlan(jobId, user, project, message) {
+  const job = generationJobs.get(jobId);
+  if (!job) return;
+
+  job.status = 'running';
+  job.progressMessage = 'Analyse du projet et création du plan...';
+
+  try {
+    // Pull last 8 user/plan messages from history (chrono order). Skip 'assistant' rows
+    // because they contain raw generated code which would blow up the planning context.
+    let history = [];
+    try {
+      history = db.prepare(
+        "SELECT role, content FROM project_messages WHERE project_id=? AND role IN ('user','plan') ORDER BY id DESC LIMIT 8"
+      ).all(project.id);
+      history.reverse();
+    } catch (e) {
+      log('warn', 'plan', 'history fetch failed', { jobId, error: e.message });
+    }
+
+    const planMessages = (ai && ai.buildPlanContext)
+      ? ai.buildPlanContext(project, history, message)
+      : [{ role: 'user', content: message }];
+
+    const planSystemBlocks = [{
+      type: 'text',
+      text: (ai && ai.PLAN_SYSTEM_PROMPT) || 'Tu produis un plan en Markdown sans aucun outil.',
+      cache_control: { type: 'ephemeral' }
+    }];
+
+    const planMarkdown = await callClaudeAPI(
+      planSystemBlocks,
+      planMessages,
+      4000, // hard cap on plan length — plans are short by design
+      { userId: user.id, projectId: project.id, operation: 'plan', jobId }, // jobId → AbortController
+      {} // NO tools — markdown only
+    );
+
+    if (!planMarkdown || typeof planMarkdown !== 'string' || planMarkdown.trim().length < 30) {
+      job.status = 'error';
+      job.error = 'Plan vide ou trop court. Reformulez votre demande.';
+      log('warn', 'plan', 'empty plan returned', { jobId, projectId: project.id });
+      return;
+    }
+
+    // Persist plan in DB. Single atomic INSERT — no transaction needed.
+    let planId;
+    try {
+      const result = db.prepare(
+        'INSERT INTO project_messages (project_id, role, content) VALUES (?,?,?)'
+      ).run(project.id, 'plan', planMarkdown);
+      planId = result.lastInsertRowid;
+    } catch (e) {
+      job.status = 'error';
+      job.error = 'Erreur de sauvegarde du plan.';
+      log('error', 'plan', 'db insert failed', { jobId, error: e.message });
+      return;
+    }
+
+    job.plan_markdown = planMarkdown;
+    job.plan_id = planId;
+    job.status = 'done';
+    job.progressMessage = 'Plan prêt';
+
+    log('info', 'plan', 'plan generated', {
+      jobId, planId, projectId: project.id, userId: user.id, length: planMarkdown.length
+    });
+
+    // Best-effort SSE notification — never fail the job if it errors
+    try {
+      notifyProjectClients(project.id, 'plan_ready', {
+        planId,
+        preview: planMarkdown.substring(0, 200),
+        userName: user.name
+      }, user.id);
+    } catch (e) { /* swallow */ }
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.code === 'ERR_CANCELED')) {
+      job.status = 'cancelled';
+      job.progressMessage = 'Plan annulé';
+      log('info', 'plan', 'plan cancelled by user', { jobId });
+      return;
+    }
+    job.status = 'error';
+    job.error = `Erreur génération plan: ${e.message}`;
+    log('error', 'plan', 'generation failed', { jobId, error: e.message, stack: e.stack });
+  }
+}
+
 // ─── LEGACY GENERATE CLAUDE (KEPT FOR SMALL OPERATIONS) ───
 function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
@@ -4522,12 +4767,21 @@ Règles d'intégration automatique :
   job.status = 'running';
   job.progressMessage = 'Prestige AI travaille sur votre demande...';
 
+  // Fast-fail: user aborted before we even started
+  if (job.abortController && job.abortController.signal.aborted) {
+    job.status = 'cancelled';
+    job.progressMessage = 'Génération annulée';
+    return;
+  }
+
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
     tools: [...CODE_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
     tool_choice: { type: 'auto' }
   };
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
+  // Forward AbortController signal so user can cancel mid-stream
+  if (job.abortController) opts.signal = job.abortController.signal;
   
   anthropicRequest(payload, opts, (apiRes) => {
     let buffer = '';
@@ -4664,7 +4918,14 @@ Règles d'intégration automatique :
         }
       }
     });
-    apiRes.on('error', e => { job.status = 'error'; job.error = e.message; });
+    apiRes.on('error', e => {
+      if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.code === 'ERR_CANCELED')) {
+        job.status = 'cancelled';
+        job.progressMessage = 'Génération annulée';
+        return;
+      }
+      job.status = 'error'; job.error = e.message;
+    });
     apiRes.on('end', async () => {
       // If tool_use blocks were received, process them into code
       if (toolBlocks.length > 0) {
@@ -4874,6 +5135,13 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
       }
     });
   }, (e) => {
+    // Distinguish user-initiated abort from real errors
+    if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR' || e.code === 'ERR_CANCELED')) {
+      job.status = 'cancelled';
+      job.progressMessage = 'Génération annulée';
+      console.log(`[generateClaude] Job ${job.user_id ? 'u' + job.user_id : ''} cancelled by user`);
+      return;
+    }
     job.status = 'error';
     job.error = e.message;
   }, job);
@@ -7791,8 +8059,15 @@ const server = http.createServer(async (req, res) => {
     // Only the job owner can access it
     if (job.user_id !== user.id) { json(res, 403, { error: 'Accès refusé' }); return; }
     
-    // If done, finalize project and cleanup
-    if (job.status === 'done' && job.project_id && !job.finalized) {
+    // ─── PLAN JOBS: lightweight finalize (no code artifacts) ───
+    // Plan jobs persist their result directly in generatePlan(); no preview/credentials/SSE needed here.
+    if (job.status === 'done' && job.type === 'plan' && !job.finalized) {
+      job.finalized = true;
+      // No activeGenerations decrement: plan jobs do NOT increment it.
+    }
+
+    // If done, finalize project and cleanup (code generation jobs only)
+    if (job.status === 'done' && job.project_id && job.type !== 'plan' && !job.finalized) {
       // Set finalized FIRST to prevent race condition with concurrent poll requests
       job.finalized = true;
       // Final artifact cleanup before persisting to DB
@@ -7842,16 +8117,27 @@ const server = http.createServer(async (req, res) => {
       job.finalized = true;
       if (activeGenerations > 0) activeGenerations--;
     }
+    // ─── CANCELLED jobs: cleanup like error path, but distinct status ───
+    // Files written before the abort are kept on disk (Vite HMR will pick them up).
+    // No code persisted to DB on cancel — user explicitly stopped, project stays in
+    // its previous state in DB (the partial files are visible only via preview).
+    if (job.status === 'cancelled' && !job.finalized) {
+      job.finalized = true;
+      if (activeGenerations > 0 && job.type !== 'plan') activeGenerations--;
+      log('info', 'job', 'finalized as cancelled', { jobId, projectId: job.project_id, userId: job.user_id });
+    }
 
     // Return user-friendly message from Claude Code progress
-    const progressMessage = job.progressMessage || (job.status === 'pending' ? 'En attente...' : 
-      job.status === 'running' ? 'Génération en cours...' : 
-      job.status === 'done' ? 'Terminé !' : 
-      job.status === 'error' ? 'Erreur' : 'En cours...');
+    const progressMessage = job.progressMessage || (job.status === 'pending' ? 'En attente...' :
+      job.status === 'running' ? 'Génération en cours...' :
+      job.status === 'done' ? 'Terminé !' :
+      job.status === 'error' ? 'Erreur' :
+      job.status === 'cancelled' ? 'Génération annulée' : 'En cours...');
     
     json(res, 200, {
       job_id: jobId,
       status: job.status,
+      type: job.type || 'generate',
       code: job.code,
       error: job.error,
       progress: job.progress,
@@ -7860,18 +8146,95 @@ const server = http.createServer(async (req, res) => {
       framework: job.framework,
       credentials: job.credentials || null,
       suggestions: job.suggestions || null,
-      chat_message: job.chat_message || null
+      chat_message: job.chat_message || null,
+      plan_markdown: job.plan_markdown || null,
+      plan_id: job.plan_id || null
     });
+    return;
+  }
+
+  // ─── STOP A RUNNING JOB ───
+  // POST /api/generate/:jobId/stop — user-initiated cancellation.
+  // Aborts the in-flight Anthropic API call via the job's AbortController.
+  // Files already written to disk are preserved (Vite HMR will pick them up).
+  // Status transitions to 'cancelled' and the standard /api/jobs/:id finalize cleans up.
+  const stopMatch = url.match(/^\/api\/generate\/([a-zA-Z0-9-]+)\/stop$/);
+  if (stopMatch && req.method === 'POST') {
+    const jobId = stopMatch[1];
+    const job = generationJobs.get(jobId);
+    if (!job) { json(res, 404, { error: 'Job introuvable.' }); return; }
+
+    // Owner-only (admin can stop too)
+    if (user.role !== 'admin' && job.user_id !== user.id) {
+      json(res, 403, { error: 'Accès refusé à ce job.' });
+      return;
+    }
+
+    // Idempotent: already finished or cancelled → 200 with current status, no-op
+    if (job.status === 'done' || job.status === 'error' || job.status === 'cancelled') {
+      json(res, 200, { job_id: jobId, status: job.status, already: true });
+      return;
+    }
+
+    // Trigger abort. AbortController.abort() is safe to call multiple times.
+    if (job.abortController && !job.abortController.signal.aborted) {
+      try {
+        job.abortController.abort();
+        log('info', 'job', 'stop requested', { jobId, projectId: job.project_id, userId: user.id });
+      } catch (e) {
+        log('error', 'job', 'abort threw', { jobId, error: e.message });
+      }
+    }
+
+    // Set transitional state — actual 'cancelled' is set by the .catch handlers
+    // in generateClaude/generateMultiTurn/generatePlan when the AbortError lands.
+    if (job.status !== 'cancelled') {
+      job.progressMessage = 'Annulation en cours...';
+    }
+
+    // Notify SSE so other collaborators see the stop
+    if (job.project_id) {
+      try {
+        notifyProjectClients(job.project_id, 'user_action', {
+          action: 'generation_stopped',
+          userName: user.name
+        }, user.id);
+      } catch (_) { /* swallow */ }
+    }
+
+    json(res, 200, { job_id: jobId, status: 'cancelling' });
     return;
   }
 
   // ─── GENERATE START (POLLING) ───
   if (url==='/api/generate/start' && req.method==='POST') {
-    const {project_id, message}=await getBody(req);
+    const {project_id, message, skip_clarification}=await getBody(req);
 
     // #3 Validate input
     if (!message || typeof message !== 'string' || message.trim().length < 3) {
       json(res, 400, { error: 'Message requis (min 3 caractères).' }); return;
+    }
+
+    // ─── CLARIFICATION PROTOCOL ───
+    // Brief too vague + new project → ask 3 questions before consuming a full generation.
+    // Power users can bypass with skip_clarification=true. Existing projects (modifications)
+    // are never asked since the codebase itself disambiguates the request.
+    if (!skip_clarification && project_id) {
+      const projectForCheck = db.prepare('SELECT user_id, generated_code FROM projects WHERE id=?').get(project_id);
+      // Ownership: don't leak existence of someone else's project via clarification check
+      if (projectForCheck && (user.role === 'admin' || projectForCheck.user_id === user.id)) {
+        if (needsClarification(message, projectForCheck)) {
+          try {
+            const questions = await generateClarificationQuestions(message, user.id, project_id);
+            log('info', 'clarify', 'asked', { userId: user.id, projectId: project_id, count: questions.length });
+            json(res, 200, { type: 'clarification_needed', questions, original_message: message });
+          } catch (e) {
+            // On any failure, fall through to normal generation rather than blocking
+            log('warn', 'clarify', 'failed open', { error: e.message });
+          }
+          if (res.headersSent || res.writableEnded) return;
+        }
+      }
     }
 
     // #4 Check concurrent generation limit
@@ -7894,7 +8257,7 @@ const server = http.createServer(async (req, res) => {
 
     const jobId = crypto.randomUUID();
 
-    // Initialize job in Map
+    // Initialize job in Map (with AbortController for user-initiated stop)
     generationJobs.set(jobId, {
       status: 'pending',
       code: '',
@@ -7903,9 +8266,10 @@ const server = http.createServer(async (req, res) => {
       project_id: project_id,
       user_id: user.id,
       message: message,
-      finalized: false
+      finalized: false,
+      abortController: new AbortController()
     });
-    
+
     // Return immediately with job_id
     json(res, 200, { job_id: jobId, status: 'pending' });
     
@@ -7974,6 +8338,195 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── PLAN MODE — START (POLLING, lightweight) ───
+  // Generates a markdown plan without writing any code. User must approve via
+  // POST /api/plan/:planId/approve to trigger actual generation.
+  if (url === '/api/plan/start' && req.method === 'POST') {
+    const body = await getBody(req);
+    const { project_id: rawProjectId, message, skip_clarification } = body || {};
+
+    // Input validation (mirrors /api/generate/start patterns)
+    const msgErr = validateString(message, 'Message', 3, 10000);
+    if (msgErr) { json(res, 400, { error: msgErr }); return; }
+    const idErr = validateId(rawProjectId, 'project_id');
+    if (idErr) { json(res, 400, { error: idErr }); return; }
+    const project_id = parseInt(rawProjectId, 10); // normalize string→int
+
+    // Project ownership check
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(project_id);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé à ce projet.' });
+      return;
+    }
+
+    // ─── CLARIFICATION PROTOCOL (mirrors /api/generate/start) ───
+    if (!skip_clarification && needsClarification(message, project)) {
+      try {
+        const questions = await generateClarificationQuestions(message, user.id, project_id);
+        log('info', 'clarify', 'asked (plan)', { userId: user.id, projectId: project_id, count: questions.length });
+        json(res, 200, { type: 'clarification_needed', questions, original_message: message });
+        return;
+      } catch (e) {
+        // Fail open: proceed with planning rather than blocking
+        log('warn', 'clarify', 'failed open (plan)', { error: e.message });
+      }
+    }
+
+    // Quota check (plans count against the same generate quota — prevents abuse)
+    const quota = checkUserQuota(user.id);
+    if (!quota.allowed) {
+      json(res, 429, { error: quota.reason, quota: { daily: quota.daily, dailyLimit: quota.dailyLimit, monthly: quota.monthly, monthlyLimit: quota.monthlyLimit } });
+      return;
+    }
+
+    // Concurrency limit (shared with full generation pipeline)
+    if (activeGenerations >= MAX_CONCURRENT_GENERATIONS) {
+      json(res, 429, { error: `Serveur occupé (${activeGenerations}/${MAX_CONCURRENT_GENERATIONS} générations en cours). Réessayez dans 30 secondes.` });
+      return;
+    }
+
+    // Create plan job (with AbortController for user-initiated stop)
+    const jobId = crypto.randomUUID();
+    generationJobs.set(jobId, {
+      status: 'pending',
+      type: 'plan',
+      code: '',
+      error: null,
+      progress: 0,
+      project_id,
+      user_id: user.id,
+      message,
+      finalized: false,
+      plan_markdown: null,
+      plan_id: null,
+      abortController: new AbortController()
+    });
+
+    // Respond immediately, generate in background
+    json(res, 200, { job_id: jobId, status: 'pending' });
+
+    // Persist user request as a regular 'user' message in history (best effort)
+    try {
+      db.prepare('INSERT INTO project_messages (project_id, role, content) VALUES (?,?,?)')
+        .run(project_id, 'user', message);
+    } catch (e) {
+      log('warn', 'plan', 'user message insert failed', { jobId, error: e.message });
+    }
+
+    // Fire-and-forget background generation. Errors are caught inside generatePlan and
+    // surfaced via job.status='error' so the polling client sees them.
+    generatePlan(jobId, user, project, message).catch(err => {
+      log('error', 'plan', 'unhandled in generatePlan', { jobId, error: err.message });
+      const j = generationJobs.get(jobId);
+      if (j && j.status !== 'done') { j.status = 'error'; j.error = j.error || err.message; }
+    });
+    return;
+  }
+
+  // ─── PLAN MODE — APPROVE (executes the plan via the standard generation pipeline) ───
+  // Reads the persisted plan, builds a generation message that injects the plan as instructions,
+  // then enqueues a normal generateClaude job. Frontend then polls /api/jobs/:job_id as usual.
+  const planApproveMatch = url.match(/^\/api\/plan\/(\d+)\/approve$/);
+  if (planApproveMatch && req.method === 'POST') {
+    const planId = parseInt(planApproveMatch[1], 10);
+    if (!Number.isInteger(planId) || planId < 1) {
+      json(res, 400, { error: 'plan_id invalide.' });
+      return;
+    }
+
+    // Anti-double-approve guard (in-memory; resets on server restart)
+    if (executedPlans.has(planId)) {
+      json(res, 409, { error: 'Ce plan a déjà été exécuté.' });
+      return;
+    }
+
+    // Fetch plan row
+    const planRow = db.prepare("SELECT id, project_id, content FROM project_messages WHERE id=? AND role='plan'").get(planId);
+    if (!planRow) { json(res, 404, { error: 'Plan introuvable.' }); return; }
+
+    // Project ownership check
+    const project = db.prepare('SELECT * FROM projects WHERE id=?').get(planRow.project_id);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé à ce plan.' });
+      return;
+    }
+
+    // Quota check
+    const quota = checkUserQuota(user.id);
+    if (!quota.allowed) {
+      json(res, 429, { error: quota.reason, quota: { daily: quota.daily, dailyLimit: quota.dailyLimit, monthly: quota.monthly, monthlyLimit: quota.monthlyLimit } });
+      return;
+    }
+
+    // Concurrency check
+    if (activeGenerations >= MAX_CONCURRENT_GENERATIONS) {
+      json(res, 429, { error: `Serveur occupé (${activeGenerations}/${MAX_CONCURRENT_GENERATIONS} générations en cours). Réessayez dans 30 secondes.` });
+      return;
+    }
+
+    // Mark as executed BEFORE creating the job (prevents race on rapid double-click)
+    executedPlans.add(planId);
+    if (executedPlans.size > MAX_TRACKED_EXECUTED_PLANS) {
+      // Simple LRU-ish prune: drop oldest by clearing half. Plans dropped from the set
+      // become re-approvable, which is acceptable (worst case: user double-generates).
+      const arr = Array.from(executedPlans).slice(MAX_TRACKED_EXECUTED_PLANS / 2);
+      executedPlans.clear();
+      arr.forEach(id => executedPlans.add(id));
+    }
+
+    // Build generation message that injects the validated plan as the source of truth
+    const genMessage = `Implémente exactement ce plan validé par l'utilisateur. Suis-le étape par étape, sans inventer de features supplémentaires.\n\n${planRow.content}`;
+
+    // Create generation job (mirrors /api/generate/start branch for code mode)
+    const jobId = crypto.randomUUID();
+    generationJobs.set(jobId, {
+      status: 'pending',
+      type: 'plan_execution',
+      code: '',
+      error: null,
+      progress: 0,
+      project_id: project.id,
+      user_id: user.id,
+      message: genMessage,
+      plan_id: planId,
+      finalized: false,
+      abortController: new AbortController()
+    });
+
+    json(res, 200, { job_id: jobId, status: 'pending', plan_id: planId });
+
+    // Build generation context exactly like /api/generate/start would
+    let history = [];
+    try {
+      history = db.prepare('SELECT role,content FROM project_messages WHERE project_id=? ORDER BY id ASC LIMIT 30').all(project.id);
+    } catch (e) {
+      log('warn', 'plan', 'history fetch failed in approve', { planId, error: e.message });
+    }
+    const savedApis = (() => { try { return db.prepare('SELECT name,service,description FROM api_keys').all(); } catch (_) { return []; } })();
+    const projectKeys = (() => { try { return db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project.id); } catch (_) { return []; } })();
+
+    const userMsg = (ai && ai.buildProfessionalPrompt) ? ai.buildProfessionalPrompt(genMessage, project, savedApis) : genMessage;
+    const messagesForGen = (ai && ai.buildConversationContext)
+      ? ai.buildConversationContext(project, history, userMsg, projectKeys, null)
+      : [{ role: 'user', content: userMsg }];
+
+    // Persist a marker in history so the user can see the plan was executed
+    try {
+      db.prepare('INSERT INTO project_messages (project_id, role, content) VALUES (?,?,?)')
+        .run(project.id, 'user', `[Plan #${planId} approuvé et exécuté]`);
+    } catch (e) { /* non-fatal */ }
+
+    log('info', 'plan', 'plan approved and execution enqueued', {
+      planId, jobId, projectId: project.id, userId: user.id
+    });
+
+    notifyProjectClients(project.id, 'user_action', { action: 'plan_executing', userName: user.name }, user.id);
+
+    activeGenerations++;
+    generateClaude(messagesForGen, jobId, project.brief);
+    return;
+  }
+
   // ─── GENERATE FROM IMAGE START (POLLING) ───
   if (url==='/api/generate/image/start' && req.method==='POST') {
     const body = await getBody(req);
@@ -7982,7 +8535,7 @@ const server = http.createServer(async (req, res) => {
     
     const jobId = crypto.randomUUID();
     
-    // Initialize job in Map
+    // Initialize job in Map (with AbortController for user-initiated stop)
     generationJobs.set(jobId, {
       status: 'pending',
       code: '',
@@ -7992,7 +8545,8 @@ const server = http.createServer(async (req, res) => {
       user_id: user.id,
       message: '[Image uploadée pour reproduction de design]',
       finalized: false,
-      is_image_gen: true
+      is_image_gen: true,
+      abortController: new AbortController()
     });
     
     // Return immediately with job_id
