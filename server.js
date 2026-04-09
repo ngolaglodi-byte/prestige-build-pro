@@ -132,7 +132,24 @@ cache.startCleanup();
 const PORT = process.env.PORT || 3000;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env['GPT-4_Mini'] || process.env.GPT4_MINI_KEY || '';
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+
+// SECURITY: JWT_SECRET MUST be set via env var. No fallback.
+// A random fallback would invalidate all sessions on every restart AND make
+// encrypted data unreadable (because ENCRYPT_KEY is derived from JWT_SECRET).
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error('[FATAL] JWT_SECRET env var must be set (min 32 chars). Generate one with: openssl rand -hex 64');
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// SECURITY: Separate encryption key. If not set, derive from JWT_SECRET (backwards-compat).
+// Recommended: set ENCRYPTION_KEY explicitly so JWT rotation doesn't break encrypted data.
+const ENCRYPTION_KEY_RAW = process.env.ENCRYPTION_KEY || JWT_SECRET;
+if (ENCRYPTION_KEY_RAW.length < 32) {
+  console.error('[FATAL] ENCRYPTION_KEY (or JWT_SECRET fallback) must be at least 32 chars.');
+  process.exit(1);
+}
+
 const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
 const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
 
@@ -141,19 +158,31 @@ const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
 const DOCKER_NETWORK = 'pbp-projects';
 const DOCKER_BASE_IMAGE = 'pbp-base';
 
-// ─── ENCRYPTION FOR API KEYS AT REST ───
-const ENCRYPT_KEY = crypto.createHash('sha256').update(JWT_SECRET).digest();
+// ─── ENCRYPTION FOR SENSITIVE DATA AT REST ───
+// AES-256-GCM with explicit ENCRYPTION_KEY (or JWT_SECRET as fallback for backwards-compat).
+// IMPORTANT: ENCRYPTION_KEY must be stable across restarts — losing it = losing all encrypted data.
+const ENCRYPT_KEY = crypto.createHash('sha256').update(ENCRYPTION_KEY_RAW).digest();
+const ENCRYPT_PREFIX = 'enc:v1:';
 function encryptValue(text) {
+  if (text === null || text === undefined || text === '') return text;
+  const str = typeof text === 'string' ? text : String(text);
+  // Idempotent: don't double-encrypt
+  if (str.startsWith(ENCRYPT_PREFIX)) return str;
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
-  let enc = cipher.update(text, 'utf8', 'hex');
+  let enc = cipher.update(str, 'utf8', 'hex');
   enc += cipher.final('hex');
   const tag = cipher.getAuthTag().toString('hex');
-  return iv.toString('hex') + ':' + tag + ':' + enc;
+  return ENCRYPT_PREFIX + iv.toString('hex') + ':' + tag + ':' + enc;
 }
 function decryptValue(encrypted) {
+  if (encrypted === null || encrypted === undefined || encrypted === '') return encrypted;
+  if (typeof encrypted !== 'string') return encrypted;
+  // Legacy unencrypted data: return as-is
+  if (!encrypted.startsWith(ENCRYPT_PREFIX)) return encrypted;
   try {
-    const [ivHex, tagHex, enc] = encrypted.split(':');
+    const payload = encrypted.slice(ENCRYPT_PREFIX.length);
+    const [ivHex, tagHex, enc] = payload.split(':');
     const iv = Buffer.from(ivHex, 'hex');
     const tag = Buffer.from(tagHex, 'hex');
     const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
@@ -161,7 +190,11 @@ function decryptValue(encrypted) {
     let dec = decipher.update(enc, 'hex', 'utf8');
     dec += decipher.final('utf8');
     return dec;
-  } catch { return encrypted; } // fallback for unencrypted legacy values
+  } catch (e) {
+    // Decryption failed — log but don't throw (data corrupted or wrong key)
+    console.error('[Encrypt] Failed to decrypt value:', e.message);
+    return null;
+  }
 }
 const DOCKER_HEALTH_TIMEOUT = 15000; // 15 seconds max wait for container health
 const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
@@ -666,7 +699,39 @@ try {
     CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, user_id INTEGER NOT NULL, job_id TEXT, rating INTEGER NOT NULL, comment TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id), FOREIGN KEY(user_id) REFERENCES users(id));
     CREATE INDEX IF NOT EXISTS idx_ai_feedback_project ON ai_feedback(project_id);
     CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback(created_at);
+
+    -- SECURITY: append-only audit log of sensitive actions (login, delete, modify, etc.)
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      user_email TEXT,
+      action TEXT NOT NULL,
+      resource_type TEXT,
+      resource_id TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      details TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+    CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
   `);
+
+  // ─── AUDIT LOG HELPER ───
+  // Append-only logging of security-sensitive actions. Never throws (defensive).
+  global.auditLog = function(req, user, action, resourceType, resourceId, details) {
+    try {
+      const ip = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.connection?.remoteAddress || null;
+      const userAgent = req?.headers?.['user-agent']?.substring(0, 200) || null;
+      const detailsStr = details ? (typeof details === 'string' ? details : JSON.stringify(details).substring(0, 500)) : null;
+      db.prepare(
+        'INSERT INTO audit_log (user_id, user_email, action, resource_type, resource_id, ip, user_agent, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      ).run(user?.id || null, user?.email || null, action, resourceType || null, resourceId ? String(resourceId) : null, ip, userAgent, detailsStr);
+    } catch (e) {
+      console.warn('[AuditLog] failed to log:', e.message);
+    }
+  };
   const bcrypt = require('bcryptjs');
   const ADMIN_EMAIL = 'admin@prestige-build.dev';
   const ADMIN_PASSWORD = 'Prestige2026!';
@@ -8301,13 +8366,16 @@ const server = http.createServer(async (req, res) => {
     const u=db.prepare('SELECT * FROM users WHERE email=?').get(email.trim().toLowerCase());
     if (!u||!bcrypt.compareSync(password,u.password)) {
       console.log(`[Auth] Failed login attempt for: ${email} from ${clientIp}`);
+      if (global.auditLog) global.auditLog(req, null, 'login_failed', 'user', null, { email: email.substring(0,100) });
       json(res,401,{error:'Email ou mot de passe incorrect.'}); return;
     }
     if (u.role === 'disabled') {
       console.log(`[Auth] Blocked disabled user: ${u.email}`);
+      if (global.auditLog) global.auditLog(req, u, 'login_blocked_disabled', 'user', u.id);
       json(res,403,{error:'Votre compte a été désactivé. Contactez l\'administrateur.'}); return;
     }
     console.log(`[Auth] Login: ${u.email} (${u.role})`);
+    if (global.auditLog) global.auditLog(req, u, 'login_success', 'user', u.id);
     json(res,200,{token:signToken({id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}),user:{id:u.id,email:u.email,name:u.name,role:u.role,lang:u.lang}});
     return;
   }
@@ -8692,6 +8760,28 @@ const server = http.createServer(async (req, res) => {
   // ─── ADMIN: AI STATS DASHBOARD ───
   // GET /api/admin/ai-stats?days=7
   // Returns aggregated metrics from token_usage + ai_feedback. Admin only.
+  // GET /api/admin/audit-log?limit=100&action=login_failed
+  // Admin-only view of all sensitive actions for security review.
+  if (url.startsWith('/api/admin/audit-log') && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return; }
+    try {
+      const urlParts = req.url.split('?');
+      const params = urlParts.length > 1 ? new URLSearchParams(urlParts[1]) : new URLSearchParams();
+      const limit = Math.max(1, Math.min(500, parseInt(params.get('limit') || '100', 10)));
+      const action = params.get('action');
+      let query = 'SELECT id, user_id, user_email, action, resource_type, resource_id, ip, details, created_at FROM audit_log';
+      const args = [];
+      if (action) { query += ' WHERE action = ?'; args.push(action); }
+      query += ' ORDER BY id DESC LIMIT ?';
+      args.push(limit);
+      const rows = db.prepare(query).all(...args);
+      json(res, 200, { count: rows.length, entries: rows });
+    } catch (e) {
+      json(res, 500, { error: 'Failed to read audit log: ' + e.message });
+    }
+    return;
+  }
+
   if (url.startsWith('/api/admin/ai-stats') && req.method === 'GET') {
     if (user.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return; }
     const urlParts = req.url.split('?');
@@ -9888,7 +9978,8 @@ export default defineConfig({
     db.prepare('DELETE FROM error_history WHERE project_id=?').run(id);
     db.prepare('DELETE FROM project_api_keys WHERE project_id=?').run(id);
     db.prepare('DELETE FROM projects WHERE id=?').run(id);
-    
+    if (global.auditLog) global.auditLog(req, user, 'project_deleted', 'project', id, { title: project?.title });
+
     // Clean up correction attempts tracking
     correctionAttempts.delete(id);
     correctionInProgress.delete(id);
@@ -10101,7 +10192,14 @@ export default defineConfig({
     json(res,200,{ projects, published, today: { cost: tokensToday.cost, operations: tokensToday.ops }, month: { cost: tokensMonth.cost, operations: tokensMonth.ops }, lastActivity: lastActivity?.created_at || null });
     return;
   }
-  if (url.match(/^\/api\/users\/\d+$/) && req.method==='DELETE') { if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;} db.prepare('DELETE FROM users WHERE id=?').run(parseInt(url.split('/').pop())); json(res,200,{ok:true}); return; }
+  if (url.match(/^\/api\/users\/\d+$/) && req.method==='DELETE') {
+    if(user.role!=='admin'){json(res,403,{error:'Interdit.'});return;}
+    const targetId = parseInt(url.split('/').pop());
+    const targetUser = db.prepare('SELECT email FROM users WHERE id=?').get(targetId);
+    db.prepare('DELETE FROM users WHERE id=?').run(targetId);
+    if (global.auditLog) global.auditLog(req, user, 'user_deleted', 'user', targetId, { email: targetUser?.email });
+    json(res,200,{ok:true}); return;
+  }
 
   // GET /api/admin/activity — Logs d'activite recents (generations, modifications)
   if (url === '/api/admin/activity' && req.method === 'GET') {
