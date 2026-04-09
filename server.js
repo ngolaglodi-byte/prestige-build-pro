@@ -66,7 +66,9 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ─── #4 JOB QUEUE LIMIT (max concurrent AI generations) ───
-const MAX_CONCURRENT_GENERATIONS = 3;
+// Internal agency tool: 8GB RAM server allows up to 8 parallel generations
+// (covers a team of 5-20 devs working on multiple client projects in parallel).
+const MAX_CONCURRENT_GENERATIONS = 8;
 let activeGenerations = 0;
 
 // ─── #10 STRUCTURED LOGGING ───
@@ -763,7 +765,9 @@ async function addCustomDomainToCaddy(customDomain, siteDir) {
 // ─── AUTH ───
 function signToken(p) {
   const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
-  const b=Buffer.from(JSON.stringify({...p,exp:Math.floor(Date.now()/1000)+86400})).toString('base64url'); // 24h expiry
+  // Internal agency tool: 7-day expiry (was 24h) to avoid daily re-login for the team.
+  // Existing tokens keep their original 24h expiry until they naturally expire.
+  const b=Buffer.from(JSON.stringify({...p,exp:Math.floor(Date.now()/1000)+86400*7})).toString('base64url'); // 7d expiry
   const s=crypto.createHmac('sha256',JWT_SECRET).update(`${h}.${b}`).digest('base64url');
   return `${h}.${b}.${s}`;
 }
