@@ -2311,9 +2311,12 @@ function applyToolEdits(projectDir, edits) {
 
 // opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
 // opts.rawResponse: if true, return the full API response object instead of text
+// opts.model: override the default model (Sonnet 4). Used for cheap routing (Haiku).
 function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo = null, opts = {}) {
   return new Promise((resolve, reject) => {
-    const model = 'claude-sonnet-4-20250514';
+    // Model routing: opts.model overrides the default. Used by classifyIntent (Haiku 4.5)
+    // and reserved for future cheap-task routing (file selection, verify pass, etc.).
+    const model = opts.model || 'claude-sonnet-4-20250514';
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
     if (opts.useTools) {
       apiPayload.tools = CODE_TOOLS;
@@ -2481,6 +2484,66 @@ function callGPT4Mini(prompt, maxTokens = 500) {
     req.write(payload);
     req.end();
   });
+}
+
+// ─── INTENT CLASSIFIER (Claude Haiku 4.5) ───
+// Replaces the brittle regex isQuestion check with an LLM-based classifier.
+// Cost: ~$0.001 per call. Latency: ~300-600ms. Catches "le bouton est trop petit"
+// (no action verb but clearly a fix request) and "tu peux ajouter X ?" (verb in middle).
+//
+// Returns: { intent: 'code'|'discuss'|'clarify', confidence: 0-1, source: 'haiku'|'fallback' }
+//
+// On any error → fallback to regex (existing behavior preserved, zero risk).
+const INTENT_PROMPT = `Tu es un classifieur d'intentions. Tu reponds UNIQUEMENT avec un JSON strict.
+
+Ton job : determiner si le message utilisateur demande de coder, de discuter, ou s'il est trop vague.
+
+Categories :
+- "code" : l'utilisateur veut creer/modifier/supprimer/corriger du code (verbes d'action OU constat de bug a fixer)
+- "discuss" : pure question sans action attendue (comment ca marche, c'est quoi, explique-moi)
+- "clarify" : trop vague, devrait demander une precision avant d'agir
+
+Exemples :
+- "Ajoute une page contact" -> {"intent":"code","confidence":0.98}
+- "Le bouton est trop petit" -> {"intent":"code","confidence":0.92}
+- "Tu peux ajouter une FAQ ?" -> {"intent":"code","confidence":0.95}
+- "Comment marche le router ?" -> {"intent":"discuss","confidence":0.97}
+- "Site web" -> {"intent":"clarify","confidence":0.9}
+
+Reponds UNIQUEMENT avec le JSON, rien d'autre.`;
+
+async function classifyIntent(message) {
+  if (!message || typeof message !== 'string' || message.trim().length < 3) {
+    return { intent: 'clarify', confidence: 1, source: 'fast-path' };
+  }
+  try {
+    const sys = [{ type: 'text', text: INTENT_PROMPT }];
+    const msgs = [{ role: 'user', content: `Message: "${message.substring(0, 500)}"` }];
+    const reply = await callClaudeAPI(sys, msgs, 100, null, {
+      model: 'claude-haiku-4-5-20251001'
+    });
+    if (typeof reply !== 'string') throw new Error('non-string reply');
+    const jsonMatch = reply.match(/\{[^}]*"intent"[^}]*\}/);
+    if (!jsonMatch) throw new Error('no JSON found');
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!['code', 'discuss', 'clarify'].includes(parsed.intent)) throw new Error('invalid intent');
+    const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
+    return { intent: parsed.intent, confidence, source: 'haiku' };
+  } catch (e) {
+    log('warn', 'intent', 'Haiku classifier failed, using regex fallback', { error: e.message });
+    return classifyIntentRegex(message);
+  }
+}
+
+function classifyIntentRegex(message) {
+  const msg = (message || '').toLowerCase();
+  const isQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg)
+    && !/\b(crée|ajoute|modifie|change|supprime|corrige|implémente|intègre|construis|fais|mets|retire)\b/.test(msg);
+  return {
+    intent: isQuestion ? 'discuss' : 'code',
+    confidence: 0.6,
+    source: 'fallback'
+  };
 }
 
 // ─── CLARIFICATION PROTOCOL ───
@@ -8414,11 +8477,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Detect intent: discussion (question) vs code (action)
-    // Action words trigger code generation; questions get lightweight chat response
-    const msg = (message || '').toLowerCase();
-    const isQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg)
-      && !/\b(crée|ajoute|modifie|change|supprime|corrige|implémente|intègre|construis|fais|mets|retire)\b/.test(msg);
+    // Detect intent: LLM-based classifier (Haiku 4.5) with regex fallback.
+    // Catches edge cases the regex misses ("le bouton est trop petit", "tu peux ajouter X ?").
+    const intentResult = await classifyIntent(message);
+    const isQuestion = intentResult.intent === 'discuss';
+    log('info', 'intent', 'classified', { intent: intentResult.intent, confidence: intentResult.confidence, source: intentResult.source });
 
     const jobId = crypto.randomUUID();
 

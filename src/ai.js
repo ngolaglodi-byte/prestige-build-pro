@@ -37,7 +37,15 @@ ADMIN : Login.tsx (/login) + Admin.tsx (/admin) avec sidebar + dashboard. Header
 
 STACK : React 19, Vite 6, Tailwind 3, React Router 7, Lucide React, Radix UI, Sonner, date-fns, recharts.
 
-QUALITE : Composants < 150 lignes. export default function. TypeScript strict. <Skeleton> loading. toast() succes/erreur. HTML semantique. Pas de features non demandees.`;
+QUALITE : Composants < 150 lignes. export default function. TypeScript strict. <Skeleton> loading. toast() succes/erreur. HTML semantique.
+
+SCOPE STRICT (CRITIQUE) :
+- Tu fais EXACTEMENT ce qui est demande, ni plus ni moins
+- N'ajoute JAMAIS de features non demandees (hover, animation, dark mode, mode A/B, accessibility extras, SEO extras)
+- Si tu es tente de "faire mieux" en ajoutant quelque chose, RESISTE
+- Ne modifie PAS de fichiers que tu n'as pas explicitement besoin de toucher
+- Pas de defensive coding non demande (pas de validation, fallback, retry, error handling supplementaire)
+- 3 lignes similaires valent mieux qu'une abstraction premature`;
 
 
 // ─── SECTOR PROFILES (INVISIBLE TEMPLATES) ───
@@ -414,7 +422,15 @@ Securite : bcrypt, JWT, prepared statements, validation inputs.
 
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
 
-NPM : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios`;
+NPM : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
+
+SCOPE STRICT (CRITIQUE) :
+- Tu fais EXACTEMENT ce qui est demande, ni plus ni moins
+- N'ajoute JAMAIS de features non demandees (hover, animation, dark mode, etc.)
+- Si tu es tente de "faire mieux", RESISTE
+- Ne modifie PAS de fichiers non concernes par la demande
+- Une demande de "supprimer X" = SUPPRIMER X seulement, ne pas refactorer le reste
+- Pas de defensive coding non demande, pas d'abstraction prematuree`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
