@@ -663,6 +663,9 @@ try {
     CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(owner_id) REFERENCES users(id));
     CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT DEFAULT 'editor', invited_by INTEGER, joined_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(workspace_id) REFERENCES workspaces(id), FOREIGN KEY(user_id) REFERENCES users(id), UNIQUE(workspace_id, user_id));
     CREATE TABLE IF NOT EXISTS project_memory (project_id INTEGER PRIMARY KEY, content TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT (datetime('now')), updated_by INTEGER, FOREIGN KEY(project_id) REFERENCES projects(id));
+    CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, user_id INTEGER NOT NULL, job_id TEXT, rating INTEGER NOT NULL, comment TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id), FOREIGN KEY(user_id) REFERENCES users(id));
+    CREATE INDEX IF NOT EXISTS idx_ai_feedback_project ON ai_feedback(project_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback(created_at);
   `);
   const bcrypt = require('bcryptjs');
   const ADMIN_EMAIL = 'admin@prestige-build.dev';
@@ -8648,6 +8651,137 @@ const server = http.createServer(async (req, res) => {
       // Code mode: full generation pipeline
       activeGenerations++;
       generateClaude(messages, jobId, brief);
+    }
+    return;
+  }
+
+  // ─── AI FEEDBACK — thumbs up/down on AI responses ───
+  // POST /api/feedback { project_id, job_id, rating: 1|-1, comment? }
+  // Stores user signal so we can compute % of generations rated positive/negative
+  // and identify failure patterns over time. Used by /api/admin/ai-stats.
+  if (url === '/api/feedback' && req.method === 'POST') {
+    const body = await getBody(req);
+    const { project_id, job_id, rating, comment } = body || {};
+    if (rating !== 1 && rating !== -1) {
+      json(res, 400, { error: 'rating must be 1 or -1' });
+      return;
+    }
+    if (project_id !== null && project_id !== undefined) {
+      const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(project_id);
+      if (project && user.role !== 'admin' && project.user_id !== user.id) {
+        json(res, 403, { error: 'Accès refusé à ce projet.' });
+        return;
+      }
+    }
+    if (comment && typeof comment === 'string' && comment.length > 1000) {
+      json(res, 400, { error: 'commentaire trop long (max 1000)' });
+      return;
+    }
+    try {
+      db.prepare('INSERT INTO ai_feedback (project_id, user_id, job_id, rating, comment) VALUES (?,?,?,?,?)')
+        .run(project_id || null, user.id, job_id || null, rating, comment || null);
+      log('info', 'feedback', 'recorded', { userId: user.id, projectId: project_id, rating });
+      json(res, 200, { ok: true });
+    } catch (e) {
+      log('error', 'feedback', 'insert failed', { error: e.message });
+      json(res, 500, { error: 'Erreur enregistrement feedback' });
+    }
+    return;
+  }
+
+  // ─── ADMIN: AI STATS DASHBOARD ───
+  // GET /api/admin/ai-stats?days=7
+  // Returns aggregated metrics from token_usage + ai_feedback. Admin only.
+  if (url.startsWith('/api/admin/ai-stats') && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return; }
+    const urlParts = req.url.split('?');
+    const params = urlParts.length > 1 ? new URLSearchParams(urlParts[1]) : new URLSearchParams();
+    const days = Math.max(1, Math.min(90, parseInt(params.get('days') || '7', 10)));
+
+    try {
+      // Token usage aggregates
+      const totals = db.prepare(`
+        SELECT
+          COUNT(*) as total_calls,
+          SUM(input_tokens) as total_input,
+          SUM(output_tokens) as total_output,
+          SUM(cache_read_tokens) as total_cache_read,
+          SUM(cost_usd) as total_cost
+        FROM token_usage
+        WHERE created_at >= datetime('now', ?)
+      `).get(`-${days} days`);
+
+      // Per operation breakdown (operation column has 'op:complexity' format)
+      const byOp = db.prepare(`
+        SELECT operation, COUNT(*) as count, SUM(cost_usd) as cost,
+               AVG(input_tokens) as avg_input, AVG(output_tokens) as avg_output
+        FROM token_usage
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY operation
+        ORDER BY cost DESC
+        LIMIT 20
+      `).all(`-${days} days`);
+
+      // Per day series (for sparkline)
+      const dailySeries = db.prepare(`
+        SELECT date(created_at) as day, COUNT(*) as calls, SUM(cost_usd) as cost
+        FROM token_usage
+        WHERE created_at >= datetime('now', ?)
+        GROUP BY day
+        ORDER BY day ASC
+      `).all(`-${days} days`);
+
+      // Feedback aggregates
+      const fb = db.prepare(`
+        SELECT
+          SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as positive,
+          SUM(CASE WHEN rating = -1 THEN 1 ELSE 0 END) as negative,
+          COUNT(*) as total
+        FROM ai_feedback
+        WHERE created_at >= datetime('now', ?)
+      `).get(`-${days} days`);
+
+      // Top users by cost (for billing visibility)
+      const topUsers = db.prepare(`
+        SELECT u.id, u.email, u.name, COUNT(t.id) as calls, SUM(t.cost_usd) as cost
+        FROM token_usage t LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.created_at >= datetime('now', ?)
+        GROUP BY t.user_id
+        ORDER BY cost DESC
+        LIMIT 10
+      `).all(`-${days} days`);
+
+      json(res, 200, {
+        period_days: days,
+        totals: {
+          calls: totals?.total_calls || 0,
+          input_tokens: totals?.total_input || 0,
+          output_tokens: totals?.total_output || 0,
+          cache_read_tokens: totals?.total_cache_read || 0,
+          cost_usd: Math.round((totals?.total_cost || 0) * 10000) / 10000
+        },
+        by_operation: byOp.map(r => ({
+          operation: r.operation,
+          count: r.count,
+          cost_usd: Math.round((r.cost || 0) * 10000) / 10000,
+          avg_input: Math.round(r.avg_input || 0),
+          avg_output: Math.round(r.avg_output || 0)
+        })),
+        daily_series: dailySeries,
+        feedback: {
+          positive: fb?.positive || 0,
+          negative: fb?.negative || 0,
+          total: fb?.total || 0,
+          satisfaction: fb?.total > 0 ? Math.round((fb.positive / fb.total) * 100) : null
+        },
+        top_users: topUsers.map(u => ({
+          id: u.id, email: u.email, name: u.name,
+          calls: u.calls, cost_usd: Math.round((u.cost || 0) * 10000) / 10000
+        }))
+      });
+    } catch (e) {
+      log('error', 'admin', 'ai-stats query failed', { error: e.message });
+      json(res, 500, { error: 'Erreur stats: ' + e.message });
     }
     return;
   }

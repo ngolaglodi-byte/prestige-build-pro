@@ -483,6 +483,7 @@ button.card { padding: 0; }
       <div class="admin-tabs">
         <button class="admin-tab active" data-panel="users" onclick="showAdminPanel('users')">Utilisateurs</button>
         <button class="admin-tab" data-panel="activity" onclick="showAdminPanel('activity');loadActivity()">Activité</button>
+        <button class="admin-tab" data-panel="ai-stats" onclick="showAdminPanel('ai-stats');loadAiStats()">Stats IA</button>
         <button class="admin-tab" data-panel="apis" onclick="showAdminPanel('apis')">APIs externes</button>
         <button class="admin-tab" data-panel="all-projects" onclick="showAdminPanel('all-projects')">Tous les projets</button>
         <button class="admin-tab" data-panel="github" onclick="showAdminPanel('github');loadGithubConfig()">GitHub</button>
@@ -498,6 +499,22 @@ button.card { padding: 0; }
         <div class="admin-section">
           <div class="admin-section-header"><h3 class="admin-section-title">Activité récente</h3></div>
           <table class="admin-table" id="activity-table"><thead><tr><th>Agent</th><th>Projet</th><th>Action</th><th>Coût</th><th>Date</th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div id="ai-stats-panel" class="admin-panel">
+        <div class="admin-section">
+          <div class="admin-section-header">
+            <h3 class="admin-section-title">Statistiques IA</h3>
+            <select id="ai-stats-period" class="select" style="width:auto;font-size:0.85rem;" onchange="loadAiStats()">
+              <option value="1">Dernières 24h</option>
+              <option value="7" selected>7 derniers jours</option>
+              <option value="30">30 derniers jours</option>
+              <option value="90">90 derniers jours</option>
+            </select>
+          </div>
+          <div id="ai-stats-content" style="display:flex;flex-direction:column;gap:var(--space-lg);">
+            <div style="text-align:center;padding:40px;color:var(--text-muted);">Chargement...</div>
+          </div>
         </div>
       </div>
       <div id="apis-panel" class="admin-panel">
@@ -1217,6 +1234,141 @@ function showSidebarTab(tab) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// AI STATS DASHBOARD (admin only)
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadAiStats() {
+  const container = document.getElementById('ai-stats-content');
+  if (!container) return;
+  const periodEl = document.getElementById('ai-stats-period');
+  const days = periodEl ? periodEl.value : '7';
+  container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);">Chargement...</div>';
+  try {
+    const res = await fetch('/api/admin/ai-stats?days=' + encodeURIComponent(days), {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'HTTP ' + res.status);
+    }
+    const data = await res.json();
+    container.innerHTML = renderAiStats(data);
+  } catch (e) {
+    container.innerHTML = '<div style="padding:40px;color:#ef4444;">Erreur : ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function renderAiStats(d) {
+  const t = d.totals || {};
+  const fb = d.feedback || {};
+  const cards = [
+    { label: 'Appels IA', value: t.calls || 0, sub: 'sur ' + d.period_days + ' jour(s)' },
+    { label: 'Coût total', value: '$' + (t.cost_usd || 0).toFixed(4), sub: 'tokens + cache' },
+    { label: 'Tokens input', value: formatNumber(t.input_tokens || 0), sub: 'envoyés à Claude' },
+    { label: 'Tokens output', value: formatNumber(t.output_tokens || 0), sub: 'générés' },
+    { label: 'Cache hits', value: formatNumber(t.cache_read_tokens || 0), sub: 'tokens économisés' },
+    { label: 'Satisfaction', value: fb.satisfaction !== null ? fb.satisfaction + '%' : '—', sub: fb.total + ' votes' }
+  ];
+  let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:var(--space-md);">';
+  for (const c of cards) {
+    html += '<div style="padding:var(--space-md);background:var(--bg-elevated);border-radius:var(--radius-md);border:var(--border-default);">'
+      + '<div style="font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;">' + escapeHtml(c.label) + '</div>'
+      + '<div style="font-size:1.6rem;font-weight:700;color:var(--gold);margin-top:6px;">' + escapeHtml(String(c.value)) + '</div>'
+      + '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">' + escapeHtml(c.sub) + '</div>'
+      + '</div>';
+  }
+  html += '</div>';
+
+  // Operations table
+  html += '<div style="margin-top:var(--space-lg);"><h4 style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;margin:0 0 8px 0;">Coût par opération</h4>';
+  html += '<table class="admin-table" style="font-size:0.78rem;"><thead><tr><th>Opération</th><th>Appels</th><th>Coût</th><th>Avg input</th><th>Avg output</th></tr></thead><tbody>';
+  for (const op of (d.by_operation || [])) {
+    html += '<tr><td style="font-family:var(--font-mono);font-size:0.75rem;">' + escapeHtml(op.operation || '?') + '</td>'
+      + '<td>' + op.count + '</td>'
+      + '<td>$' + op.cost_usd.toFixed(4) + '</td>'
+      + '<td>' + formatNumber(op.avg_input) + '</td>'
+      + '<td>' + formatNumber(op.avg_output) + '</td></tr>';
+  }
+  html += '</tbody></table></div>';
+
+  // Top users
+  html += '<div style="margin-top:var(--space-lg);"><h4 style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;margin:0 0 8px 0;">Top utilisateurs (coût)</h4>';
+  html += '<table class="admin-table" style="font-size:0.78rem;"><thead><tr><th>Nom</th><th>Email</th><th>Appels</th><th>Coût</th></tr></thead><tbody>';
+  for (const u of (d.top_users || [])) {
+    html += '<tr><td>' + escapeHtml(u.name || '—') + '</td>'
+      + '<td>' + escapeHtml(u.email || '—') + '</td>'
+      + '<td>' + u.calls + '</td>'
+      + '<td>$' + u.cost_usd.toFixed(4) + '</td></tr>';
+  }
+  html += '</tbody></table></div>';
+
+  // Feedback breakdown
+  html += '<div style="margin-top:var(--space-lg);padding:var(--space-md);background:var(--bg-elevated);border-radius:var(--radius-md);">';
+  html += '<h4 style="font-size:0.85rem;color:var(--text-secondary);text-transform:uppercase;margin:0 0 8px 0;">Feedback utilisateur</h4>';
+  html += '<div style="display:flex;gap:24px;align-items:center;">';
+  html += '<div><span style="font-size:1.4rem;color:var(--gold);font-weight:700;">👍 ' + (fb.positive || 0) + '</span></div>';
+  html += '<div><span style="font-size:1.4rem;color:#ef4444;font-weight:700;">👎 ' + (fb.negative || 0) + '</span></div>';
+  html += '<div style="color:var(--text-muted);font-size:0.85rem;">Total : ' + (fb.total || 0) + '</div>';
+  html += '</div></div>';
+
+  return html;
+}
+
+function formatNumber(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+  return String(n);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AI FEEDBACK — thumbs up/down on assistant messages
+// ═══════════════════════════════════════════════════════════════════════════
+async function submitFeedback(rating, jobId, btnEl) {
+  if (!currentProject) return;
+  // Visually disable both buttons in the same group
+  const group = btnEl.parentElement;
+  if (group) group.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '0.4'; });
+  // Highlight the chosen one
+  btnEl.style.opacity = '1';
+  btnEl.style.color = rating === 1 ? 'var(--gold)' : '#ef4444';
+  try {
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: currentProject.id,
+        job_id: jobId || null,
+        rating
+      })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+  } catch (e) {
+    console.warn('[feedback] failed:', e.message);
+    // Re-enable on failure
+    if (group) group.querySelectorAll('button').forEach(b => { b.disabled = false; b.style.opacity = '0.6'; });
+  }
+}
+
+// Append feedback buttons to the latest assistant message bubble
+function attachFeedbackButtons(assistantDiv, jobId) {
+  if (!assistantDiv) return;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+  const upBtn = document.createElement('button');
+  upBtn.textContent = '👍';
+  upBtn.title = 'Réponse utile';
+  upBtn.style.cssText = 'background:transparent;border:none;cursor:pointer;font-size:1.1rem;opacity:0.6;padding:2px 6px;border-radius:4px;';
+  upBtn.addEventListener('click', () => submitFeedback(1, jobId, upBtn));
+  const downBtn = document.createElement('button');
+  downBtn.textContent = '👎';
+  downBtn.title = 'Réponse incorrecte ou inutile';
+  downBtn.style.cssText = upBtn.style.cssText;
+  downBtn.addEventListener('click', () => submitFeedback(-1, jobId, downBtn));
+  wrap.appendChild(upBtn);
+  wrap.appendChild(downBtn);
+  assistantDiv.appendChild(wrap);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PROJECT MEMORY — persistent free-form notes injected in every generation
 // ═══════════════════════════════════════════════════════════════════════════
 async function loadProjectMemory() {
@@ -1438,6 +1590,8 @@ async function sendChatMessage(message) {
           if (fileCount > 0) summary += ` — ${fileCount} fichier${fileCount > 1 ? 's' : ''}`;
           assistantDiv.innerHTML = `<div style="color:var(--gold);font-weight:600;">${summary}</div>`;
         }
+        // Feedback buttons (Sprint E) — let user rate the response
+        attachFeedbackButtons(assistantDiv, job_id);
         if (job.credentials) {
           projectCredentials = job.credentials;
           addChatMessage('assistant', '\u2705 Connectez-vous avec : **' + job.credentials.email + '** / **' + job.credentials.password + '**');
