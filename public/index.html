@@ -544,6 +544,7 @@ button.card { padding: 0; }
           <div class="sidebar-header"><div class="sidebar-project-name" id="sidebar-project-name">Projet</div><span class="badge badge-draft" id="sidebar-project-status">Brouillon</span></div>
           <div class="sidebar-tabs">
             <button class="sidebar-tab active" data-tab="chat" onclick="showSidebarTab('chat')">Chat IA</button>
+            <button class="sidebar-tab" data-tab="memory" onclick="showSidebarTab('memory');loadProjectMemory()">Mémoire</button>
             <button class="sidebar-tab" data-tab="files" onclick="showSidebarTab('files')">Fichiers</button>
             <button class="sidebar-tab" data-tab="history" onclick="showSidebarTab('history')">Historique</button>
             <button class="sidebar-tab" data-tab="logs" onclick="showSidebarTab('logs')">Logs</button>
@@ -563,6 +564,19 @@ button.card { padding: 0; }
                 <div class="chat-suggestions" id="chat-suggestions"><span class="chat-suggestion" onclick="insertSuggestion('/couleurs ')">/couleurs</span><span class="chat-suggestion" onclick="insertSuggestion('/style ')">/style</span><span class="chat-suggestion" onclick="insertSuggestion('/section ')">/section</span><span class="chat-suggestion" onclick="insertSuggestion('/mobile')">/mobile</span><span class="chat-suggestion" onclick="insertSuggestion('/animations')">/animations</span><span class="chat-suggestion" onclick="insertSuggestion('/seo')">/seo</span><span class="chat-suggestion" onclick="insertSuggestion('/dark')">/dark</span><span class="chat-suggestion" onclick="insertSuggestion('/premium')">/premium</span></div>
                 <div class="chat-input-row"><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="2"></textarea><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
                 <div style="margin-top:var(--space-sm);"><label class="btn btn-secondary" style="cursor:pointer;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Uploader une maquette<input type="file" id="image-upload" accept="image/*" style="display:none;"/></label></div>
+              </div>
+            </div>
+            <div id="memory-panel" class="sidebar-panel">
+              <div style="padding:var(--space-md);display:flex;flex-direction:column;gap:var(--space-sm);height:100%;">
+                <div>
+                  <div style="font-size:0.7rem;color:var(--gold);text-transform:uppercase;letter-spacing:0.08em;font-weight:600;margin-bottom:6px;">Mémoire du projet</div>
+                  <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px 0;line-height:1.5;">Notes et préférences persistantes injectées dans CHAQUE génération IA. Idéal pour : couleurs interdites, ton du copy, contraintes client, conventions de nommage.</p>
+                </div>
+                <textarea id="memory-textarea" placeholder="Exemples :&#10;- Client n'aime pas le bleu, préfère les tons terre&#10;- Ton sobre et institutionnel, pas de slogans accrocheurs&#10;- Toujours utiliser 'praticien' au lieu de 'utilisateur'&#10;- Footer minimaliste, pas de réseaux sociaux" style="flex:1;min-height:300px;padding:var(--space-sm);background:var(--bg-elevated);border:var(--border-default);border-radius:var(--radius-md);color:var(--text-primary);font-family:var(--font-ui);font-size:0.85rem;resize:none;line-height:1.5;"></textarea>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                  <span id="memory-status" style="font-size:0.75rem;color:var(--text-muted);">—</span>
+                  <button class="btn btn-primary" onclick="saveProjectMemory()" style="font-size:0.8rem;padding:6px 14px;">Enregistrer</button>
+                </div>
               </div>
             </div>
             <div id="files-panel" class="sidebar-panel"><div class="files-tree" id="files-tree"><p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Les fichiers générés apparaîtront ici.</p></div></div>
@@ -1195,10 +1209,70 @@ function showSidebarTab(tab) {
   document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
   document.querySelector(`.sidebar-tab[data-tab="${tab}"]`).classList.add('active');
   document.getElementById(tab + '-panel').classList.add('active');
-  
+
   // Refresh logs when switching to logs tab
   if (tab === 'logs' && currentProject) {
     refreshLogs();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROJECT MEMORY — persistent free-form notes injected in every generation
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadProjectMemory() {
+  if (!currentProject) return;
+  const textarea = document.getElementById('memory-textarea');
+  const status = document.getElementById('memory-status');
+  if (!textarea) return;
+  textarea.value = '';
+  status.textContent = 'Chargement...';
+  try {
+    const res = await fetch('/api/projects/' + currentProject.id + '/memory', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    textarea.value = data.content || '';
+    if (data.updated_at) {
+      const d = new Date(data.updated_at);
+      status.textContent = 'Dernière mise à jour : ' + d.toLocaleString('fr-FR');
+    } else {
+      status.textContent = 'Aucune mémoire enregistrée pour ce projet';
+    }
+  } catch (e) {
+    status.textContent = 'Erreur de chargement : ' + e.message;
+    status.style.color = '#ef4444';
+  }
+}
+
+async function saveProjectMemory() {
+  if (!currentProject) return;
+  const textarea = document.getElementById('memory-textarea');
+  const status = document.getElementById('memory-status');
+  if (!textarea) return;
+  const content = textarea.value;
+  if (content.length > 5000) {
+    status.textContent = 'Trop long (max 5000 caractères)';
+    status.style.color = '#ef4444';
+    return;
+  }
+  status.textContent = 'Enregistrement...';
+  status.style.color = 'var(--text-muted)';
+  try {
+    const res = await fetch('/api/projects/' + currentProject.id + '/memory', {
+      method: 'PUT',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'HTTP ' + res.status);
+    }
+    status.textContent = '✓ Enregistré (' + content.length + ' caractères) — sera injecté à la prochaine génération';
+    status.style.color = 'var(--gold)';
+  } catch (e) {
+    status.textContent = 'Erreur : ' + e.message;
+    status.style.color = '#ef4444';
   }
 }
 

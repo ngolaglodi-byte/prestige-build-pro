@@ -662,6 +662,7 @@ try {
     CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, project_id INTEGER, operation TEXT NOT NULL, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
     CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(owner_id) REFERENCES users(id));
     CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT DEFAULT 'editor', invited_by INTEGER, joined_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(workspace_id) REFERENCES workspaces(id), FOREIGN KEY(user_id) REFERENCES users(id), UNIQUE(workspace_id, user_id));
+    CREATE TABLE IF NOT EXISTS project_memory (project_id INTEGER PRIMARY KEY, content TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT (datetime('now')), updated_by INTEGER, FOREIGN KEY(project_id) REFERENCES projects(id));
   `);
   const bcrypt = require('bcryptjs');
   const ADMIN_EMAIL = 'admin@prestige-build.dev';
@@ -8538,7 +8539,16 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys, llmSelectedFiles) : [{role:'user', content: userMsg}];
+    // Load persistent project memory (best-effort, never blocks)
+    let projectMemory = null;
+    if (project_id) {
+      try {
+        const row = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(project_id);
+        if (row && row.content && row.content.trim().length > 0) projectMemory = row.content;
+      } catch (e) { /* table may not exist on first run, fail silent */ }
+    }
+
+    const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys, llmSelectedFiles, projectMemory) : [{role:'user', content: userMsg}];
     if (project_id) db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)').run(project_id, 'user', message);
     const brief = project?.brief || message;
 
@@ -8562,6 +8572,59 @@ const server = http.createServer(async (req, res) => {
       // Code mode: full generation pipeline
       activeGenerations++;
       generateClaude(messages, jobId, brief);
+    }
+    return;
+  }
+
+  // ─── PROJECT MEMORY — persistent free-form preferences per project ───
+  // Lets the agent capture client preferences ("no blue", "always sober", "footer minimal")
+  // so they're injected into EVERY future generation. Solves the 4-message context limit.
+  // GET /api/projects/:id/memory — read
+  // PUT /api/projects/:id/memory — write/update (body: { content: string })
+  const memoryMatch = url.match(/^\/api\/projects\/(\d+)\/memory$/);
+  if (memoryMatch && (req.method === 'GET' || req.method === 'PUT')) {
+    const projectId = parseInt(memoryMatch[1], 10);
+    if (!Number.isInteger(projectId) || projectId < 1) { json(res, 400, { error: 'project_id invalide.' }); return; }
+
+    // Ownership check
+    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé à ce projet.' });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      const row = db.prepare('SELECT content, updated_at, updated_by FROM project_memory WHERE project_id=?').get(projectId);
+      json(res, 200, {
+        project_id: projectId,
+        content: row?.content || '',
+        updated_at: row?.updated_at || null,
+        updated_by: row?.updated_by || null
+      });
+      return;
+    }
+
+    // PUT: upsert
+    const body = await getBody(req);
+    const { content } = body || {};
+    if (typeof content !== 'string') {
+      json(res, 400, { error: 'content (string) requis.' });
+      return;
+    }
+    if (content.length > 5000) {
+      json(res, 400, { error: 'Mémoire trop longue (5000 caractères max).' });
+      return;
+    }
+    try {
+      // Upsert pattern (SQLite INSERT OR REPLACE on PRIMARY KEY)
+      db.prepare(`INSERT INTO project_memory (project_id, content, updated_at, updated_by) VALUES (?, ?, datetime('now'), ?)
+        ON CONFLICT(project_id) DO UPDATE SET content=excluded.content, updated_at=datetime('now'), updated_by=excluded.updated_by`)
+        .run(projectId, content, user.id);
+      log('info', 'memory', 'updated', { projectId, userId: user.id, length: content.length });
+      json(res, 200, { ok: true, project_id: projectId, length: content.length });
+    } catch (e) {
+      log('error', 'memory', 'upsert failed', { projectId, error: e.message });
+      json(res, 500, { error: 'Erreur de sauvegarde mémoire: ' + e.message });
     }
     return;
   }
@@ -8734,8 +8797,14 @@ const server = http.createServer(async (req, res) => {
     const projectKeys = (() => { try { return db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project.id); } catch (_) { return []; } })();
 
     const userMsg = (ai && ai.buildProfessionalPrompt) ? ai.buildProfessionalPrompt(genMessage, project, savedApis) : genMessage;
+    // Load project memory (best-effort)
+    let approveMemory = null;
+    try {
+      const row = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(project.id);
+      if (row && row.content && row.content.trim().length > 0) approveMemory = row.content;
+    } catch (e) { /* fail silent */ }
     const messagesForGen = (ai && ai.buildConversationContext)
-      ? ai.buildConversationContext(project, history, userMsg, projectKeys, null)
+      ? ai.buildConversationContext(project, history, userMsg, projectKeys, null, approveMemory)
       : [{ role: 'user', content: userMsg }];
 
     // Persist a marker in history so the user can see the plan was executed

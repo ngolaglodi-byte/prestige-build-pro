@@ -314,6 +314,42 @@ test('runCoherenceChecks: all issues are warnings (V1 mode)', () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// PROJECT MEMORY INJECTION (Sprint B)
+// ───────────────────────────────────────────────────────────────────────────
+section('Project memory injection');
+
+let ai;
+try { ai = require('../src/ai.js'); } catch (e) { ai = null; }
+
+test('buildConversationContext: memory is injected at top when present', () => {
+  if (!ai || !ai.buildConversationContext) { console.log('  (skipped — ai module unavailable)'); return; }
+  const project = { id: 1, title: 'Test', brief: 'cabinet medical', generated_code: '' };
+  const memory = "Client n'aime pas le bleu.\nToujours sobre.";
+  const ctx = ai.buildConversationContext(project, [], 'ajoute une page contact', [], null, memory);
+  assert.ok(Array.isArray(ctx));
+  assert.ok(ctx.length >= 1);
+  const content = ctx.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+  assert.ok(content.includes('MEMOIRE PROJET'), 'expected MEMOIRE PROJET marker');
+  assert.ok(content.includes("n'aime pas le bleu"), 'expected memory content to be present');
+});
+
+test('buildConversationContext: no memory → no memory marker', () => {
+  if (!ai || !ai.buildConversationContext) { console.log('  (skipped — ai module unavailable)'); return; }
+  const project = { id: 1, title: 'Test', brief: 'site', generated_code: '' };
+  const ctx = ai.buildConversationContext(project, [], 'hello', [], null, null);
+  const content = ctx.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+  assert.ok(!content.includes('MEMOIRE PROJET'), 'should NOT contain memory marker when none provided');
+});
+
+test('buildConversationContext: empty memory string is treated as no memory', () => {
+  if (!ai || !ai.buildConversationContext) { console.log('  (skipped — ai module unavailable)'); return; }
+  const project = { id: 1, title: 'Test', brief: 'site', generated_code: '' };
+  const ctx = ai.buildConversationContext(project, [], 'hello', [], null, '   ');
+  const content = ctx.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+  assert.ok(!content.includes('MEMOIRE PROJET'));
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // SUMMARY
 // ───────────────────────────────────────────────────────────────────────────
 console.log(`\n=== Results ===`);

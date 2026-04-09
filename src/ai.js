@@ -631,7 +631,10 @@ function parseCodeFiles(code) {
 }
 
 // ─── CONVERSATION CONTEXT BUILDER (React multi-file) ───
-function buildConversationContext(project, messages, userMessage, configuredKeys, llmSelectedFiles) {
+// projectMemory: optional string of free-form preferences saved by the agent on the
+// project (e.g., "client n'aime pas le bleu", "toujours sobre"). Injected at the TOP
+// of the context so Claude sees it before everything else.
+function buildConversationContext(project, messages, userMessage, configuredKeys, llmSelectedFiles, projectMemory) {
   const context = [];
 
   if (project && project.generated_code) {
@@ -640,6 +643,13 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     // Build project structure overview
     let structure = 'PROJET REACT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
+
+    // Inject persistent project memory (preferences) if any. Goes BEFORE everything
+    // else so Claude treats it as background context, not conversation noise.
+    if (projectMemory && typeof projectMemory === 'string' && projectMemory.trim().length > 0) {
+      structure = `MEMOIRE PROJET (preferences persistantes a respecter) :\n${projectMemory.trim()}\n\n` + structure;
+    }
+
     if (configuredKeys && configuredKeys.length > 0) {
       structure += 'APIs: ' + configuredKeys.map(k => k.env_name).join(', ') + '\n';
     }
@@ -755,6 +765,9 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     context.push({ role: 'assistant', content: `Compris. Je connais la structure React du projet. Qu'est-ce que vous souhaitez modifier ?` });
   } else if (project) {
     let projectContext = `PROJET: "${project.title || 'Sans titre'}" — ${project.brief || 'pas de brief'}`;
+    if (projectMemory && typeof projectMemory === 'string' && projectMemory.trim().length > 0) {
+      projectContext = `MEMOIRE PROJET (preferences persistantes a respecter) :\n${projectMemory.trim()}\n\n` + projectContext;
+    }
     if (configuredKeys && configuredKeys.length > 0) {
       projectContext += `\nAPIs configurées: ${configuredKeys.map(k => k.env_name).join(', ')}`;
     }
