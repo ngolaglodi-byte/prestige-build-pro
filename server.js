@@ -4661,12 +4661,15 @@ async function runRuntimeHealthCheck(projectId, opts = {}) {
   let html = null;
   let httpStatus = null;
   let httpErr = null;
+  // Vite is configured with --base /run/{id}/ so we must hit that exact path
+  const vitePath = `/run/${projectId}/`;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const fetched = await fetchContainerHttp(containerName, 5173, '/', 8000);
+      const fetched = await fetchContainerHttp(containerName, 5173, vitePath, 8000);
       httpStatus = fetched.status;
       html = fetched.body;
-      if (httpStatus >= 200 && httpStatus < 400) break;
+      // Only 2xx is OK — a 3xx redirect with empty body means we hit the wrong path
+      if (httpStatus >= 200 && httpStatus < 300) break;
     } catch (e) {
       httpErr = e.message;
     }
