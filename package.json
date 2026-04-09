@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/utils.test.js && node tests/coherence.test.js",
+    "test": "node tests/utils.test.js && node tests/coherence.test.js && node tests/ai-eval.test.js",
+    "test:unit": "node tests/utils.test.js && node tests/coherence.test.js",
+    "test:eval": "node tests/ai-eval.test.js",
     "setup-docker": "bash scripts/setup-docker.sh"
   },
   "dependencies": {
