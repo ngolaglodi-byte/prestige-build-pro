@@ -18,8 +18,8 @@ OUTILS :
 - line_replace({ path, start_line, end_line, new_content }) — remplace par numero de ligne.
 Modifie TOUS les fichiers concernes en UNE reponse.
 
-FICHIERS FOURNIS (ne jamais generer) : package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx, src/index.css, src/components/ui/*
-Tu generes : tailwind.config.js, server.js, src/App.tsx, src/components/*.tsx, src/pages/*.tsx
+FICHIERS INFRASTRUCTURE (NE PAS reecrire avec write_file — modifie avec edit_file si besoin) : package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx
+Tu peux LIBREMENT modifier : tailwind.config.js, src/index.css, server.js, src/App.tsx, src/components/*.tsx, src/pages/*.tsx, src/components/ui/*.tsx, src/lib/*.ts, src/hooks/*.ts
 
 ROUTING : BrowserRouter est dans main.tsx. App.tsx = <Routes> + <Route> seulement. JAMAIS de BrowserRouter dans App.tsx.
 

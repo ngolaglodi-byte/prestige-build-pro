@@ -365,6 +365,15 @@ test('SYSTEM_PROMPT mentions LUCIDE-REACT warning', () => {
   assert.ok(ai.SYSTEM_PROMPT.includes('Live'), 'should warn about Live hallucination');
 });
 
+test('SYSTEM_PROMPT uses Lovable model: AI can modify ui/lib/hooks (not "ne jamais generer")', () => {
+  // Regression test: Sprint before Lovable model had "FICHIERS FOURNIS (ne jamais generer) ...
+  // src/components/ui/*" which blocked the AI from customizing UI components.
+  // Now the prompt should say "LIBREMENT modifier" for ui/lib/hooks.
+  assert.ok(!ai.SYSTEM_PROMPT.includes('ne jamais generer'), 'SYSTEM_PROMPT should NOT contain "ne jamais generer" anymore');
+  assert.ok(ai.SYSTEM_PROMPT.includes('LIBREMENT modifier'), 'SYSTEM_PROMPT should say AI can freely modify files');
+  assert.ok(ai.SYSTEM_PROMPT.includes('src/components/ui/'), 'ui/ should be listed as modifiable');
+});
+
 test('CHAT_SYSTEM_PROMPT mentions LUCIDE-REACT warning', () => {
   assert.ok(ai.CHAT_SYSTEM_PROMPT.includes('LUCIDE-REACT'), 'CHAT_SYSTEM_PROMPT must contain LUCIDE-REACT block');
 });

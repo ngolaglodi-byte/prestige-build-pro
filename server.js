@@ -1151,19 +1151,21 @@ function writeDefaultReactProject(projectDir) {
     }
   }
 
-  // Copy UI component library (shadcn-style) from templates using the
-  // idempotent copy helper (src/idempotent-copy.js). This prevents the Vite
-  // restart loop regression: writeDefaultReactProject is called 6+ times in
-  // the generation pipeline; without idempotency, each call would bump mtime
-  // on 40+ UI files and trigger Vite HMR storms → container unhealthy → 503.
+  // ─── LOVABLE MODEL: trust the AI, restore only if missing or broken ───
+  // Previously: ALWAYS overwrote ui/lib/hooks with canonical versions (defensive).
+  // This BLOCKED the AI from customizing UI components, causing blank screens when
+  // plans requested style changes on Card/Button/etc. (modifications got erased).
   //
-  // Regression test: tests/idempotent-copy.test.js verifies that 6 calls on
-  // 40 identical files produce exactly 40 copies (first call only) and zero
-  // mtime updates afterward.
+  // Now: only restore canonical files if:
+  //   A) File doesn't exist (new project, missing component)
+  //   B) File is fundamentally broken (empty, no exports, unreadable)
+  //
+  // If the AI wrote a valid customized version, we TRUST IT. If it breaks,
+  // the build check / back-test / auto-fix loop will catch and correct.
   const templateUiDir = path.join(__dirname, 'templates', 'react', 'src');
   const uiDirs = ['components/ui', 'lib', 'hooks'];
-  let skipped = 0;
-  let copied = 0;
+  let restored = 0;
+  let trusted = 0;
   for (const dir of uiDirs) {
     const srcDir = path.join(templateUiDir, dir);
     const destDir = path.join(projectDir, 'src', dir);
@@ -1172,19 +1174,33 @@ function writeDefaultReactProject(projectDir) {
       for (const file of fs.readdirSync(srcDir)) {
         const srcFile = path.join(srcDir, file);
         const destFile = path.join(destDir, file);
-        if (idempotentCopy && idempotentCopy.copyFileIfDiffers) {
-          const result = idempotentCopy.copyFileIfDiffers(srcFile, destFile);
-          if (result.copied) copied++; else skipped++;
+
+        let needsRestore = false;
+        if (!fs.existsSync(destFile)) {
+          needsRestore = true; // (A) missing
         } else {
-          // Fallback (shouldn't happen, module loads at startup): unconditional copy
+          try {
+            const content = fs.readFileSync(destFile, 'utf8');
+            // (B) broken: empty, too short, or no export statement at all
+            if (content.trim().length < 20 || (!content.includes('export ') && !content.includes('module.exports'))) {
+              needsRestore = true;
+            }
+          } catch (_) {
+            needsRestore = true; // unreadable
+          }
+        }
+
+        if (needsRestore) {
           fs.copyFileSync(srcFile, destFile);
-          copied++;
+          restored++;
+        } else {
+          trusted++;
         }
       }
     }
   }
-  if (copied > 0 || skipped > 0) {
-    console.log(`[Defaults] Canonical UI files: ${copied} written, ${skipped} already up-to-date (idempotent)`);
+  if (restored > 0 || trusted > 0) {
+    console.log(`[Defaults] UI files: ${restored} restored (missing/broken), ${trusted} trusted (AI-customized OK)`);
   }
 }
 
@@ -2181,9 +2197,10 @@ function parseToolResponse(response) {
       result.text += block.text;
     } else if (block.type === 'tool_use') {
       if (block.name === 'write_file' && block.input?.path && block.input?.content) {
-        // Block writes to canonical files — server controls these
-        if (PROTECTED_FILES.has(block.input.path) || block.input.path.startsWith('src/components/ui/') || block.input.path.startsWith('src/lib/') || block.input.path.startsWith('src/hooks/')) {
-          console.log(`[Tool] Blocked write to canonical file: ${block.input.path}`);
+        // Block writes to infrastructure files only (package.json, vite.config, etc.).
+        // UI components, lib/, hooks/ are now TRUSTED to the AI (Lovable model).
+        if (PROTECTED_FILES.has(block.input.path)) {
+          console.log(`[Tool] Blocked write to infra file: ${block.input.path}`);
         } else {
           let newContent = cleanGeneratedContent(block.input.content);
           // ── LOVABLE-STYLE ELLIPSIS MERGE ──
@@ -4793,9 +4810,9 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       notifyProjectClients(projectId, 'file_written', { path: filename, content });
     }
 
-    // Skip writing canonical/protected files to DISK (server controls them)
-    const isProtected = PROTECTED_FILES.has(filename) || filename.startsWith('src/components/ui/') || CANONICAL_LIB_FILES.has(filename);
-    if (isProtected) continue;
+    // Skip writing infrastructure files to DISK (server controls their format).
+    // UI components, lib/, hooks/ are now TRUSTED (Lovable model) — AI can customize them.
+    if (PROTECTED_FILES.has(filename)) continue;
 
     const filePath = path.join(projectDir, filename);
     const fileDir = path.dirname(filePath);
@@ -5314,17 +5331,18 @@ Règles d'intégration automatique :
                     cleanContent = mergeEllipsis(fs.readFileSync(existingPath, 'utf8'), cleanContent);
                   }
                 }
-                const CANONICAL_TEMPLATES = new Set(['src/lib/utils.ts', 'src/hooks/useToast.ts', 'src/hooks/useIsMobile.ts']);
-                const isProtected = PROTECTED_FILES.has(input.path) || input.path.startsWith('src/components/ui/') || CANONICAL_TEMPLATES.has(input.path);
+                // Infrastructure files (package.json, vite.config, etc.) are still server-controlled.
+                // UI components, lib/, hooks/ are now TRUSTED to the AI (Lovable model).
+                const isInfraProtected = PROTECTED_FILES.has(input.path);
 
-                // ALWAYS send to WebContainer via SSE (even protected files — WC needs them)
+                // ALWAYS send via SSE for live preview
                 if (cleanContent) {
                   notifyProjectClients(job.project_id, 'file_written', { path: input.path, content: cleanContent });
                   console.log(`[Stream] SSE push: ${input.path}`);
                 }
 
-                // Write to disk + push to container in real-time (like Lovable)
-                if (!isProtected && cleanContent) {
+                // Write to disk (Vite HMR picks up changes via bind mount)
+                if (!isInfraProtected && cleanContent) {
                   const filePath = path.join(projDir, input.path);
                   const fileDir = path.dirname(filePath);
                   if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
