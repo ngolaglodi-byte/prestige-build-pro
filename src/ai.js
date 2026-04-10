@@ -800,15 +800,48 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     context.push({ role: 'assistant', content: `Je connais votre projet. Dites-moi ce que vous souhaitez.` });
   }
 
-  // Last 4 chat messages
+  // Last 4 chat messages — NORMALIZED for Anthropic API requirements:
+  //   1. Only 'user' and 'assistant' roles are accepted ('plan', 'system', etc. are dropped)
+  //   2. Consecutive same-role messages MUST be merged (API rejects user→user or assistant→assistant)
+  //   3. Empty content is rejected
+  // Without this normalization, approving a plan (which inserts 'plan' + 'user' markers
+  // in history) produces an invalid message sequence → Anthropic 400 Bad Request.
   if (messages && messages.length > 0) {
-    const chatMessages = messages.filter(m => !m.content.startsWith('### ')).slice(-4);
-    chatMessages.forEach(m => {
-      context.push({ role: m.role, content: m.content.substring(0, 1000) });
-    });
+    const validMessages = messages
+      .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
+      .filter(m => m.content && typeof m.content === 'string' && !m.content.startsWith('### '))
+      .filter(m => m.content.trim().length > 0);
+
+    // Take more than 4 — we may collapse after merging consecutive same-role
+    const candidates = validMessages.slice(-8);
+
+    // Merge consecutive same-role messages (preserves content, ensures strict alternation)
+    const merged = [];
+    for (const m of candidates) {
+      const last = merged[merged.length - 1];
+      const truncated = m.content.substring(0, 1000);
+      if (last && last.role === m.role) {
+        last.content = last.content + '\n\n' + truncated;
+      } else {
+        merged.push({ role: m.role, content: truncated });
+      }
+    }
+
+    // Keep only the last 4 after merging, and push to context
+    for (const m of merged.slice(-4)) {
+      context.push(m);
+    }
   }
 
-  context.push({ role: 'user', content: userMessage });
+  // Ensure the final userMessage doesn't create two consecutive 'user' messages.
+  // If the last context entry is already 'user', merge into it.
+  const lastContextMsg = context[context.length - 1];
+  if (lastContextMsg && lastContextMsg.role === 'user') {
+    lastContextMsg.content = lastContextMsg.content + '\n\n' + userMessage;
+  } else {
+    context.push({ role: 'user', content: userMessage });
+  }
+
   return context;
 }
 

@@ -369,6 +369,127 @@ test('CHAT_SYSTEM_PROMPT mentions LUCIDE-REACT warning', () => {
   assert.ok(ai.CHAT_SYSTEM_PROMPT.includes('LUCIDE-REACT'), 'CHAT_SYSTEM_PROMPT must contain LUCIDE-REACT block');
 });
 
+// ─── MESSAGE HISTORY NORMALIZATION (Anthropic API requirements) ───
+// Regression tests for the 400 Bad Request bug on plan approve.
+// The Anthropic Messages API requires:
+//   1. Only 'user' and 'assistant' roles
+//   2. Strict alternation (no consecutive same-role messages)
+//   3. Non-empty content
+section('Message history normalization (anti-400)');
+
+function hasValidAlternation(messages) {
+  for (let i = 1; i < messages.length; i++) {
+    if (messages[i].role === messages[i - 1].role) return false;
+  }
+  return true;
+}
+
+test('history with plan role is filtered out', () => {
+  const project = { title: 'T', brief: 'test' }; // no generated_code
+  const history = [
+    { role: 'user', content: 'Brief initial' },
+    { role: 'plan', content: '## Objectif\nAjouter X' },  // must be filtered
+    { role: 'user', content: '[Plan approuvé]' }
+  ];
+  const ctx = ai.buildConversationContext(project, history, 'Implémente', [], null, null);
+  const plans = ctx.filter(m => m.role === 'plan');
+  assert.strictEqual(plans.length, 0, 'no plan role should remain');
+  // All roles must be user or assistant
+  for (const m of ctx) {
+    assert.ok(m.role === 'user' || m.role === 'assistant', `invalid role: ${m.role}`);
+  }
+});
+
+test('consecutive user messages are merged (strict alternation)', () => {
+  const project = { title: 'T', brief: 'test' };
+  const history = [
+    { role: 'user', content: 'Message A' },
+    { role: 'user', content: 'Message B' },
+    { role: 'user', content: 'Message C' }
+  ];
+  const ctx = ai.buildConversationContext(project, history, 'Final', [], null, null);
+  assert.ok(hasValidAlternation(ctx), `expected strict alternation, got: ${ctx.map(m => m.role).join(',')}`);
+});
+
+test('plan + user markers produce valid alternation (the exact bug scenario)', () => {
+  const project = { title: 'T', brief: 'test' };
+  // This mirrors what /api/plan/:id/approve sees in history
+  const history = [
+    { role: 'user', content: 'Brief initial du projet' },
+    { role: 'plan', content: '## Objectif\n## Etapes\n- A\n- B' },
+    { role: 'user', content: '[Plan #1 approuvé et exécuté]' }
+  ];
+  const genMessage = "Implémente exactement ce plan.\n\n## Objectif\n...";
+  const ctx = ai.buildConversationContext(project, history, genMessage, [], null, null);
+
+  // 1. No invalid roles
+  for (const m of ctx) {
+    assert.ok(m.role === 'user' || m.role === 'assistant', `invalid role: ${m.role}`);
+  }
+  // 2. Strict alternation
+  assert.ok(hasValidAlternation(ctx), `alternation broken: ${ctx.map(m => m.role).join(',')}`);
+  // 3. Final message is user
+  assert.strictEqual(ctx[ctx.length - 1].role, 'user', 'last message must be user');
+  // 4. No empty content
+  for (const m of ctx) {
+    assert.ok(m.content && m.content.length > 0, 'content must be non-empty');
+  }
+});
+
+test('empty messages are filtered out', () => {
+  const project = { title: 'T', brief: 'test' };
+  const history = [
+    { role: 'user', content: 'valid' },
+    { role: 'assistant', content: '' },  // empty → must be dropped
+    { role: 'user', content: '   ' },    // whitespace-only → must be dropped
+    { role: 'assistant', content: 'response' }
+  ];
+  const ctx = ai.buildConversationContext(project, history, 'final', [], null, null);
+  for (const m of ctx) {
+    assert.ok(m.content && m.content.trim().length > 0, 'empty content leaked');
+  }
+});
+
+test('system role is filtered out', () => {
+  const project = { title: 'T', brief: 'test' };
+  const history = [
+    { role: 'user', content: 'Hi' },
+    { role: 'system', content: 'audit marker' },  // must be dropped
+    { role: 'assistant', content: 'Hello' }
+  ];
+  const ctx = ai.buildConversationContext(project, history, 'question', [], null, null);
+  const systems = ctx.filter(m => m.role === 'system');
+  assert.strictEqual(systems.length, 0);
+});
+
+test('null/undefined messages in history are safely ignored', () => {
+  const project = { title: 'T', brief: 'test' };
+  const history = [
+    { role: 'user', content: 'Hi' },
+    null,
+    undefined,
+    { role: null, content: 'bad' },
+    { role: 'user', content: null },
+    { role: 'assistant', content: 'Hello' }
+  ];
+  // Should not throw
+  const ctx = ai.buildConversationContext(project, history, 'question', [], null, null);
+  assert.ok(Array.isArray(ctx));
+});
+
+test('userMessage does not create consecutive user after history', () => {
+  const project = { title: 'T', brief: 'test' };
+  const history = [
+    { role: 'user', content: 'previous question' }
+  ];
+  const ctx = ai.buildConversationContext(project, history, 'new question', [], null, null);
+  assert.ok(hasValidAlternation(ctx));
+  // The last user message should contain BOTH texts merged
+  const last = ctx[ctx.length - 1];
+  assert.strictEqual(last.role, 'user');
+  assert.ok(last.content.includes('new question'), 'final userMessage must be included');
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // 7. PROMPT INVARIANTS (regression detection on prompt edits)
 // ───────────────────────────────────────────────────────────────────────────
