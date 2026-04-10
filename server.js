@@ -1150,22 +1150,59 @@ function writeDefaultReactProject(projectDir) {
     }
   }
 
-  // Copy UI component library (shadcn-style) from templates
+  // Copy UI component library (shadcn-style) from templates.
+  //
+  // IDEMPOTENT: only copies if content differs. Previously used fs.copyFileSync
+  // unconditionally, which updates the mtime on EVERY call, even if content was
+  // identical. Since writeDefaultReactProject() is called from 6+ sites in the
+  // generation pipeline (safety net, auto-fix, validate, etc.), this caused Vite
+  // HMR to detect 40+ "changed" files on every call → cascading page reloads →
+  // Vite restart loop → container "unhealthy" → 503 in the iframe.
+  //
+  // Fix: compare size + byte content before writing. No mtime churn when files
+  // are already canonical. The AI still can't corrupt them (content comparison
+  // is authoritative, not trust-based).
   const templateUiDir = path.join(__dirname, 'templates', 'react', 'src');
   const uiDirs = ['components/ui', 'lib', 'hooks'];
+  let skipped = 0;
+  let copied = 0;
   for (const dir of uiDirs) {
     const srcDir = path.join(templateUiDir, dir);
     const destDir = path.join(projectDir, 'src', dir);
     if (fs.existsSync(srcDir)) {
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
       for (const file of fs.readdirSync(srcDir)) {
+        const srcFile = path.join(srcDir, file);
         const destFile = path.join(destDir, file);
-        // ALWAYS overwrite UI components with our canonical versions
-        // The AI might generate broken versions — ours are guaranteed to work
-        fs.copyFileSync(path.join(srcDir, file), destFile);
-        console.log(`[Defaults] Wrote canonical UI: src/${dir}/${file}`);
+
+        // Idempotency check: skip if dest exists and content is byte-identical
+        let needsWrite = true;
+        if (fs.existsSync(destFile)) {
+          try {
+            const srcStat = fs.statSync(srcFile);
+            const destStat = fs.statSync(destFile);
+            if (srcStat.size === destStat.size) {
+              // Same size → compare bytes (cheap for shadcn files, typically < 10KB)
+              const srcBuf = fs.readFileSync(srcFile);
+              const destBuf = fs.readFileSync(destFile);
+              if (srcBuf.equals(destBuf)) {
+                needsWrite = false;
+              }
+            }
+          } catch (_) { /* fall through to copy if stat fails */ }
+        }
+
+        if (needsWrite) {
+          fs.copyFileSync(srcFile, destFile);
+          copied++;
+        } else {
+          skipped++;
+        }
       }
     }
+  }
+  if (copied > 0 || skipped > 0) {
+    console.log(`[Defaults] Canonical UI files: ${copied} written, ${skipped} already up-to-date (idempotent)`);
   }
 }
 
@@ -7926,16 +7963,39 @@ async function proxyToContainer(req, res, projectId, targetPath) {
 
   proxyReq.on('error', async (e) => {
     console.error(`[Proxy] Error for project ${projectId} (${containerHost}):`, e.message);
+
+    // Background recovery: if container is down, try to restart it (one attempt, locked)
     const running = await isContainerRunningAsync(projectId);
     if (!running && !restartLocks.get(projectId)) {
       restartLocks.set(projectId, true);
       restartContainerAsync(projectId).catch(err => console.error('Restart error:', err.message));
-      setTimeout(() => restartLocks.delete(projectId), 30000);
+      setTimeout(() => restartLocks.delete(projectId), 60000);
     }
+
+    // Break the infinite reload loop: count retries via URL param, give up after MAX_RETRIES
+    // with a permanent error page. The 3-second reload was way too aggressive — Vite boot
+    // can take 30-60s, so 3s × 20 attempts = 60s of hammering before the user gives up.
+    const MAX_RETRIES = 4;
+    const RELOAD_DELAY_MS = 15000;
+    const urlParts = (req.url || '').split('?');
+    const params = urlParts.length > 1 ? new URLSearchParams(urlParts[1]) : new URLSearchParams();
+    const retryCount = parseInt(params.get('_retry') || '0', 10);
+
     if (!res.headersSent) {
       res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
     }
-    res.end(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Redémarrage</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:linear-gradient(135deg,#0d1120,#1a2744);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e2e8f0}.c{text-align:center;padding:40px}.l{width:50px;height:50px;border:4px solid rgba(212,168,32,.2);border-top-color:#D4A820;border-radius:50%;animation:s 1s linear infinite;margin:0 auto 24px}@keyframes s{to{transform:rotate(360deg)}}h1{font-size:1.5rem;margin-bottom:12px;color:#D4A820}p{color:#8896c4}</style><script>setTimeout(()=>location.reload(),3000)</script></head><body><div class="c"><div class="l"></div><h1>Votre projet redémarre</h1><p>Veuillez patienter quelques instants...</p></div></body></html>`);
+
+    if (retryCount >= MAX_RETRIES) {
+      // Permanent error — NO auto-reload, user action required
+      const errSafe = String(e.message || 'unknown').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+      res.end(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Container indisponible</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:linear-gradient(135deg,#0d1120,#1a2744);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e2e8f0;padding:20px}.c{text-align:center;max-width:500px;padding:40px;background:rgba(255,255,255,0.03);border:1px solid rgba(212,168,32,0.2);border-radius:12px}h1{font-size:1.4rem;margin-bottom:16px;color:#D4A820}p{color:#8896c4;line-height:1.5;margin-bottom:20px;font-size:0.9rem}.err{font-family:monospace;font-size:0.75rem;color:#ef4444;background:rgba(239,68,68,0.1);padding:10px;border-radius:6px;margin:16px 0;word-break:break-all}button{background:#D4A820;color:#0d1120;border:none;padding:10px 20px;border-radius:6px;font-weight:600;cursor:pointer;font-size:0.9rem;margin:4px}button:hover{background:#e5b921}</style></head><body><div class="c"><h1>⚠️ Container indisponible</h1><p>Le container du projet ${projectId} ne répond pas après ${MAX_RETRIES + 1} tentatives (${(MAX_RETRIES + 1) * RELOAD_DELAY_MS / 1000}s).</p><div class="err">${errSafe}</div><p>Cliquez ci-dessous pour relancer manuellement, ou vérifiez les logs du container (\`docker logs pbp-project-${projectId}\`).</p><button onclick="location.href=location.pathname+'?_retry=0&t='+Date.now()">Réessayer maintenant</button><button onclick="history.back()">Retour</button></div></body></html>`);
+    } else {
+      // Auto-reload with incremented counter, 15s delay
+      const nextParams = new URLSearchParams(params);
+      nextParams.set('_retry', String(retryCount + 1));
+      const nextUrl = `${urlParts[0]}?${nextParams.toString()}`;
+      res.end(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Démarrage</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,sans-serif;background:linear-gradient(135deg,#0d1120,#1a2744);min-height:100vh;display:flex;align-items:center;justify-content:center;color:#e2e8f0}.c{text-align:center;padding:40px}.l{width:50px;height:50px;border:4px solid rgba(212,168,32,.2);border-top-color:#D4A820;border-radius:50%;animation:s 1s linear infinite;margin:0 auto 24px}@keyframes s{to{transform:rotate(360deg)}}h1{font-size:1.5rem;margin-bottom:12px;color:#D4A820}p{color:#8896c4;margin-bottom:6px}.count{font-size:0.8rem;color:#5a6488}</style><script>setTimeout(()=>location.href=${JSON.stringify(nextUrl)},${RELOAD_DELAY_MS})</script></head><body><div class="c"><div class="l"></div><h1>Votre projet démarre</h1><p>Compilation Vite en cours (peut prendre 30-60s)...</p><p class="count">Tentative ${retryCount + 1}/${MAX_RETRIES + 1}</p></div></body></html>`);
+    }
   });
 
   proxyReq.on('timeout', () => {
