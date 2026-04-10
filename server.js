@@ -3298,10 +3298,32 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   }
 
   // ── BACK-TESTING: Automated quality checks (like Lovable's back-test pipeline) ──
-  // Run automated tests on generated code BEFORE finalizing
+  // Run automated tests on generated code BEFORE finalizing.
+  // Includes static back-test (regex) + lucide-react runtime validation via docker exec.
   if (ai && ai.runBackTests) {
     const testFiles = readProjectFilesRecursive(projectDir);
     const backTestIssues = ai.runBackTests(testFiles);
+
+    // Augment with runtime lucide-react validation (queries the actual installed package
+    // in the project's container — catches hallucinations the static blacklist misses)
+    try {
+      const lucideIssues = await validateLucideIconsInContainer(projectId, testFiles);
+      if (lucideIssues.length > 0) {
+        // Convert to the back-test issue shape (issue field instead of type)
+        for (const li of lucideIssues) {
+          backTestIssues.push({
+            file: li.file,
+            issue: li.type,
+            severity: li.severity,
+            message: li.message
+          });
+        }
+        console.log(`[Gen] Lucide runtime check: +${lucideIssues.length} invalid icon(s) detected`);
+      }
+    } catch (e) {
+      console.warn(`[Gen] Lucide runtime check failed (non-fatal): ${e.message}`);
+    }
+
     const warnings = backTestIssues.filter(i => i.severity === 'warning');
     const errors = backTestIssues.filter(i => i.severity !== 'warning');
     if (warnings.length > 0) {
@@ -4847,6 +4869,68 @@ async function runVisualVerification(projectId) {
 // in V1. Just produces structured `issues` for visibility.
 //
 // Returns: { ok: boolean, issues: [{type, severity, message}], httpStatus, htmlOk }
+// Validates lucide-react imports against the ACTUAL package installed in the container.
+// This is the most accurate way to catch hallucinated icon names. Uses docker exec to
+// query the real Object.keys(require('lucide-react')) → gets the exact valid set.
+//
+// Returns an array of {file, type, severity, message} issues for invalid imports.
+// Returns [] if validation can't run (container down, docker exec fails, etc.) — never throws.
+async function validateLucideIconsInContainer(projectId, files) {
+  const issues = [];
+  if (!files || typeof files !== 'object') return issues;
+
+  // 1. Extract all lucide-react imports from .tsx/.ts files
+  const importedByFile = {}; // { 'src/pages/X.tsx': ['Icon1', 'Icon2'] }
+  for (const [fn, content] of Object.entries(files)) {
+    if (typeof content !== 'string') continue;
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g;
+    let m;
+    const icons = [];
+    while ((m = importRe.exec(content)) !== null) {
+      const names = m[1].split(',')
+        .map(s => s.trim().split(/\s+as\s+/)[0].trim())
+        .filter(Boolean);
+      icons.push(...names);
+    }
+    if (icons.length > 0) importedByFile[fn] = [...new Set(icons)];
+  }
+  if (Object.keys(importedByFile).length === 0) return issues;
+
+  // 2. Query the container for the actual lucide-react exports
+  let validIcons;
+  try {
+    const containerName = getContainerName(projectId);
+    // Use a short script that prints exports as JSON. 5s timeout — should be < 200ms normally.
+    const cmd = `docker exec ${containerName} node -e "try{const m=require('lucide-react');console.log(JSON.stringify(Object.keys(m)));}catch(e){console.error(e.message);process.exit(1);}"`;
+    const out = execSync(cmd, { timeout: 5000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const parsed = JSON.parse(out.trim());
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('empty exports');
+    validIcons = new Set(parsed);
+    log('info', 'lucide', 'fetched valid icons from container', { projectId, count: validIcons.size });
+  } catch (e) {
+    // Can't validate — fail open (don't flag anything to avoid false positives)
+    log('warn', 'lucide', 'container query failed (skip validation)', { projectId, error: e.message });
+    return issues;
+  }
+
+  // 3. Find mismatches
+  for (const [fn, icons] of Object.entries(importedByFile)) {
+    for (const icon of icons) {
+      if (!validIcons.has(icon)) {
+        issues.push({
+          file: fn,
+          type: 'INVALID_LUCIDE_ICON_RUNTIME',
+          severity: 'error',
+          message: `lucide-react n'exporte PAS "${icon}" (verifie via docker exec). Verifie le nom (camelCase, sensible a la casse) ou utilise une icone alternative.`
+        });
+      }
+    }
+  }
+  return issues;
+}
+
 async function runRuntimeHealthCheck(projectId, opts = {}) {
   const result = {
     ok: true,

@@ -37,6 +37,26 @@ ADMIN : Login.tsx (/login) + Admin.tsx (/admin) avec sidebar + dashboard. Header
 
 STACK : React 19, Vite 6, Tailwind 3, React Router 7, Lucide React, Radix UI, Sonner, date-fns, recharts.
 
+LUCIDE-REACT — ATTENTION (CRITIQUE) :
+N'invente JAMAIS de noms d'icones lucide. Beaucoup de noms "evidents" N'EXISTENT PAS.
+INTERDIT : Live, Profile, Dashboard, Cart, Account, Login, Logout, Email, Phonenumber, Cash, Money, Notification, Loading, Spinner, Hamburger, Person, Like, LiveStream, Streaming, Visa, Mastercard, Paypal, Comment.
+ALTERNATIVES SAFE :
+- Live -> Radio ou Video ou Wifi
+- Profile/Account/Person -> User ou UserCircle
+- Dashboard -> LayoutDashboard
+- Cart -> ShoppingCart
+- Login -> LogIn (camelCase!)
+- Logout -> LogOut
+- Email -> Mail
+- Phonenumber -> Phone
+- Cash/Money -> DollarSign ou Banknote
+- Notification -> Bell
+- Loading/Spinner -> Loader2
+- Hamburger -> Menu
+- Like -> Heart ou ThumbsUp
+- Comment -> MessageCircle ou MessageSquare
+En cas de doute sur un nom, utilise des icones tres communes : Home, User, Mail, Phone, Settings, Search, Menu, X, Plus, ChevronDown, Calendar, Clock, MapPin, Star, Heart, Check, AlertCircle.
+
 QUALITE : Composants < 150 lignes. export default function. TypeScript strict. <Skeleton> loading. toast() succes/erreur. HTML semantique.
 
 SCOPE STRICT (CRITIQUE) :
@@ -423,6 +443,11 @@ Securite : bcrypt, JWT, prepared statements, validation inputs.
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
 
 NPM : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
+
+LUCIDE-REACT — ATTENTION (CRITIQUE) :
+N'invente JAMAIS de noms d'icones lucide. INTERDIT : Live, Profile, Dashboard, Cart, Account, Login, Logout, Email, Phonenumber, Cash, Money, Notification, Loading, Spinner, Hamburger, Person, Like, LiveStream, Streaming, Comment, Visa, Mastercard, Paypal.
+Alternatives : Profile->User, Dashboard->LayoutDashboard, Cart->ShoppingCart, Login->LogIn, Logout->LogOut, Email->Mail, Cash->Banknote, Notification->Bell, Loading->Loader2, Hamburger->Menu, Like->Heart, Comment->MessageCircle, Live->Radio.
+En cas de doute, utilise : Home, User, Mail, Phone, Settings, Menu, X, Plus, Calendar, MapPin, Star, Heart, Check.
 
 SCOPE STRICT (CRITIQUE) :
 - Tu fais EXACTEMENT ce qui est demande, ni plus ni moins
@@ -985,6 +1010,65 @@ function runBackTests(files) {
     if (fn.startsWith('src/components/ui/') || fn === 'src/main.tsx') continue;
     if (!content.includes('export default') && !content.includes('export {')) {
       issues.push({ file: fn, issue: 'NO_EXPORT', message: 'Missing export default — component will not render' });
+    }
+  }
+
+  // ─── LUCIDE-REACT HALLUCINATION CHECK (ERROR — triggers auto-fix loop) ───
+  // Claude often invents lucide icon names that don't exist (Live, Profile, Dashboard, etc.).
+  // The runtime error "does not provide an export named X" causes a blank iframe.
+  // We catch the most common hallucinations BEFORE the user sees the white screen.
+  //
+  // This is NOT a complete validation against the full lucide-react export list — just a
+  // blacklist of confirmed hallucinations. False positives = zero. False negatives possible
+  // (rare hallucination not in this list); those are caught by the runtime visual check.
+  const LUCIDE_HALLUCINATIONS = {
+    'Live': 'Radio (ou Video, Wifi)',
+    'LiveStream': 'Radio',
+    'Streaming': 'Radio',
+    'Profile': 'User (ou UserCircle)',
+    'Account': 'User',
+    'Person': 'User',
+    'Dashboard': 'LayoutDashboard',
+    'Cart': 'ShoppingCart',
+    'Login': 'LogIn (camelCase!)',
+    'Logout': 'LogOut',
+    'Email': 'Mail',
+    'Phonenumber': 'Phone',
+    'Cash': 'Banknote',
+    'Money': 'DollarSign (ou Banknote)',
+    'Notification': 'Bell',
+    'Loading': 'Loader2',
+    'Spinner': 'Loader2',
+    'Hamburger': 'Menu',
+    'Like': 'Heart (ou ThumbsUp)',
+    'Comment': 'MessageCircle (ou MessageSquare)',
+    'Visa': '(aucune icone de marque, utiliser CreditCard)',
+    'Mastercard': '(aucune icone de marque, utiliser CreditCard)',
+    'Paypal': '(aucune icone de marque, utiliser CreditCard)',
+    'Hashtag': 'Hash',
+    'Ticktok': '(non disponible)',
+    'Instagram_': 'Instagram'
+  };
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Match: import { X, Y, Z } from 'lucide-react'   (handles multi-line)
+    const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g;
+    let im;
+    while ((im = importRe.exec(content)) !== null) {
+      const icons = im[1].split(',')
+        .map(s => s.trim().split(/\s+as\s+/)[0].trim())
+        .filter(Boolean);
+      for (const icon of icons) {
+        if (LUCIDE_HALLUCINATIONS[icon]) {
+          issues.push({
+            file: fn,
+            issue: 'INVALID_LUCIDE_ICON',
+            // ERROR severity → triggers the existing auto-fix loop in server.js
+            message: `Icone lucide "${icon}" n'existe PAS. Remplacer par : ${LUCIDE_HALLUCINATIONS[icon]}`
+          });
+        }
+      }
     }
   }
 

@@ -934,7 +934,11 @@ function goToDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 // NEW PROJECT MODAL
 // ═══════════════════════════════════════════════════════════════════════════
-document.getElementById('new-project-btn').addEventListener('click', openNewProjectModal);
+// Defensive: the #new-project-btn element was removed but the listener stayed,
+// causing "Cannot read properties of null" at module load → broke all module-level
+// init code AFTER this line. The button is now wired via onclick="openNewProjectModal()".
+const _newProjectBtn = document.getElementById('new-project-btn');
+if (_newProjectBtn) _newProjectBtn.addEventListener('click', openNewProjectModal);
 
 function openNewProjectModal() {
   currentModalStep = 1; selectedTypes = []; uploadedImage = null;

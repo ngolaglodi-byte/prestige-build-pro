@@ -311,6 +311,64 @@ test('component with bg-white → RAW_WHITE_BLACK warning (not error)', () => {
   assert.strictEqual(w.severity, 'warning');
 });
 
+// ─── LUCIDE-REACT HALLUCINATION CHECK ───
+test('lucide hallucination "Live" → INVALID_LUCIDE_ICON error', () => {
+  const files = {
+    'src/pages/Home.tsx': `import { Live, Home } from 'lucide-react';\nexport default function P() { return <Live />; }`
+  };
+  const issues = ai.runBackTests(files);
+  const lucide = issues.filter(i => i.issue === 'INVALID_LUCIDE_ICON');
+  assert.ok(lucide.length >= 1, 'expected INVALID_LUCIDE_ICON for "Live"');
+  assert.ok(lucide.some(i => i.message.includes('Live')), 'message should mention Live');
+  // Severity must be error (not warning) so it triggers auto-fix
+  assert.notStrictEqual(lucide[0].severity, 'warning');
+});
+
+test('lucide hallucination "Profile", "Dashboard", "Cart" → 3 errors', () => {
+  const files = {
+    'src/pages/Home.tsx': `import { Profile, Dashboard, Cart } from 'lucide-react';\nexport default function P() { return <Profile />; }`
+  };
+  const issues = ai.runBackTests(files);
+  const lucide = issues.filter(i => i.issue === 'INVALID_LUCIDE_ICON');
+  assert.ok(lucide.length >= 3, `expected 3 errors, got ${lucide.length}`);
+});
+
+test('lucide valid icons → no INVALID_LUCIDE_ICON', () => {
+  const files = {
+    'src/pages/Home.tsx': `import { Home, User, Mail, Settings, ShoppingCart, LayoutDashboard } from 'lucide-react';\nexport default function P() { return <Home />; }`
+  };
+  const issues = ai.runBackTests(files);
+  const lucide = issues.filter(i => i.issue === 'INVALID_LUCIDE_ICON');
+  assert.strictEqual(lucide.length, 0, `expected 0 errors, got: ${JSON.stringify(lucide)}`);
+});
+
+test('lucide multi-line import with hallucination → caught', () => {
+  const files = {
+    'src/pages/Home.tsx': `import {\n  Home,\n  Login,\n  User\n} from 'lucide-react';\nexport default function P() { return <Home />; }`
+  };
+  const issues = ai.runBackTests(files);
+  const lucide = issues.filter(i => i.issue === 'INVALID_LUCIDE_ICON');
+  assert.ok(lucide.some(i => i.message.includes('Login')), 'expected Login to be caught in multi-line import');
+});
+
+test('lucide check ignores ui/ components folder', () => {
+  const files = {
+    'src/components/ui/icon.tsx': `import { Live } from 'lucide-react';\nexport function Icon() { return <Live />; }`
+  };
+  const issues = ai.runBackTests(files);
+  const lucide = issues.filter(i => i.issue === 'INVALID_LUCIDE_ICON');
+  assert.strictEqual(lucide.length, 0, 'should NOT flag ui/ components (canonical)');
+});
+
+test('SYSTEM_PROMPT mentions LUCIDE-REACT warning', () => {
+  assert.ok(ai.SYSTEM_PROMPT.includes('LUCIDE-REACT'), 'SYSTEM_PROMPT must contain LUCIDE-REACT block');
+  assert.ok(ai.SYSTEM_PROMPT.includes('Live'), 'should warn about Live hallucination');
+});
+
+test('CHAT_SYSTEM_PROMPT mentions LUCIDE-REACT warning', () => {
+  assert.ok(ai.CHAT_SYSTEM_PROMPT.includes('LUCIDE-REACT'), 'CHAT_SYSTEM_PROMPT must contain LUCIDE-REACT block');
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // 7. PROMPT INVARIANTS (regression detection on prompt edits)
 // ───────────────────────────────────────────────────────────────────────────
