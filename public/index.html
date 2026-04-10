@@ -442,6 +442,7 @@ button.card { padding: 0; }
         <p style="color:var(--text-secondary);margin-bottom:var(--space-lg);font-size:0.95rem;">Décrivez votre projet et Prestige AI le construit en quelques minutes.</p>
         <div style="display:flex;gap:var(--space-sm);align-items:flex-start;">
           <textarea id="quick-brief" class="textarea" rows="2" placeholder="Ex: site vitrine pour une boulangerie artisanale avec menu des pains, horaires et contact..." style="flex:1;min-height:50px;resize:vertical;font-size:0.95rem;"></textarea>
+          <button class="btn btn-secondary btn-lg" onclick="quickCreateWithPlan()" title="Crée un plan validable avant de générer le code" style="white-space:nowrap;height:50px;border-color:var(--gold);color:var(--gold);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Plan</button>
           <button class="btn btn-primary btn-lg" onclick="quickCreate()" style="white-space:nowrap;height:50px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Générer</button>
         </div>
         <div style="display:flex;justify-content:center;gap:var(--space-lg);margin-top:var(--space-sm);">
@@ -696,6 +697,7 @@ button.card { padding: 0; }
       <button class="btn btn-ghost" id="modal-prev-btn" onclick="prevModalStep()" style="display:none;">Précédent</button>
       <button class="btn btn-secondary" onclick="closeNewProjectModal()">Annuler</button>
       <button class="btn btn-primary" id="modal-next-btn" onclick="nextModalStep()">Suivant</button>
+      <button class="btn btn-secondary" id="modal-plan-btn" onclick="createAndGenerateWithPlan()" title="Crée un plan validable avant de générer le code" style="display:none;border-color:var(--gold);color:var(--gold);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>Créer avec Plan</button>
       <button class="btn btn-primary" id="modal-create-btn" onclick="createAndGenerate()" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Créer et générer</button>
     </div>
   </div>
@@ -966,6 +968,9 @@ function updateModalStep() {
   document.getElementById('modal-prev-btn').style.display = currentModalStep === 2 ? 'inline-flex' : 'none';
   document.getElementById('modal-next-btn').style.display = currentModalStep === 1 ? 'inline-flex' : 'none';
   document.getElementById('modal-create-btn').style.display = currentModalStep === 2 ? 'inline-flex' : 'none';
+  // Plan button appears at the same time as the Create button (last modal step)
+  const planBtn = document.getElementById('modal-plan-btn');
+  if (planBtn) planBtn.style.display = currentModalStep === 2 ? 'inline-flex' : 'none';
 }
 
 function nextModalStep() { if (currentModalStep < 2) { currentModalStep++; updateModalStep(); } }
@@ -1019,6 +1024,24 @@ async function quickCreate() {
     currentProject = p;
     await openWorkspace(p.id);
     sendChatMessage(brief);
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+// Plan Mode version of quickCreate: creates the project, opens the workspace,
+// then sends the brief as a PLAN request instead of a direct generation.
+// User sees the plan markdown, reviews it, and approves before any code is written.
+async function quickCreateWithPlan() {
+  const brief = document.getElementById('quick-brief').value.trim();
+  if (!brief) { document.getElementById('quick-brief').focus(); return; }
+  const title = extractTitle(brief);
+  const subdomain = slugify(title);
+  const client = currentUser ? currentUser.name : '';
+  try {
+    const p = await api('/api/projects', 'POST', { title, client_name: client, brief, subdomain });
+    currentProject = p;
+    await openWorkspace(p.id);
+    // Use Plan Mode instead of direct generation — user will approve before any code
+    sendPlanMessage(brief);
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 
@@ -1108,6 +1131,35 @@ async function createAndGenerate() {
     // Container starts in parallel (launched by POST /api/projects)
     // The backend generateMultiTurn() waits for the container itself
     uploadedImage ? generateFromImage(brief) : sendChatMessage(brief);
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+// Plan Mode version of createAndGenerate: creates the project, opens workspace,
+// then requests a plan instead of directly generating. User validates the plan
+// before any code is written. Skipped for image uploads (direct gen preserved).
+async function createAndGenerateWithPlan() {
+  const title = document.getElementById('np-title').value.trim();
+  const client = document.getElementById('np-client').value.trim();
+  const subdomain = document.getElementById('np-subdomain').value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+  const brief = document.getElementById('np-brief').value.trim();
+  const apis = document.getElementById('np-apis').value.split(',').map(a => a.trim()).filter(Boolean);
+  const domain = document.getElementById('np-custom-domain').value.trim().toLowerCase();
+  if (!brief) { alert('Veuillez décrire votre projet.'); return; }
+  try {
+    const p = await api('/api/projects', 'POST', { title: title || client || 'Nouveau projet', client_name: client, project_type: selectedTypes.join(', '), brief, subdomain, domain, apis });
+    currentProject = p;
+    closeNewProjectModal();
+    await openWorkspace(p.id);
+
+    // Plan Mode path — even for image uploads (user may want to validate the
+    // implementation plan before committing to a full image-based generation).
+    // If image was uploaded, we skip Plan Mode since the visual is already clear
+    // and fall back to the existing image generation flow.
+    if (uploadedImage) {
+      generateFromImage(brief);
+    } else {
+      sendPlanMessage(brief);
+    }
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 
