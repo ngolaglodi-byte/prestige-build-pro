@@ -31,6 +31,15 @@ COMPOSANTS UI : Button, Card, Input, Dialog, Tabs, Carousel, Calendar, etc. depu
 
 CONTENU : Donnees de demo EN DUR (const data = [...]). fetch() UNIQUEMENT pour formulaires. Images: picsum.photos/seed/DESCRIPTIF/W/H.
 
+ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
+- CHAQUE composant doit avoir "export default function NomComposant()"
+- CHAQUE import doit etre declare (import { Link } from 'react-router-dom', import { useState } from 'react', etc.)
+- CHAQUE fetch() doit etre dans un try/catch avec toast.error() en cas d'echec. JAMAIS de fetch sans error handling.
+- JAMAIS de require() dans les fichiers .tsx/.jsx (c'est ESM, pas CommonJS)
+- TOUJOURS ajouter un loading state (Skeleton ou spinner) pendant les fetch
+- Si un composant recoit des donnees qui peuvent etre null/undefined, verifier AVANT d'appeler .map(), .length, etc.
+- CHAQUE page avec fetch() doit gerer 3 etats : loading, error, data
+
 BACKEND (server.js) : CommonJS (require). Port 3000, 0.0.0.0. Express + SQLite + JWT. Fin: // CREDENTIALS: email=admin@x.com password=xxx
 
 ADMIN : Login.tsx (/login) + Admin.tsx (/admin) avec sidebar + dashboard. Header avec lien "Espace pro".
@@ -439,6 +448,14 @@ STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 QUALITE : Composants < 150 lignes. export default function. TypeScript strict.
 Loading: <Skeleton>. Erreur: toast.error(). Succes: toast.success().
 Securite : bcrypt, JWT, prepared statements, validation inputs.
+
+ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
+- CHAQUE composant : "export default function NomComposant()"
+- CHAQUE import DOIT etre declare en haut du fichier (Link, useState, useNavigate, etc.)
+- CHAQUE fetch() dans un try/catch avec toast.error(). JAMAIS de silent failure.
+- JAMAIS de require() dans .tsx (ESM only, CommonJS = server.js only)
+- Verifier null/undefined AVANT .map(), .length, .filter() sur des donnees fetch
+- 3 etats par page avec fetch : loading (Skeleton), error (toast), data (render)
 
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
 
@@ -1152,6 +1169,69 @@ function runBackTests(files) {
           issue: 'MISSING_NPM_IMPORT',
           // ERROR severity → triggers auto-fix loop (Claude adds the import)
           message: `'${symbol}' est utilisé mais pas importé. Ajouter : import { ${symbol} } from '${info.from}'`
+        });
+      }
+    }
+  }
+
+  // ─── REQUIRE() IN TSX/JSX FILES (ERROR — Vite can't handle CommonJS in ESM) ───
+  // Claude sometimes writes require() in React files (confusing frontend ESM with backend CJS).
+  // Vite transpiles ESM only — require() causes "require is not defined" at runtime → blank.
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Match require('...') but NOT inside strings/comments (heuristic: start of line or after space/;)
+    if (/(?:^|[;\s])(?:const|let|var)\s+\w+\s*=\s*require\s*\(/m.test(content)) {
+      issues.push({
+        file: fn,
+        issue: 'REQUIRE_IN_TSX',
+        message: 'require() dans un fichier TSX/JSX — utiliser import { ... } from "..." (ESM). require() ne fonctionne pas dans Vite.'
+      });
+    }
+  }
+
+  // ─── FETCH WITHOUT ERROR HANDLING (ERROR — silent failures → blank screen) ───
+  // If a fetch() call has no .catch() or try/catch, a network error silently kills the component.
+  // The user sees a blank screen with zero indication of what went wrong.
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Count fetch() calls vs catch/try-catch patterns
+    const fetchCalls = (content.match(/\bfetch\s*\(/g) || []).length;
+    const catchHandlers = (content.match(/\.catch\s*\(|catch\s*\(/g) || []).length;
+    const toastErrors = (content.match(/toast\.error|toast\(/g) || []).length;
+    // If there are fetches but zero error handling → flag
+    if (fetchCalls > 0 && catchHandlers === 0 && toastErrors === 0) {
+      issues.push({
+        file: fn,
+        issue: 'FETCH_NO_ERROR_HANDLING',
+        message: `${fetchCalls} fetch() sans try/catch ni .catch() — ajouter error handling avec toast.error() pour éviter les écrans blancs silencieux`
+      });
+    }
+  }
+
+  // ─── UNSAFE DATA ACCESS (ERROR — .map()/.length on undefined → crash → blank) ───
+  // When Claude fetches data and immediately calls .map() without checking if data exists,
+  // a null/undefined response crashes the component → blank screen.
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Pattern: useState([]) then {data.map()} is safe. But {data && data.map()} or {data?.map()} is safer.
+    // Check for .map( without prior null check on the same variable — heuristic
+    const mapCalls = content.match(/\b(\w+)\.map\s*\(/g) || [];
+    for (const mapCall of mapCalls) {
+      const varName = mapCall.match(/\b(\w+)\.map/)?.[1];
+      if (!varName) continue;
+      // Skip if the variable is initialized with [] or there's a null check nearby
+      const hasInit = new RegExp(`\\b${varName}\\b[^=]*=\\s*\\[`).test(content) || // useState([])
+                      new RegExp(`\\b${varName}\\b[^=]*=\\s*useState\\s*\\(\\[`).test(content);
+      const hasNullCheck = new RegExp(`${varName}\\s*&&\\s*${varName}\\.map|${varName}\\?\\.map|\\(${varName}\\s*\\|\\|\\s*\\[\\]\\)\\.map`).test(content);
+      if (!hasInit && !hasNullCheck) {
+        issues.push({
+          file: fn,
+          issue: 'UNSAFE_MAP_CALL',
+          severity: 'warning', // warning not error — too many false positives possible
+          message: `${varName}.map() sans vérification null — utiliser ${varName}?.map() ou (${varName} || []).map() pour éviter crash si données non chargées`
         });
       }
     }

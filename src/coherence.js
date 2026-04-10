@@ -340,8 +340,10 @@ function checkApiRouteCoherence(files) {
         issues.push({
           file: fn,
           type: 'MISSING_API_ROUTE',
-          severity: 'warning',
-          message: `Frontend calls '${call.path}' but no matching app.get/post/put/delete found in server.js`,
+          // Promoted from warning → error: missing API routes cause blank screens
+          // because fetch() hangs or returns 404 and components don't render data.
+          severity: 'error',
+          message: `Frontend calls '${call.path}' but no matching app.get/post/put/delete found in server.js — ajouter la route backend`,
           hint: `Did the AI forget to add the backend route?`
         });
       }
