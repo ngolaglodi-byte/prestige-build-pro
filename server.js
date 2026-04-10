@@ -7975,6 +7975,10 @@ function getErrorHistory(projectId) {
 
 // Restart lock to prevent multiple simultaneous restart attempts
 const restartLocks = new Map();
+// Tracks which projects have been auto-fixed in the /run/ proxy handler.
+// Prevents the expensive CSS fix + import scan from running on EVERY sub-resource
+// request (was: 40-60 times per page load, ~500-1000ms wasted CPU).
+const proxyAutoFixedProjects = new Set();
 
 // Proxy request to container (uses Docker DNS name, not IP)
 async function proxyToContainer(req, res, projectId, targetPath) {
@@ -8443,49 +8447,60 @@ const server = http.createServer(async (req, res) => {
     // Track access for auto-sleep
     containerLastAccess.set(projectId, Date.now());
 
-    // Auto-fix on first access (fixes projects created before fixes were deployed)
-    const projAccessDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
-    // Fix CSS
-    const cssPath = path.join(projAccessDir, 'src', 'index.css');
-    if (fs.existsSync(cssPath)) {
-      const css = fs.readFileSync(cssPath, 'utf8');
-      // Only fix if CSS is broken (TW4 syntax or missing @tailwind)
-      const bracesOpen = (css.match(/\{/g) || []).length;
-      const bracesClose = (css.match(/\}/g) || []).length;
-      const needsFix = css.includes('@import "tailwindcss"') || css.includes('@theme') || (!css.includes('@tailwind') && !css.includes('--primary')) || bracesOpen !== bracesClose;
-      if (needsFix) {
-        const fixed = fixIndexCss(css);
-        fs.writeFileSync(cssPath, fixed);
-        console.log(`[AutoFix] Fixed index.css for project ${projectId}`);
+    // ── AUTO-FIX: runs ONCE per project per server session (not on every request!) ──
+    // Previously this code ran on EVERY /run/{id}/* request (CSS, JS, images, fonts —
+    // 40-60 times per page load). Each call read 20-30 files from disk, recursively
+    // scanned directories, and parsed regex. Cost: ~500-1000ms of wasted CPU per page
+    // load. Now it runs ONCE, then the project is flagged as auto-fixed.
+    if (!proxyAutoFixedProjects.has(projectId)) {
+      proxyAutoFixedProjects.add(projectId);
+      // Prune the set periodically to avoid unbounded memory growth
+      if (proxyAutoFixedProjects.size > 5000) {
+        const arr = Array.from(proxyAutoFixedProjects).slice(2500);
+        proxyAutoFixedProjects.clear();
+        arr.forEach(id => proxyAutoFixedProjects.add(id));
       }
-    }
-    // Fix missing UI components/pages (scan imports, create stubs for unresolved)
-    const srcAccessDir = path.join(projAccessDir, 'src');
-    if (fs.existsSync(srcAccessDir)) {
-      let needsFix = false;
-      const scanFiles = [];
-      const scanD = (d) => { if (!fs.existsSync(d)) return; for (const f of fs.readdirSync(d, { withFileTypes: true })) { if (f.isDirectory() && f.name !== 'ui' && f.name !== 'node_modules') scanD(path.join(d, f.name)); else if (f.isFile() && f.name.endsWith('.tsx')) scanFiles.push(path.join(d, f.name)); } };
-      scanD(srcAccessDir);
-      for (const file of scanFiles) {
-        const content = fs.readFileSync(file, 'utf8');
-        const imports = content.match(/from ['"](@\/[^'"]+)['"]/g) || [];
-        for (const imp of imports) {
-          const importPath = imp.match(/@\/([^'"]+)/)?.[1];
-          if (!importPath) continue;
-          const resolved = path.join(srcAccessDir, importPath);
-          if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved)) {
-            needsFix = true;
-            const stubPath = resolved + '.tsx';
-            const stubDir = path.dirname(stubPath);
-            if (!fs.existsSync(stubDir)) fs.mkdirSync(stubDir, { recursive: true });
-            if (importPath.startsWith('components/ui/')) {
-              const names = (content.match(new RegExp(`import\\s*\\{([^}]+)\\}\\s*from\\s*['"]@\\/${importPath.replace(/\//g, '\\/')}['"]`)) || ['','Component'])[1].split(',').map(n => n.trim());
-              fs.writeFileSync(stubPath, `import * as React from "react";\n${names.map(n => `export function ${n}({ children, className, ...props }: any) { return <div className={className} {...props}>{children}</div>; }`).join('\n')}\n`);
-            } else {
-              const name = path.basename(importPath);
-              fs.writeFileSync(stubPath, `export default function ${name}() { return <div className="p-8"><h1>${name}</h1></div>; }\n`);
+
+      const projAccessDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+      // Fix CSS
+      const cssPath = path.join(projAccessDir, 'src', 'index.css');
+      if (fs.existsSync(cssPath)) {
+        const css = fs.readFileSync(cssPath, 'utf8');
+        const bracesOpen = (css.match(/\{/g) || []).length;
+        const bracesClose = (css.match(/\}/g) || []).length;
+        const needsFix = css.includes('@import "tailwindcss"') || css.includes('@theme') || (!css.includes('@tailwind') && !css.includes('--primary')) || bracesOpen !== bracesClose;
+        if (needsFix) {
+          const fixed = fixIndexCss(css);
+          fs.writeFileSync(cssPath, fixed);
+          console.log(`[AutoFix] Fixed index.css for project ${projectId}`);
+        }
+      }
+      // Fix missing UI components/pages (scan imports, create stubs for unresolved)
+      const srcAccessDir = path.join(projAccessDir, 'src');
+      if (fs.existsSync(srcAccessDir)) {
+        const scanFiles = [];
+        const scanD = (d) => { if (!fs.existsSync(d)) return; for (const f of fs.readdirSync(d, { withFileTypes: true })) { if (f.isDirectory() && f.name !== 'ui' && f.name !== 'node_modules') scanD(path.join(d, f.name)); else if (f.isFile() && f.name.endsWith('.tsx')) scanFiles.push(path.join(d, f.name)); } };
+        scanD(srcAccessDir);
+        for (const file of scanFiles) {
+          const content = fs.readFileSync(file, 'utf8');
+          const imports = content.match(/from ['"](@\/[^'"]+)['"]/g) || [];
+          for (const imp of imports) {
+            const importPath = imp.match(/@\/([^'"]+)/)?.[1];
+            if (!importPath) continue;
+            const resolved = path.join(srcAccessDir, importPath);
+            if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved)) {
+              const stubPath = resolved + '.tsx';
+              const stubDir = path.dirname(stubPath);
+              if (!fs.existsSync(stubDir)) fs.mkdirSync(stubDir, { recursive: true });
+              if (importPath.startsWith('components/ui/')) {
+                const names = (content.match(new RegExp(`import\\s*\\{([^}]+)\\}\\s*from\\s*['"]@\\/${importPath.replace(/\//g, '\\/')}['"]`)) || ['','Component'])[1].split(',').map(n => n.trim());
+                fs.writeFileSync(stubPath, `import * as React from "react";\n${names.map(n => `export function ${n}({ children, className, ...props }: any) { return <div className={className} {...props}>{children}</div>; }`).join('\n')}\n`);
+              } else {
+                const name = path.basename(importPath);
+                fs.writeFileSync(stubPath, `export default function ${name}() { return <div className="p-8"><h1>${name}</h1></div>; }\n`);
+              }
+              console.log(`[AutoFix] Created stub: src/${importPath}.tsx for project ${projectId}`);
             }
-            console.log(`[AutoFix] Created stub: src/${importPath}.tsx for project ${projectId}`);
           }
         }
       }
