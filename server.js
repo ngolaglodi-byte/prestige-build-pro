@@ -8346,8 +8346,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // PUBLISHED SITE SUBDOMAINS (*.prestige-build.dev — NOT preview-* and NOT *.preview.*)
-  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && !host.startsWith('preview-') && !host.includes('.preview.')) {
+  // PUBLISHED SITE SUBDOMAINS (*.prestige-build.dev — NOT preview-* and NOT *-preview.*)
+  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && !host.startsWith('preview-') && !/-preview\./.test(host)) {
     const subdomain = host.replace('.' + PUBLISH_DOMAIN, '').replace(/[^a-zA-Z0-9-]/g, '');
     if (subdomain) {
       const siteDir = path.join(SITES_DIR, subdomain);
@@ -8410,14 +8410,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // SUBDOMAIN PREVIEW: p{id}.preview.prestige-build.dev → direct to container
+  // SUBDOMAIN PREVIEW: p{id}-preview.prestige-build.dev → direct to container
   // This is the FAST PATH — no auto-fix, no auth check, no path rewriting.
-  // Caddy (via Coolify) routes *.preview.prestige-build.dev to pbp-server.
+  // Cloudflare routes *-preview.prestige-build.dev → Traefik → pbp-server.
   // pbp-server reads the Host header, extracts project ID, and proxies
   // directly to the container. ~5ms overhead vs ~20ms on the /run/ path.
   // ═══════════════════════════════════════════════════════════════════════════
   const hostHeader = req.headers.host || '';
-  const subdomainMatch = hostHeader.match(/^p(\d+)\.preview\./);
+  const subdomainMatch = hostHeader.match(/^p(\d+)-preview\./);
   if (subdomainMatch) {
     const projectId = parseInt(subdomainMatch[1], 10);
     if (!Number.isInteger(projectId) || projectId < 1) {
