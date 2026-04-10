@@ -665,10 +665,11 @@ const correctionInProgress = new Set();
 // Ensure previews directory exists
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
-let compiler, ai, coherence;
+let compiler, ai, coherence, idempotentCopy;
 try { compiler = require('./src/compiler'); } catch(e) {}
 try { ai = require('./src/ai'); } catch(e) {}
 try { coherence = require('./src/coherence'); } catch(e) { console.warn('[Init] coherence module not loaded:', e.message); }
+try { idempotentCopy = require('./src/idempotent-copy'); } catch(e) { console.warn('[Init] idempotent-copy module not loaded:', e.message); }
 
 // ─── DATABASE ───
 let db;
@@ -1150,18 +1151,15 @@ function writeDefaultReactProject(projectDir) {
     }
   }
 
-  // Copy UI component library (shadcn-style) from templates.
+  // Copy UI component library (shadcn-style) from templates using the
+  // idempotent copy helper (src/idempotent-copy.js). This prevents the Vite
+  // restart loop regression: writeDefaultReactProject is called 6+ times in
+  // the generation pipeline; without idempotency, each call would bump mtime
+  // on 40+ UI files and trigger Vite HMR storms → container unhealthy → 503.
   //
-  // IDEMPOTENT: only copies if content differs. Previously used fs.copyFileSync
-  // unconditionally, which updates the mtime on EVERY call, even if content was
-  // identical. Since writeDefaultReactProject() is called from 6+ sites in the
-  // generation pipeline (safety net, auto-fix, validate, etc.), this caused Vite
-  // HMR to detect 40+ "changed" files on every call → cascading page reloads →
-  // Vite restart loop → container "unhealthy" → 503 in the iframe.
-  //
-  // Fix: compare size + byte content before writing. No mtime churn when files
-  // are already canonical. The AI still can't corrupt them (content comparison
-  // is authoritative, not trust-based).
+  // Regression test: tests/idempotent-copy.test.js verifies that 6 calls on
+  // 40 identical files produce exactly 40 copies (first call only) and zero
+  // mtime updates afterward.
   const templateUiDir = path.join(__dirname, 'templates', 'react', 'src');
   const uiDirs = ['components/ui', 'lib', 'hooks'];
   let skipped = 0;
@@ -1174,29 +1172,13 @@ function writeDefaultReactProject(projectDir) {
       for (const file of fs.readdirSync(srcDir)) {
         const srcFile = path.join(srcDir, file);
         const destFile = path.join(destDir, file);
-
-        // Idempotency check: skip if dest exists and content is byte-identical
-        let needsWrite = true;
-        if (fs.existsSync(destFile)) {
-          try {
-            const srcStat = fs.statSync(srcFile);
-            const destStat = fs.statSync(destFile);
-            if (srcStat.size === destStat.size) {
-              // Same size → compare bytes (cheap for shadcn files, typically < 10KB)
-              const srcBuf = fs.readFileSync(srcFile);
-              const destBuf = fs.readFileSync(destFile);
-              if (srcBuf.equals(destBuf)) {
-                needsWrite = false;
-              }
-            }
-          } catch (_) { /* fall through to copy if stat fails */ }
-        }
-
-        if (needsWrite) {
+        if (idempotentCopy && idempotentCopy.copyFileIfDiffers) {
+          const result = idempotentCopy.copyFileIfDiffers(srcFile, destFile);
+          if (result.copied) copied++; else skipped++;
+        } else {
+          // Fallback (shouldn't happen, module loads at startup): unconditional copy
           fs.copyFileSync(srcFile, destFile);
           copied++;
-        } else {
-          skipped++;
         }
       }
     }
@@ -6511,6 +6493,75 @@ async function restartContainerAsync(projectId) {
   }
 }
 
+// ─── AUTO-RECOVERY: unhealthy containers ───
+// Monitors pbp-project-* containers and auto-restarts those stuck in "unhealthy" state.
+// Solves the "container stuck requires manual docker restart" problem.
+//
+// Cooldown prevents restart thrashing: if a container stays unhealthy (e.g., due to
+// a real code bug like a bad import), it won't be restarted more than once per 5 min.
+//
+// Called from setInterval(autoRecoveryTick, AUTO_RECOVERY_INTERVAL_MS) at server start.
+const AUTO_RECOVERY_INTERVAL_MS = 60 * 1000;         // check every minute
+const AUTO_RECOVERY_COOLDOWN_MS = 5 * 60 * 1000;     // 5 min between restarts per project
+const autoRecoveryLastRestart = new Map();           // projectId → timestamp
+
+async function autoRecoveryTick() {
+  if (!docker) return;
+  try {
+    // Query Docker for running containers filtered by health=unhealthy
+    const containers = await docker.listContainers({
+      all: false,
+      filters: JSON.stringify({ health: ['unhealthy'] })
+    });
+
+    let actionCount = 0;
+    for (const c of containers) {
+      const name = ((c.Names || [])[0] || '').replace(/^\//, '');
+      const match = name.match(/^pbp-project-(\d+)$/);
+      if (!match) continue;
+      const projectId = parseInt(match[1], 10);
+      if (!Number.isInteger(projectId)) continue;
+
+      // Cooldown: don't restart the same project more than once per cooldown window
+      const lastRestart = autoRecoveryLastRestart.get(projectId);
+      if (lastRestart && (Date.now() - lastRestart) < AUTO_RECOVERY_COOLDOWN_MS) {
+        continue;
+      }
+
+      log('warn', 'auto-recovery', 'unhealthy container detected, restarting', {
+        projectId, containerName: name
+      });
+      try {
+        const ok = await restartContainerAsync(projectId);
+        if (ok) {
+          autoRecoveryLastRestart.set(projectId, Date.now());
+          actionCount++;
+          log('info', 'auto-recovery', 'container restart issued', { projectId });
+        } else {
+          log('error', 'auto-recovery', 'restartContainerAsync returned false', { projectId });
+        }
+      } catch (e) {
+        log('error', 'auto-recovery', 'restart threw', { projectId, error: e.message });
+      }
+    }
+
+    // Prune cooldown map — keep only recent entries to bound memory
+    const now = Date.now();
+    for (const [pid, ts] of autoRecoveryLastRestart.entries()) {
+      if (now - ts > AUTO_RECOVERY_COOLDOWN_MS * 3) {
+        autoRecoveryLastRestart.delete(pid);
+      }
+    }
+
+    if (actionCount > 0) {
+      console.log(`[AutoRecovery] Restarted ${actionCount} unhealthy container(s)`);
+    }
+  } catch (e) {
+    // Defensive: never let the cron crash the server
+    log('error', 'auto-recovery', 'tick failed', { error: e.message });
+  }
+}
+
 // Start a stopped container (using dockerode)
 async function startContainerAsync(projectId) {
   if (!docker) return false;
@@ -11227,6 +11278,13 @@ server.listen(PORT, async ()=>{
   if (isDockerAvailable()) {
     console.log('Starting container monitoring (30s interval)...');
     setInterval(monitorContainers, CONTAINER_MONITORING_INTERVAL);
+
+    // Auto-recovery of unhealthy pbp-project-* containers (every 60s).
+    // Restarts stuck containers automatically, with 5-min cooldown per project
+    // to prevent thrashing. Solves the "container stuck unhealthy requires manual
+    // docker restart" problem from the Vite restart loop incident.
+    console.log('Starting auto-recovery for unhealthy containers (60s interval, 5min cooldown)...');
+    setInterval(autoRecoveryTick, AUTO_RECOVERY_INTERVAL_MS);
   }
 
   // Start automatic backups every 6 hours
