@@ -8346,8 +8346,8 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // PUBLISHED SITE SUBDOMAINS (*.prestige-build.dev — NOT preview-*)
-  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && !host.startsWith('preview-')) {
+  // PUBLISHED SITE SUBDOMAINS (*.prestige-build.dev — NOT preview-* and NOT *.preview.*)
+  if (host && host.endsWith('.' + PUBLISH_DOMAIN) && host !== 'app.' + PUBLISH_DOMAIN && !host.startsWith('preview-') && !host.includes('.preview.')) {
     const subdomain = host.replace('.' + PUBLISH_DOMAIN, '').replace(/[^a-zA-Z0-9-]/g, '');
     if (subdomain) {
       const siteDir = path.join(SITES_DIR, subdomain);
