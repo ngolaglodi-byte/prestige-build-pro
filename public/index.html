@@ -2585,7 +2585,11 @@ async function autoCompile() {
 
   const frame = document.getElementById('preview-frame');
   const loading = document.getElementById('preview-loading');
-  const previewAlreadyLoaded = frame.src && frame.src.includes('/run/' + currentProject.id);
+  // Detect if preview is already loaded (check both subdomain and legacy /run/ URLs)
+  const previewAlreadyLoaded = frame.src && (
+    frame.src.includes('p' + currentProject.id + '.preview.') ||
+    frame.src.includes('/run/' + currentProject.id)
+  );
 
   if (previewAlreadyLoaded) {
     // Modification: HMR handles updates via usePolling — just ensure visible
@@ -2597,13 +2601,13 @@ async function autoCompile() {
     try { frame.contentWindow.location.reload(); } catch {}
     console.log('[AUTOCOMPILE] Modification — reload');
   } else {
-    // First generation: load preview, then reload once after Vite compiles new files
-    loadDockerPreview(`/run/${currentProject.id}/`);
+    // First generation: load via subdomain (fast) or /run/ fallback
+    loadDockerPreview();
     // Vite polling detects changes in 500ms, compilation takes 2-3s → reload at 4s
     setTimeout(() => {
       if (currentProject) {
         console.log('[AUTOCOMPILE] First gen — reloading for compiled content');
-        loadDockerPreview(`/run/${currentProject.id}/`);
+        loadDockerPreview();
       }
     }, 4000);
   }
@@ -2835,13 +2839,18 @@ function loadDockerPreview(url) {
     loading.querySelector('span').textContent = 'Session expirée. Rechargez la page.';
     return;
   }
-  const previewUrl = url || `/run/${currentProject.id}/`;
 
-  // Pass auth token as query param — iframe requests don't send Authorization headers
-  const separator = previewUrl.includes('?') ? '&' : '?';
-  const authenticatedUrl = previewUrl + separator + 'token=' + encodeURIComponent(token);
+  // Use subdomain preview if available (FAST PATH — bypasses Node.js proxy overhead).
+  // Falls back to /run/{id}/ path if subdomain is not configured.
+  const subdomainUrl = `https://p${currentProject.id}.preview.prestige-build.dev/`;
+  const legacyUrl = url || `/run/${currentProject.id}/`;
 
-  document.getElementById('preview-url').textContent = 'https://app.prestige-build.dev' + previewUrl;
+  // Try subdomain first — if it fails (DNS not configured, etc.), fall back to legacy
+  let previewUrl = subdomainUrl;
+  let authenticatedUrl = previewUrl; // subdomain doesn't need token (no auth on preview proxy)
+
+  // Show the clean subdomain URL to the user
+  document.getElementById('preview-url').textContent = subdomainUrl;
 
   // Show spinner while iframe loads
   loading.style.display = 'flex';

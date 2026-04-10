@@ -8410,9 +8410,53 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // DOCKER PROXY ROUTE: /run/:projectId/*
-  // Proxies requests to isolated Docker containers running project previews
-  // Path rewriting: /run/23/ → /, /run/23/api/login → /api/login
+  // SUBDOMAIN PREVIEW: p{id}.preview.prestige-build.dev → direct to container
+  // This is the FAST PATH — no auto-fix, no auth check, no path rewriting.
+  // Caddy (via Coolify) routes *.preview.prestige-build.dev to pbp-server.
+  // pbp-server reads the Host header, extracts project ID, and proxies
+  // directly to the container. ~5ms overhead vs ~20ms on the /run/ path.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const hostHeader = req.headers.host || '';
+  const subdomainMatch = hostHeader.match(/^p(\d+)\.preview\./);
+  if (subdomainMatch) {
+    const projectId = parseInt(subdomainMatch[1], 10);
+    if (!Number.isInteger(projectId) || projectId < 1) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('Invalid project ID in subdomain');
+      return;
+    }
+
+    // Track access for auto-sleep
+    containerLastAccess.set(projectId, Date.now());
+
+    // Wake container if sleeping (lightweight check, no auto-fix)
+    const running = await isContainerRunningAsync(projectId);
+    if (!running) {
+      console.log(`[Subdomain] Waking container for project ${projectId}`);
+      await startContainerAsync(projectId);
+      await waitForContainerHealth(projectId, 60000);
+    }
+
+    // Path rewrite: browser requests '/' but Vite expects '/run/{id}/'
+    // After initial page load, all asset URLs already include /run/{id}/ (Vite --base).
+    let targetPath = req.url || '/';
+    if (targetPath === '/' || targetPath === '') {
+      targetPath = `/run/${projectId}/`;
+    } else if (!targetPath.startsWith(`/run/${projectId}`)) {
+      // Asset request without prefix → add it (e.g., favicon.ico, robots.txt)
+      // But most assets from Vite already have /run/{id}/ in their path
+      targetPath = `/run/${projectId}${targetPath}`;
+    }
+
+    // LEAN proxy: no auto-fix, no auth, no DB lookup, no header stripping overhead
+    proxyToContainer(req, res, projectId, targetPath);
+    return;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DOCKER PROXY ROUTE: /run/:projectId/* (LEGACY — kept as fallback)
+  // Used by the iframe when subdomain is not available.
+  // Includes auto-fix, auth token handling, and container wake logic.
   // ═══════════════════════════════════════════════════════════════════════════
   if (url.startsWith('/run/')) {
     const runMatch = req.url.match(/^\/run\/(\d+)(\/.*)?$/);
