@@ -196,7 +196,7 @@ function decryptValue(encrypted) {
     return null;
   }
 }
-const DOCKER_HEALTH_TIMEOUT = 15000; // 15 seconds max wait for container health
+const DOCKER_HEALTH_TIMEOUT = 60000; // 60s max wait — Vite can take 30-45s to optimize deps on first start
 const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
 
 // Dockerode client - communicates directly with Docker socket (no CLI dependency)
@@ -6409,40 +6409,49 @@ async function waitForContainerHealth(projectId, maxWait = DOCKER_HEALTH_TIMEOUT
   const startTime = Date.now();
   const hostname = getContainerHostname(projectId);
   const healthUrl = `http://${hostname}:3000/health`;
+  const viteUrl = `http://${hostname}:5173/run/${projectId}/`;
   let attempt = 0;
 
-  console.log(`[Health] Starting health check for project ${projectId} → ${healthUrl} (timeout: ${maxWait / 1000}s)`);
+  console.log(`[Health] Starting health check for project ${projectId} → Express + Vite (timeout: ${maxWait / 1000}s)`);
+
+  // Helper: test one URL, return { ok, reason }
+  const testUrl = (url, timeoutMs = 2000) => new Promise((resolve) => {
+    const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      if (res.statusCode >= 200 && res.statusCode < 400) {
+        res.resume();
+        resolve({ ok: true });
+      } else {
+        res.resume();
+        resolve({ ok: false, reason: `HTTP ${res.statusCode}` });
+      }
+    });
+    req.on('error', (e) => resolve({ ok: false, reason: `error: ${e.code || e.message}` }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); });
+  });
 
   while (Date.now() - startTime < maxWait) {
     attempt++;
     try {
-      const result = await new Promise((resolve) => {
-        const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
-          // HTTP 200 = healthy, regardless of body content
-          if (res.statusCode === 200) {
-            res.resume(); // drain the response
-            resolve({ ok: true, statusCode: 200 });
-          } else {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-              resolve({ ok: false, reason: `HTTP ${res.statusCode}`, body: data.substring(0, 200) });
-            });
-          }
-        });
-        req.on('error', (e) => resolve({ ok: false, reason: `error: ${e.code || e.message}` }));
-        req.on('timeout', () => { req.destroy(); resolve({ ok: false, reason: 'timeout (2s)' }); });
-      });
+      // Test Express AND Vite together — both must be ready
+      const [expressResult, viteResult] = await Promise.all([
+        testUrl(healthUrl),
+        testUrl(viteUrl)
+      ]);
+
+      const result = {
+        ok: expressResult.ok && viteResult.ok,
+        reason: !expressResult.ok ? `Express: ${expressResult.reason}` : (!viteResult.ok ? `Vite: ${viteResult.reason}` : 'OK')
+      };
 
       if (result.ok) {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`[Health] ${hostname} OK after ${attempt} attempts (${elapsed}s)`);
+        console.log(`[Health] ${hostname} OK (Express + Vite) after ${attempt} attempts (${elapsed}s)`);
         return true;
       }
 
       // Log every attempt for first 3, then every 5th
       if (attempt <= 3 || attempt % 5 === 0) {
-        console.log(`[Health] ${hostname} attempt ${attempt}: ${result.reason}${result.body ? ' — ' + result.body : ''}`);
+        console.log(`[Health] ${hostname} attempt ${attempt}: ${result.reason}`);
       }
     } catch (e) {
       console.error(`[Health] ${hostname} attempt ${attempt}: unexpected error: ${e.message}`);
@@ -6724,7 +6733,7 @@ async function launchTemplateContainer(projectId) {
   await container.start();
 
   // Wait for health (should be very fast — everything is pre-installed)
-  const healthy = await waitForContainerHealth(projectId, 10000);
+  const healthy = await waitForContainerHealth(projectId, 60000);
   if (healthy) {
     db.prepare("UPDATE projects SET build_status='building',build_url=? WHERE id=?").run(`/run/${projectId}/`, projectId);
     console.log(`[Template] Container ready for project ${projectId} — waiting for AI generation`);
@@ -8274,7 +8283,7 @@ const server = http.createServer(async (req, res) => {
     if (!running) {
       console.log(`[Sleep] Waking container for project ${projectId}`);
       await startContainerAsync(projectId);
-      await waitForContainerHealth(projectId, 10000);
+      await waitForContainerHealth(projectId, 60000);
     }
 
     // Proxy to the container
