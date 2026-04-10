@@ -1105,6 +1105,58 @@ function runBackTests(files) {
     }
   }
 
+  // ─── MISSING NPM IMPORTS CHECK (ERROR — triggers auto-fix loop) ───
+  // Catches the #1 cause of blank screens: Claude uses a React/Router/Lucide symbol
+  // without importing it. The error only surfaces at RUNTIME (browser ReferenceError),
+  // not at Vite compile time, so the build check doesn't catch it.
+  //
+  // Example: <Link> used in Header.tsx without `import { Link } from 'react-router-dom'`
+  // → "Uncaught ReferenceError: Link is not defined" → blank iframe
+  const NPM_SYMBOL_IMPORTS = {
+    // React Router DOM — JSX components (check <Symbol usage)
+    'Link': { from: 'react-router-dom', checkJsx: true },
+    'NavLink': { from: 'react-router-dom', checkJsx: true },
+    'Navigate': { from: 'react-router-dom', checkJsx: true },
+    'Outlet': { from: 'react-router-dom', checkJsx: true },
+    'Routes': { from: 'react-router-dom', checkJsx: true },
+    'Route': { from: 'react-router-dom', checkJsx: true },
+    // React Router DOM — hooks (check symbol( usage)
+    'useNavigate': { from: 'react-router-dom', checkHook: true },
+    'useParams': { from: 'react-router-dom', checkHook: true },
+    'useLocation': { from: 'react-router-dom', checkHook: true },
+    'useSearchParams': { from: 'react-router-dom', checkHook: true },
+    // React — hooks
+    'useState': { from: 'react', checkHook: true },
+    'useEffect': { from: 'react', checkHook: true },
+    'useRef': { from: 'react', checkHook: true },
+    'useMemo': { from: 'react', checkHook: true },
+    'useCallback': { from: 'react', checkHook: true },
+    'useContext': { from: 'react', checkHook: true },
+    'useReducer': { from: 'react', checkHook: true },
+  };
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    if (fn === 'src/main.tsx') continue; // main.tsx has special imports
+    for (const [symbol, info] of Object.entries(NPM_SYMBOL_IMPORTS)) {
+      let isUsed = false;
+      if (info.checkJsx && new RegExp(`<${symbol}[\\s/>]`).test(content)) isUsed = true;
+      if (info.checkHook && new RegExp(`\\b${symbol}\\s*\\(`).test(content)) isUsed = true;
+      if (!isUsed) continue;
+      // Check if the symbol is imported somewhere in the file
+      // Handles: { Link }, { Link, NavLink }, { useNavigate as nav }
+      const importRegex = new RegExp(`import\\s+[^;]*\\b${symbol}\\b[^;]*from\\s+['"]${info.from}['"]`);
+      if (!importRegex.test(content)) {
+        issues.push({
+          file: fn,
+          issue: 'MISSING_NPM_IMPORT',
+          // ERROR severity → triggers auto-fix loop (Claude adds the import)
+          message: `'${symbol}' est utilisé mais pas importé. Ajouter : import { ${symbol} } from '${info.from}'`
+        });
+      }
+    }
+  }
+
   // ─── STRICT DESIGN-SYSTEM CHECKS (warning-only — visible in logs, not auto-fixed) ───
   // Goal: enforce semantic tokens like Lovable. Warnings won't trigger expensive auto-fix loops
   // but will surface in server logs so we can tighten them later if false-positive rate is low.
