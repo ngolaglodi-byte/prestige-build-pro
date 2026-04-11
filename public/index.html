@@ -1716,7 +1716,9 @@ async function sendChatMessage(message) {
   if (pendingUpload) {
     const uploadPath = await uploadFileToProject(pendingUpload);
     if (uploadPath) {
-      const uploadInfo = `[Fichier uploadé dans le projet : ${uploadPath} (${(pendingUpload.size / 1024).toFixed(0)} KB)]\nUtilise le chemin "${uploadPath}" pour référencer ce fichier dans le code (ex: <img src="${uploadPath}" />).\n\n`;
+      // Path without leading slash = relative to Vite base (works with --base /run/{id}/)
+      const relativePath = uploadPath.startsWith('/') ? uploadPath.substring(1) : uploadPath;
+      const uploadInfo = `[INSTRUCTION OBLIGATOIRE : Un fichier a été uploadé → ${relativePath} (${(pendingUpload.size / 1024).toFixed(0)} KB)]\nUTILISE edit_file ou write_file MAINTENANT pour modifier le code et intégrer ce fichier.\nChemin à utiliser dans le code : "${relativePath}" (sans / au début).\nExemple : <img src="${relativePath}" /> ou style={{ backgroundImage: "url(${relativePath})" }}\n\n`;
       msg = uploadInfo + (msg || `Utilise ce fichier (${uploadPath}) dans le site.`);
       // Show the image in chat as a user message
       if (pendingUpload.contentType.startsWith('image/')) {
