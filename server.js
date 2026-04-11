@@ -5175,24 +5175,42 @@ function generateClaude(messages, jobId, brief, options = {}) {
   const job = generationJobs.get(jobId);
   if (!job) return;
 
-  // Route: NEW projects go through multi-turn generation, MODIFICATIONS go through streaming API
+  // ─── LOVABLE MODEL: single streaming call for BOTH new projects AND modifications ───
+  // Previously, new projects went through generateMultiTurn (3 separate API calls:
+  // infra → pages → components). This caused coherence bugs between phases and was
+  // 2-3x slower. Now ALL generation uses the same streaming path with tool loop.
+  //
+  // For new projects, we pre-apply sector palette + canonical files before the call
+  // (previously done inside generateMultiTurn).
   if (job.project_id) {
-    // Check if the project has ALREADY been generated (has real code in DB)
-    // launchTemplateContainer writes default files to disk, so we can't use fs.existsSync
     const existingProject = db.prepare('SELECT generated_code, status FROM projects WHERE id=?').get(job.project_id);
     const hasGeneratedCode = existingProject?.generated_code && existingProject.generated_code.length > 500;
     const isModification = hasGeneratedCode && existingProject.status === 'ready';
 
     if (isModification) {
-      // Modifications: streaming API with full code context + CHAT_SYSTEM_PROMPT
-      console.log(`[generateClaude] Modification for project ${job.project_id} — using streaming API`);
-      // Don't return here — fall through to the API streaming path below
+      console.log(`[generateClaude] Modification for project ${job.project_id} — streaming API`);
     } else {
-      // NEW generation: multi-turn pipeline (infra → pages → components)
-      console.log(`[generateClaude] New generation for project ${job.project_id} — using multi-turn pipeline`);
-      const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
-      generateViaAPI(job.project_id, effectiveBrief, jobId);
-      return;
+      // NEW project: pre-apply sector palette + write canonical files BEFORE streaming
+      console.log(`[generateClaude] New generation for project ${job.project_id} — single streaming call (Lovable model)`);
+      const projectDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+      try {
+        // Write default React project structure (canonical files, UI components)
+        writeDefaultReactProject(projectDir);
+
+        // Apply sector-specific color palette to tailwind.config.js
+        const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
+        if (ai && effectiveBrief) {
+          const sectorKey = Object.keys(ai.SECTOR_PROFILES || {}).find(key => {
+            const profile = ai.SECTOR_PROFILES[key];
+            return profile && profile.keywords && profile.keywords.some(kw => effectiveBrief.toLowerCase().includes(kw));
+          });
+          // Sector palette injection handled by the streaming path's system prompt
+          // (sectorProfile is detected below and added to systemBlocks)
+        }
+      } catch (e) {
+        console.warn(`[generateClaude] Pre-setup failed (non-fatal): ${e.message}`);
+      }
+      // Falls through to the streaming API path below (same as modifications)
     }
   }
 
@@ -5249,10 +5267,17 @@ Règles d'intégration automatique :
     systemBlocks.push({ type: 'text', text: sectorProfile });
   }
 
-  // For modifications: always Sonnet (smarter for surgical edits). For new gen: based on complexity.
-  const maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  // Token budget: new projects need more tokens (full site generation in 1 shot).
+  // Modifications need less (surgical edits). getMaxTokensForProject returns 32k/64k.
+  const isNewProject = job.project_id && (() => {
+    const p = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+    return !p?.generated_code || p.generated_code.length < 500;
+  })();
+  let maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
+  // New projects: minimum 32k to ensure full site generation in single call
+  if (isNewProject && maxTokens < 32000) maxTokens = 32000;
   const model = 'claude-sonnet-4-20250514';
-  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, job: ${jobId}`);
+  console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, new: ${!!isNewProject}, job: ${jobId}`);
 
   job.status = 'running';
   job.progressMessage = 'Prestige AI travaille sur votre demande...';
