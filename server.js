@@ -5528,6 +5528,101 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
         }
       }
 
+      // ── AUTO-INSTALL: detect imports of packages not in node_modules → npm install ──
+      // This is the DEFINITIVE fix for blank screens caused by missing packages.
+      // Instead of maintaining a hardcoded list of deps, we scan what Claude actually
+      // wrote and install anything missing. Like Lovable: zero config, always works.
+      if (job.project_id) {
+        try {
+          const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+          const containerName = getContainerName(job.project_id);
+          const isRunning = await isContainerRunningAsync(job.project_id);
+
+          if (isRunning) {
+            // Scan ALL .tsx/.ts/.jsx files for external imports
+            const externalImports = new Set();
+            const scanDir = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                const fp = path.join(dir, f.name);
+                if (f.isDirectory() && f.name !== 'node_modules' && f.name !== '.git') scanDir(fp);
+                else if (f.isFile() && /\.(tsx|ts|jsx|js)$/.test(f.name) && f.name !== 'vite.config.js') {
+                  try {
+                    const content = fs.readFileSync(fp, 'utf8');
+                    const importRe = /from\s+["']([^"'@./][^"']*)["']/g;
+                    let m;
+                    while ((m = importRe.exec(content)) !== null) {
+                      const dep = m[1];
+                      const base = dep.startsWith('@') ? dep.split('/').slice(0, 2).join('/') : dep.split('/')[0];
+                      externalImports.add(base);
+                    }
+                  } catch (_) {}
+                }
+              }
+            };
+            scanDir(path.join(projDir, 'src'));
+            if (fs.existsSync(path.join(projDir, 'server.js'))) {
+              try {
+                const srvContent = fs.readFileSync(path.join(projDir, 'server.js'), 'utf8');
+                const importRe = /require\s*\(\s*["']([^"'./][^"']*)["']\s*\)/g;
+                let m;
+                while ((m = importRe.exec(srvContent)) !== null) {
+                  const base = m[1].startsWith('@') ? m[1].split('/').slice(0, 2).join('/') : m[1].split('/')[0];
+                  externalImports.add(base);
+                }
+              } catch (_) {}
+            }
+
+            // Check which imports are NOT installed in the container
+            if (externalImports.size > 0) {
+              let installedPkgs;
+              try {
+                const lsOutput = execSync(
+                  `docker exec ${containerName} sh -c "ls node_modules/ 2>/dev/null | head -200"`,
+                  { timeout: 5000, encoding: 'utf8' }
+                );
+                // Also get scoped packages (@radix-ui/*, @hookform/*, etc.)
+                const scopedOutput = execSync(
+                  `docker exec ${containerName} sh -c "for d in node_modules/@*/; do ls \\$d 2>/dev/null | sed \\"s|^|\\$(basename \\$d)/|\\" ; done 2>/dev/null | head -200"`,
+                  { timeout: 5000, encoding: 'utf8' }
+                );
+                installedPkgs = new Set([
+                  ...lsOutput.split('\n').filter(Boolean),
+                  ...scopedOutput.split('\n').filter(Boolean).map(p => '@' + p)
+                ]);
+              } catch (_) {
+                installedPkgs = null; // can't check, skip
+              }
+
+              if (installedPkgs) {
+                // Node built-ins to skip
+                const BUILTINS = new Set(['fs','path','http','https','crypto','os','url','stream','util','events','child_process','net','tls','zlib','querystring','buffer','assert','cluster','dns','readline','string_decoder','timers','tty','v8','vm','worker_threads','perf_hooks','node']);
+                const toInstall = [];
+                for (const pkg of externalImports) {
+                  if (BUILTINS.has(pkg)) continue;
+                  if (installedPkgs.has(pkg)) continue;
+                  toInstall.push(pkg);
+                }
+
+                if (toInstall.length > 0) {
+                  job.progressMessage = `Installation de ${toInstall.length} package(s) manquant(s)...`;
+                  console.log(`[AutoInstall] Missing packages detected: ${toInstall.join(', ')}`);
+                  try {
+                    const installCmd = `docker exec ${containerName} npm install ${toInstall.join(' ')} --save --legacy-peer-deps 2>&1 | tail -5`;
+                    execSync(installCmd, { timeout: 120000, encoding: 'utf8' });
+                    console.log(`[AutoInstall] Installed: ${toInstall.join(', ')}`);
+                  } catch (installErr) {
+                    console.warn(`[AutoInstall] npm install failed: ${installErr.message}`);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`[AutoInstall] scan failed (non-fatal): ${e.message}`);
+        }
+      }
+
       // ── AUTO-FOLLOW-UP: Use GPT-4 Mini to verify completeness (GENERIC, UNLIMITED) ──
       // Instead of hardcoded checks, ask GPT-4 Mini: "the user asked X, the AI did Y, what's missing?"
       // This works for ANY feature, ANY complexity, ANY subject — no hardcoded keywords.
