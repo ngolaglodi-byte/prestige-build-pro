@@ -1716,9 +1716,8 @@ async function sendChatMessage(message) {
   if (pendingUpload) {
     const uploadPath = await uploadFileToProject(pendingUpload);
     if (uploadPath) {
-      // Path without leading slash = relative to Vite base (works with --base /run/{id}/)
-      const relativePath = uploadPath.startsWith('/') ? uploadPath.substring(1) : uploadPath;
-      const uploadInfo = `[INSTRUCTION OBLIGATOIRE : Un fichier a été uploadé → ${relativePath} (${(pendingUpload.size / 1024).toFixed(0)} KB)]\nUTILISE edit_file ou write_file MAINTENANT pour modifier le code et intégrer ce fichier.\nChemin à utiliser dans le code : "${relativePath}" (sans / au début).\nExemple : <img src="${relativePath}" /> ou style={{ backgroundImage: "url(${relativePath})" }}\n\n`;
+      const filename = uploadPath.split('/').pop();
+      const uploadInfo = `[INSTRUCTION OBLIGATOIRE : Un fichier a été uploadé dans le projet]\nFichier : ${filename} (${(pendingUpload.size / 1024).toFixed(0)} KB)\n\nPour l'utiliser dans le code, IMPORTE-LE puis utilise-le :\n\nimport uploadedImage from "@/assets/images/${filename}";\n// Puis dans le JSX :\n<img src={uploadedImage} alt="" className="w-full h-auto" />\n// OU pour un background :\n<div style={{ backgroundImage: \`url(\${uploadedImage})\` }}>\n\nUTILISE edit_file ou write_file MAINTENANT pour modifier le fichier concerné.\n\n`;
       msg = uploadInfo + (msg || `Utilise ce fichier (${uploadPath}) dans le site.`);
       // Show the image in chat as a user message
       if (pendingUpload.contentType.startsWith('image/')) {

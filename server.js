@@ -7210,6 +7210,7 @@ async function launchTemplateContainer(projectId) {
       Binds: [
         `${dataDir}:/app/data`,
         `${projectDir}/src:/app/src`,
+        `${projectDir}/public:/app/public`,
         `${projectDir}/server.js:/app/server.js`,
         `${projectDir}/index.html:/app/index.html`,
         `${projectDir}/tailwind.config.js:/app/tailwind.config.js`,
@@ -9515,20 +9516,27 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Save to project's public/images/ directory
+    // Save to BOTH public/images/ (Vite static) AND src/assets/images/ (Vite import)
+    // public/ is bind-mounted to the container — Vite serves it as static assets
+    // src/assets/ is also bind-mounted — Claude can import it for guaranteed path resolution
     const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
-    const imagesDir = path.join(projectDir, 'public', 'images');
-    if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
+    const publicImagesDir = path.join(projectDir, 'public', 'images');
+    const assetsImagesDir = path.join(projectDir, 'src', 'assets', 'images');
+    if (!fs.existsSync(publicImagesDir)) fs.mkdirSync(publicImagesDir, { recursive: true });
+    if (!fs.existsSync(assetsImagesDir)) fs.mkdirSync(assetsImagesDir, { recursive: true });
 
-    const filePath = path.join(imagesDir, sanitized);
+    const publicPath = path.join(publicImagesDir, sanitized);
+    const assetsPath = path.join(assetsImagesDir, sanitized);
     try {
-      fs.writeFileSync(filePath, buffer);
-      log('info', 'upload', 'file saved', {
+      fs.writeFileSync(publicPath, buffer);
+      fs.writeFileSync(assetsPath, buffer);
+      log('info', 'upload', 'file saved (public + assets)', {
         projectId, filename: sanitized, size: buffer.length, userId: user.id
       });
       json(res, 200, {
         ok: true,
         path: `/images/${sanitized}`,
+        assetPath: `@/assets/images/${sanitized}`,
         filename: sanitized,
         size: buffer.length,
         url: `/run/${projectId}/images/${sanitized}`
