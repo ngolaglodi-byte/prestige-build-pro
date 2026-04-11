@@ -197,6 +197,11 @@ button.card { padding: 0; }
 .chat-plan-btn { height: 40px; padding: 0 14px; background: transparent; border: 1px solid var(--gold); border-radius: var(--radius-md); color: var(--gold); cursor: pointer; font-family: var(--font-ui); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.03em; transition: var(--transition-fast); }
 .chat-plan-btn:hover { background: var(--gold-dim); }
 .chat-plan-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.agent-mode-toggle { display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 10px; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-muted); cursor: pointer; font-family: var(--font-ui); font-size: 0.75rem; font-weight: 500; transition: var(--transition-fast); user-select: none; }
+.agent-mode-toggle:hover { border-color: var(--gold); color: var(--text-primary); }
+.agent-mode-toggle.active { background: linear-gradient(135deg, rgba(212,168,32,0.15), rgba(212,168,32,0.05)); border-color: var(--gold); color: var(--gold); }
+.agent-mode-toggle .agent-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border-color); transition: var(--transition-fast); }
+.agent-mode-toggle.active .agent-dot { background: var(--gold); box-shadow: 0 0 6px var(--gold); animation: pulse 2s infinite; }
 .plan-box { border: 1px solid var(--gold); border-radius: var(--radius-md); padding: var(--space-md); background: rgba(212, 168, 32, 0.05); margin-top: 4px; }
 .plan-box-label { font-size: 0.7rem; color: var(--gold); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; font-weight: 600; }
 .plan-box h3 { margin: 14px 0 8px 0; color: var(--text-primary); font-size: 1rem; font-weight: 600; }
@@ -593,7 +598,7 @@ button.card { padding: 0; }
                 </div>
                 <div class="chat-suggestions" id="chat-suggestions"><span class="chat-suggestion" onclick="insertSuggestion('/couleurs ')">/couleurs</span><span class="chat-suggestion" onclick="insertSuggestion('/style ')">/style</span><span class="chat-suggestion" onclick="insertSuggestion('/section ')">/section</span><span class="chat-suggestion" onclick="insertSuggestion('/mobile')">/mobile</span><span class="chat-suggestion" onclick="insertSuggestion('/animations')">/animations</span><span class="chat-suggestion" onclick="insertSuggestion('/seo')">/seo</span><span class="chat-suggestion" onclick="insertSuggestion('/dark')">/dark</span><span class="chat-suggestion" onclick="insertSuggestion('/premium')">/premium</span></div>
                 <div class="upload-preview" id="chat-upload-preview"></div>
-                <div class="chat-input-row"><button class="chat-upload-btn" id="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="Uploader une image/logo dans le projet"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg><input type="file" id="chat-file-input" accept="image/*,.pdf,.svg" style="display:none;" /></button><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="3"></textarea><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
+                <div class="chat-input-row"><button class="chat-upload-btn" id="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="Uploader une image/logo dans le projet"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg><input type="file" id="chat-file-input" accept="image/*,.pdf,.svg" style="display:none;" /></button><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="3"></textarea><button class="agent-mode-toggle" id="agent-mode-toggle" onclick="toggleAgentMode()" title="Agent Mode : génération autonome avec validation automatique (plan → code → test → fix)"><span class="agent-dot"></span>Agent</button><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
                 <div style="margin-top:var(--space-sm);"><label class="btn btn-secondary" style="cursor:pointer;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Uploader une maquette<input type="file" id="image-upload" accept="image/*" style="display:none;"/></label></div>
               </div>
             </div>
@@ -821,6 +826,16 @@ let projectCredentials = null;
 // Tracks the in-flight generation/plan job so the Stop button can target it
 let currentJobId = null;
 let currentJobCancelled = false;
+let agentModeEnabled = false;
+
+function toggleAgentMode() {
+  agentModeEnabled = !agentModeEnabled;
+  const btn = document.getElementById('agent-mode-toggle');
+  btn.classList.toggle('active', agentModeEnabled);
+  btn.title = agentModeEnabled
+    ? 'Agent Mode ACTIVÉ : génération autonome (plan → code → test → fix)'
+    : 'Agent Mode : génération autonome avec validation automatique';
+}
 // Client-side message queue: messages typed while a job is running are queued
 // and auto-processed when the current job finishes. Reorderable + removable.
 const messageQueue = [];
@@ -1747,7 +1762,7 @@ async function sendChatMessage(message) {
   assistantDiv.style.cssText = 'max-width:95%;';
   assistantDiv.innerHTML = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
     <div style="width:8px;height:8px;background:var(--gold);border-radius:50%;animation:pulse 1.5s infinite;"></div>
-    <span style="color:var(--text-muted);font-size:0.85rem;" id="ai-status-text">Prestige AI analyse votre demande...</span>
+    <span style="color:var(--text-muted);font-size:0.85rem;" id="ai-status-text">${agentModeEnabled ? 'Agent Mode — planification autonome...' : 'Prestige AI analyse votre demande...'}</span>
   </div>
   <div id="ai-live-files" style="margin-top:4px;"></div>`;
   document.getElementById('chat-messages').appendChild(assistantDiv);
@@ -1756,10 +1771,12 @@ async function sendChatMessage(message) {
 
   try {
     // Start generation job
+    const genPayload = { project_id: currentProject.id, message: msg };
+    if (agentModeEnabled) genPayload.mode = 'agent';
     const startRes = await fetch('/api/generate/start', {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_id: currentProject.id, message: msg })
+      body: JSON.stringify(genPayload)
     });
     if (!startRes.ok) {
       const err = await startRes.json().catch(() => ({ error: 'Erreur de connexion' }));
@@ -2228,11 +2245,14 @@ function setGeneratingState(generating) {
   const status = document.getElementById('preview-status');
   if (generating) {
     status.className = 'preview-status generating';
-    status.innerHTML = '<span>Génération en cours...</span>';
+    status.innerHTML = agentModeEnabled ? '<span>Agent Mode — génération autonome...</span>' : '<span>Génération en cours...</span>';
   } else {
     status.className = 'preview-status';
     status.innerHTML = '<span>Prêt</span>';
   }
+  // Disable agent toggle during generation
+  const agentBtn = document.getElementById('agent-mode-toggle');
+  if (agentBtn) agentBtn.style.pointerEvents = generating ? 'none' : '';
 
   // Toggle the chat send button between paper-plane and stop-square icon
   const sendBtn = document.getElementById('chat-send-btn');

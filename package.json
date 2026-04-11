@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/utils.test.js && node tests/coherence.test.js && node tests/idempotent-copy.test.js && node tests/ai-eval.test.js",
+    "test": "vitest run && node tests/utils.test.js && node tests/coherence.test.js && node tests/idempotent-copy.test.js",
     "test:unit": "node tests/utils.test.js && node tests/coherence.test.js && node tests/idempotent-copy.test.js",
+    "test:vitest": "vitest run",
+    "test:watch": "vitest",
     "test:eval": "node tests/ai-eval.test.js",
+    "test:legacy": "node tests/utils.test.js && node tests/coherence.test.js && node tests/idempotent-copy.test.js",
     "setup-docker": "bash scripts/setup-docker.sh"
   },
   "dependencies": {
@@ -16,10 +19,13 @@
     "better-sqlite3": "^12.8.0",
     "dockerode": "^4.0.10",
     "jsonwebtoken": "^9.0.2",
-    "pdf-parse": "^1.1.1",
-    "mammoth": "^1.8.0"
+    "mammoth": "^1.8.0",
+    "pdf-parse": "^1.1.1"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.4"
   }
 }

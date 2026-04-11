@@ -1,22 +1,10 @@
 /*
  * PRESTIGE BUILD PRO - Server
- * 
- * ARCHITECTURE: Claude Code Server-Side Generation
+ *
+ * ARCHITECTURE: Modular server with dependency injection (AppContext).
  * ─────────────────────────────────────────────────────────────────
- * Code generation is handled by Claude Code running as a child process on the server.
- * Each project gets its own isolated directory: /data/projects/[project_id]/
- * 
- * Generation workflow:
- * 1. Create project directory /data/projects/[project_id]/
- * 2. Write BRIEF.md with the project brief
- * 3. Write CLAUDE.md with generation instructions
- * 4. Spawn Claude Code: claude --dangerously-skip-permissions --print [prompt]
- * 5. Claude Code generates files, tests, and creates READY file on success
- * 6. Server reads the generated files and starts Docker container
- * 
- * Security: Claude Code is isolated to the project directory via cwd parameter.
- * API usage: Direct Anthropic API calls are kept only for small non-generation 
- * operations like error auto-correction.
+ * Modules in src/ receive ctx (AppContext) instead of accessing globals.
+ * See src/context.js for shared state, src/config.js for constants.
  */
 
 const http = require('http');
@@ -28,202 +16,110 @@ const os = require('os');
 const { execSync, spawn } = require('child_process');
 const Dockerode = require('dockerode');
 
-// ─── #12 ENV VAR VALIDATION (fail fast if critical vars missing) ───
-const REQUIRED_ENV = ['ANTHROPIC_API_KEY'];
-const OPTIONAL_ENV = { PORT: '3000', DB_PATH: './prestige-pro.db', JWT_SECRET: null, DOCKER_PROJECTS_DIR: '/data/projects' };
-for (const key of REQUIRED_ENV) {
-  if (!process.env[key]) console.warn(`[Config] ⚠️  ${key} non défini — la génération IA ne fonctionnera pas`);
-}
+// ─── MODULAR IMPORTS ───
+const { validateEnv, MAX_CONCURRENT_GENERATIONS, MAX_AUTO_CORRECTION_ATTEMPTS, CONTAINER_MONITORING_INTERVAL,
+  SLEEP_TIMEOUT_MS, PREVIEW_RETENTION_MS, CLEANUP_INTERVAL_MS, MAX_CODE_DISPLAY_LENGTH,
+  CLAUDE_CODE_TIMEOUT_MS, API_MAX_RETRIES, MAX_COLLABORATORS_PER_PROJECT, TOKEN_PRICING,
+  ERROR_TYPES, API_ERROR_MESSAGES, ABSOLUTE_BROWSER_RULE, log } = require('./src/config');
+const { AppContext } = require('./src/context');
+const { MemoryCache } = require('./src/services/memory');
+const { initDatabase } = require('./src/services/database');
+const { Router } = require('./src/router');
 
-// ─── #9 GLOBAL ERROR HANDLERS + #18 GRACEFUL SHUTDOWN ───
+// ─── INITIALIZE CONTEXT ───
+const _config = validateEnv();
+const ctx = new AppContext(_config);
+ctx.cache = new MemoryCache();
+ctx.cache.startCleanup();
+
+// Initialize middleware (pass ctx)
+const authMiddleware = require('./src/middleware/auth')(ctx);
+const corsMiddleware = require('./src/middleware/cors')(ctx);
+const bodyMiddleware = require('./src/middleware/body')(ctx);
+const validationMiddleware = require('./src/middleware/validation')(ctx);
+const rateLimitMiddleware = require('./src/middleware/rate-limit')(ctx);
+const encryptionService = require('./src/services/encryption')(ctx);
+const sseService = require('./src/services/sse')(ctx);
+const tokenTrackingService = require('./src/services/token-tracking')(ctx);
+
+// ─── BACKWARDS-COMPAT ALIASES ───
+// These delegate to the modules so existing code in server.js keeps working
+// as we progressively extract more functions in Phase 2+3.
+const PORT = ctx.config.PORT;
+const ANTHROPIC_API_KEY = ctx.config.ANTHROPIC_API_KEY;
+const OPENAI_API_KEY = ctx.config.OPENAI_API_KEY;
+const JWT_SECRET = ctx.config.JWT_SECRET;
+const ENCRYPTION_KEY_RAW = ctx.config.ENCRYPTION_KEY_RAW;
+
+const cache = ctx.cache;
+const { signToken, verifyToken, getAuth } = authMiddleware;
+const { setCorsHeaders, setSecurityHeaders } = corsMiddleware;
+const { json, getBody } = bodyMiddleware;
+const { validateString, validateId, paginate, isPathSafe, isValidJson } = validationMiddleware;
+const { checkRateLimit } = rateLimitMiddleware;
+const { encryptValue, decryptValue } = encryptionService;
+const { notifyProjectClients, getProjectCollaborators, addSSEClient, removeSSEClient } = sseService;
+const { classifyComplexity, trackTokenUsage, checkUserQuota } = tokenTrackingService;
+
+// ─── NEW FEATURE SERVICES ───
+const containerExecService = require('./src/services/container-exec')(ctx);
+const conversationMemoryService = require('./src/services/conversation-memory')(ctx);
+const agentModeService = require('./src/services/agent-mode')(ctx);
+
+// Store services in ctx for cross-module access
+ctx.services.containerExec = containerExecService;
+ctx.services.conversationMemory = conversationMemoryService;
+ctx.services.agentMode = agentModeService;
+
+let activeGenerations = 0;
+
+// ─── GLOBAL ERROR HANDLERS + GRACEFUL SHUTDOWN ───
 process.on('uncaughtException', (err) => {
   console.error(`[FATAL] Erreur non gérée: ${err.message}`);
   console.error(err.stack);
-  // Exit so Docker/Coolify can restart us in a clean state
-  // Staying alive after uncaughtException = corrupted state
   setTimeout(() => process.exit(1), 1000);
 });
 process.on('unhandledRejection', (err) => {
   console.error(`[FATAL] Promise rejetée: ${err?.message || err}`);
   if (err?.stack) console.error(err.stack);
 });
-// Graceful shutdown — clean up on SIGTERM/SIGINT
 let shuttingDown = false;
 function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  ctx.shuttingDown = true;
   console.log(`[Shutdown] ${signal} received — closing gracefully...`);
-  // Close HTTP server (stop accepting new connections)
   if (typeof server !== 'undefined' && server.close) {
     server.close(() => console.log('[Shutdown] HTTP server closed'));
   }
-  // Close DB
   try { if (db) db.close(); console.log('[Shutdown] Database closed'); } catch(e) {}
-  // Exit after 10s max
   setTimeout(() => { console.log('[Shutdown] Forcing exit'); process.exit(0); }, 10000);
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// ─── #4 JOB QUEUE LIMIT (max concurrent AI generations) ───
-// Internal agency tool: 8GB RAM server allows up to 8 parallel generations
-// (covers a team of 5-20 devs working on multiple client projects in parallel).
-const MAX_CONCURRENT_GENERATIONS = 8;
-let activeGenerations = 0;
+const DB_PATH = ctx.config.DB_PATH;
+const PREVIEWS_DIR = ctx.config.PREVIEWS_DIR;
+const DOCKER_PROJECTS_DIR = ctx.config.DOCKER_PROJECTS_DIR;
+const DOCKER_NETWORK = ctx.config.DOCKER_NETWORK;
+const DOCKER_BASE_IMAGE = ctx.config.DOCKER_BASE_IMAGE;
+const ENCRYPT_KEY = ctx.config.ENCRYPT_KEY;
+const ENCRYPT_PREFIX = ctx.config.ENCRYPT_PREFIX;
+const DOCKER_HEALTH_TIMEOUT = ctx.config.DOCKER_HEALTH_TIMEOUT;
+const DOCKER_SOCKET_PATH = ctx.config.DOCKER_SOCKET_PATH;
 
-// ─── #10 STRUCTURED LOGGING ───
-function log(level, category, message, meta = {}) {
-  const entry = { timestamp: new Date().toISOString(), level, category, message, ...meta };
-  if (level === 'error') console.error(JSON.stringify(entry));
-  else console.log(JSON.stringify(entry));
-}
-
-// ─── #3 INPUT VALIDATION HELPERS ───
-function validateString(value, name, minLen = 1, maxLen = 10000) {
-  if (typeof value !== 'string') return `${name} doit être une chaîne de caractères`;
-  if (value.trim().length < minLen) return `${name} trop court (min ${minLen} caractères)`;
-  if (value.length > maxLen) return `${name} trop long (max ${maxLen} caractères)`;
-  return null;
-}
-function validateId(value, name = 'ID') {
-  const num = parseInt(value);
-  if (isNaN(num) || num < 1) return `${name} invalide`;
-  return null;
-}
-
-// ─── #7 PAGINATION HELPER ───
-function paginate(req) {
-  const urlParts = req.url.split('?');
-  const params = urlParts.length > 1 ? new URLSearchParams(urlParts[1]) : new URLSearchParams();
-  const page = Math.max(1, parseInt(params.get('page')) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(params.get('limit')) || 20));
-  const offset = (page - 1) * limit;
-  return { page, limit, offset };
-}
-
-// ─── #17 IN-MEMORY CACHE WITH TTL (Redis-like for single server) ───
-class MemoryCache {
-  constructor() { this._store = new Map(); }
-  get(key) {
-    const item = this._store.get(key);
-    if (!item) return null;
-    if (item.expiry && item.expiry < Date.now()) { this._store.delete(key); return null; }
-    return item.value;
-  }
-  set(key, value, ttlMs = 0) {
-    const expiry = ttlMs > 0 ? Date.now() + ttlMs : null;
-    this._store.set(key, { value, expiry });
-  }
-  del(key) { this._store.delete(key); }
-  has(key) { return this.get(key) !== null; }
-  // Cleanup expired entries every 5 minutes
-  startCleanup() {
-    setInterval(() => {
-      const now = Date.now();
-      for (const [key, item] of this._store) {
-        if (item.expiry && item.expiry < now) this._store.delete(key);
-      }
-    }, 5 * 60 * 1000);
-  }
-}
-const cache = new MemoryCache();
-cache.startCleanup();
-
-const PORT = process.env.PORT || 3000;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env['GPT-4_Mini'] || process.env.GPT4_MINI_KEY || '';
-
-// SECURITY: JWT_SECRET MUST be set via env var. No fallback.
-// A random fallback would invalidate all sessions on every restart AND make
-// encrypted data unreadable (because ENCRYPT_KEY is derived from JWT_SECRET).
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-  console.error('[FATAL] JWT_SECRET env var must be set (min 32 chars). Generate one with: openssl rand -hex 64');
-  process.exit(1);
-}
-const JWT_SECRET = process.env.JWT_SECRET;
-
-// SECURITY: Separate encryption key. If not set, derive from JWT_SECRET (backwards-compat).
-// Recommended: set ENCRYPTION_KEY explicitly so JWT rotation doesn't break encrypted data.
-const ENCRYPTION_KEY_RAW = process.env.ENCRYPTION_KEY || JWT_SECRET;
-if (ENCRYPTION_KEY_RAW.length < 32) {
-  console.error('[FATAL] ENCRYPTION_KEY (or JWT_SECRET fallback) must be at least 32 chars.');
-  process.exit(1);
-}
-
-const DB_PATH = process.env.DB_PATH || './prestige-pro.db';
-const PREVIEWS_DIR = process.env.PREVIEWS_DIR || '/tmp/previews';
-
-// Docker preview system constants
-const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
-const DOCKER_NETWORK = 'pbp-projects';
-const DOCKER_BASE_IMAGE = 'pbp-base';
-
-// ─── ENCRYPTION FOR SENSITIVE DATA AT REST ───
-// AES-256-GCM with explicit ENCRYPTION_KEY (or JWT_SECRET as fallback for backwards-compat).
-// IMPORTANT: ENCRYPTION_KEY must be stable across restarts — losing it = losing all encrypted data.
-const ENCRYPT_KEY = crypto.createHash('sha256').update(ENCRYPTION_KEY_RAW).digest();
-const ENCRYPT_PREFIX = 'enc:v1:';
-function encryptValue(text) {
-  if (text === null || text === undefined || text === '') return text;
-  const str = typeof text === 'string' ? text : String(text);
-  // Idempotent: don't double-encrypt
-  if (str.startsWith(ENCRYPT_PREFIX)) return str;
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
-  let enc = cipher.update(str, 'utf8', 'hex');
-  enc += cipher.final('hex');
-  const tag = cipher.getAuthTag().toString('hex');
-  return ENCRYPT_PREFIX + iv.toString('hex') + ':' + tag + ':' + enc;
-}
-function decryptValue(encrypted) {
-  if (encrypted === null || encrypted === undefined || encrypted === '') return encrypted;
-  if (typeof encrypted !== 'string') return encrypted;
-  // Legacy unencrypted data: return as-is
-  if (!encrypted.startsWith(ENCRYPT_PREFIX)) return encrypted;
-  try {
-    const payload = encrypted.slice(ENCRYPT_PREFIX.length);
-    const [ivHex, tagHex, enc] = payload.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const tag = Buffer.from(tagHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPT_KEY, iv);
-    decipher.setAuthTag(tag);
-    let dec = decipher.update(enc, 'hex', 'utf8');
-    dec += decipher.final('utf8');
-    return dec;
-  } catch (e) {
-    // Decryption failed — log but don't throw (data corrupted or wrong key)
-    console.error('[Encrypt] Failed to decrypt value:', e.message);
-    return null;
-  }
-}
-const DOCKER_HEALTH_TIMEOUT = 60000; // 60s max wait — Vite can take 30-45s to optimize deps on first start
-const DOCKER_SOCKET_PATH = process.env.DOCKER_SOCKET_PATH || '/var/run/docker.sock';
-
-// Dockerode client - communicates directly with Docker socket (no CLI dependency)
+// Dockerode client
 let docker = null;
 try {
   docker = new Dockerode({ socketPath: DOCKER_SOCKET_PATH });
+  ctx.docker = docker;
 } catch (e) {
   console.warn('Failed to initialize Dockerode client:', e.message);
 }
 
 // ─── ANTHROPIC API RATE LIMIT HANDLER ───
-const API_MAX_RETRIES = 5;
 const API_QUEUE = [];
 let apiRunning = false;
-
-// Human-readable error messages for each API status code
-const API_ERROR_MESSAGES = {
-  400: 'Requête invalide. Le brief contient peut-être des caractères non supportés.',
-  401: 'Clé API Anthropic invalide ou expirée. Contactez l\'administrateur.',
-  402: 'Crédit API épuisé. Le compte Anthropic doit être rechargé. Contactez l\'administrateur.',
-  403: 'Accès API refusé. Vérifiez les permissions de la clé API.',
-  404: 'Modèle API non trouvé. Contactez l\'administrateur.',
-  413: 'Le brief est trop long. Réduisez la taille de votre demande.',
-  429: 'API surchargée. Réessai automatique en cours...',
-  500: 'Erreur interne du serveur Anthropic. Réessayez dans quelques minutes.',
-  529: 'Serveur Anthropic surchargé. Réessai automatique en cours...'
-};
 
 function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 0) {
   // Defensive onError wrapper — anthropicRequest is called from many sites,
@@ -317,102 +213,12 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
   r.end();
 }
 
-// ─── TOKEN USAGE TRACKING ───
-// Pricing per million tokens (Claude Sonnet 4)
-const TOKEN_PRICING = {
-  'claude-sonnet-4-20250514': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 },
-  'default': { input: 3.00, output: 15.00, cache_read: 0.30, cache_write: 3.75 }
-};
+// Token tracking and quota — delegated to src/services/token-tracking.js (imported above)
 
-// Classify operation complexity for smart tracking
-function classifyComplexity(operation, inputTokens, outputTokens) {
-  const total = inputTokens + outputTokens;
-  if (operation === 'chat') return 'chat';
-  if (operation === 'auto-correct') return 'fix';
-  if (operation === 'generate-plan') return 'plan';
-  if (total < 5000) return 'simple';     // color change, text edit
-  if (total < 20000) return 'moderate';   // add component, modify page
-  if (total < 50000) return 'complex';    // full page, backend feature
-  return 'heavy';                          // full project generation
-}
+// Preview system constants — from src/config.js (imported above)
 
-function trackTokenUsage(userId, projectId, operation, model, usage) {
-  if (!db || !usage) return;
-  const inputTokens = usage.input_tokens || 0;
-  const outputTokens = usage.output_tokens || 0;
-  const cacheRead = usage.cache_read_input_tokens || 0;
-  const cacheWrite = usage.cache_creation_input_tokens || 0;
-
-  const pricing = TOKEN_PRICING[model] || TOKEN_PRICING['default'];
-  const costUsd = (
-    (inputTokens / 1_000_000) * pricing.input +
-    (outputTokens / 1_000_000) * pricing.output +
-    (cacheRead / 1_000_000) * pricing.cache_read +
-    (cacheWrite / 1_000_000) * pricing.cache_write
-  );
-  const complexity = classifyComplexity(operation, inputTokens, outputTokens);
-
-  try {
-    db.prepare('INSERT INTO token_usage (user_id, project_id, operation, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?,?)')
-      .run(userId || null, projectId || null, `${operation}:${complexity}`, model, inputTokens, outputTokens, cacheRead, cacheWrite, Math.round(costUsd * 100000) / 100000);
-    console.log(`[Tokens] ${operation}:${complexity} ${inputTokens}in+${outputTokens}out=$${costUsd.toFixed(4)} (u:${userId} p:${projectId})`);
-  } catch (e) {
-    console.error('[Tokens] Track error:', e.message);
-  }
-}
-
-// Check if user has exceeded their generation quota
-function checkUserQuota(userId) {
-  if (!db) return { allowed: true };
-  const user = db.prepare('SELECT role, daily_generation_limit, monthly_generation_limit FROM users WHERE id=?').get(userId);
-  if (!user) return { allowed: false, reason: 'Utilisateur non trouvé.' };
-  if (user.role === 'admin') return { allowed: true }; // admin = illimité
-
-  const dailyLimit = user.daily_generation_limit || 50;
-  const monthlyLimit = user.monthly_generation_limit || 500;
-
-  const todayCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation LIKE 'generate%' AND created_at >= date('now')").get(userId)?.c || 0;
-  const monthCount = db.prepare("SELECT COUNT(*) as c FROM token_usage WHERE user_id=? AND operation LIKE 'generate%' AND created_at >= date('now','start of month')").get(userId)?.c || 0;
-
-  if (todayCount >= dailyLimit) {
-    return { allowed: false, reason: `Limite quotidienne atteinte (${dailyLimit} générations/jour). Réessayez demain.`, daily: todayCount, dailyLimit };
-  }
-  if (monthCount >= monthlyLimit) {
-    return { allowed: false, reason: `Limite mensuelle atteinte (${monthlyLimit} générations/mois). Contactez l'administrateur.`, monthly: monthCount, monthlyLimit };
-  }
-  return { allowed: true, daily: todayCount, dailyLimit, monthly: monthCount, monthlyLimit, remaining: dailyLimit - todayCount };
-}
-
-// Preview system constants
-const PREVIEW_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-const MAX_CODE_DISPLAY_LENGTH = 50000; // 50KB max for fallback code display
-
-// ─── ERROR MANAGEMENT SYSTEM CONSTANTS ───
-const MAX_AUTO_CORRECTION_ATTEMPTS = 3;
-const CONTAINER_MONITORING_INTERVAL = 30000; // 30 seconds
-const SLEEP_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const containerLastAccess = new Map(); // projectId → timestamp
-const ERROR_TYPES = {
-  SYNTAX: 'syntax',
-  DEPENDENCY: 'dependency',
-  PORT: 'port',
-  SQLITE: 'sqlite',
-  MEMORY: 'memory',
-  TIMEOUT: 'timeout',
-  UNKNOWN: 'unknown'
-};
-
-// ─── ABSOLUTE RULE FOR REACT PROJECTS ───
-const ABSOLUTE_BROWSER_RULE = `RÈGLE ABSOLUE : Les projets générés utilisent React + Vite + TailwindCSS.
-- Les fichiers .tsx contiennent des composants React fonctionnels
-- Le styling se fait via TailwindCSS classes dans className
-- Les icônes via lucide-react — JAMAIS de CDN
-- Navigation via react-router-dom <Link> — JAMAIS window.location
-- Le package.json doit être du JSON strict avec "type": "module"
-- server.js sert dist/ en production après npm run build
-
-`;
+// Error management + browser rule — from src/config.js (imported above)
+const containerLastAccess = ctx.containerLastAccess;
 
 // Default valid package.json for fallback (React + Vite)
 const DEFAULT_PACKAGE_JSON = JSON.stringify({
@@ -675,11 +481,9 @@ export default function App() {
 }
 `;
 
-// In-memory tracking of auto-correction attempts per project
-const correctionAttempts = new Map();
-
-// In-memory tracking of projects being auto-corrected (to prevent concurrent corrections)
-const correctionInProgress = new Set();
+// In-memory tracking — from ctx
+const correctionAttempts = ctx.correctionAttempts;
+const correctionInProgress = ctx.correctionInProgress;
 
 // Ensure previews directory exists
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
@@ -690,118 +494,16 @@ try { ai = require('./src/ai'); } catch(e) {}
 try { coherence = require('./src/coherence'); } catch(e) { console.warn('[Init] coherence module not loaded:', e.message); }
 try { idempotentCopy = require('./src/idempotent-copy'); } catch(e) { console.warn('[Init] idempotent-copy module not loaded:', e.message); }
 
-// ─── DATABASE ───
+// ─── DATABASE (delegated to src/services/database.js) ───
 let db;
 try {
-  const Database = require('better-sqlite3');
-  db = new Database(DB_PATH);
-  // SQLite hardening — prevents corruption and concurrent access errors
-  db.pragma('journal_mode = WAL');       // Write-Ahead Logging — safe concurrent reads + crash protection
-  db.pragma('busy_timeout = 5000');      // Wait 5s if DB is locked instead of throwing SQLITE_BUSY
-  db.pragma('synchronous = NORMAL');     // Good balance of safety vs performance with WAL
-  db.pragma('foreign_keys = ON');        // Enforce foreign key constraints
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT NOT NULL, role TEXT DEFAULT 'agent', lang TEXT DEFAULT 'fr', created_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, title TEXT, client_name TEXT, project_type TEXT, brief TEXT, generated_code TEXT, status TEXT DEFAULT 'draft', is_published INTEGER DEFAULT 0, subdomain TEXT, domain TEXT, apis TEXT, notes TEXT, build_id TEXT, build_status TEXT DEFAULT 'none', build_url TEXT, version INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(user_id) REFERENCES users(id));
-    CREATE TABLE IF NOT EXISTS project_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, service TEXT NOT NULL, key_value TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS project_api_keys (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, env_name TEXT NOT NULL, env_value TEXT NOT NULL, service TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS github_config (id INTEGER PRIMARY KEY, github_token TEXT NOT NULL, github_username TEXT NOT NULL, github_org TEXT, updated_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message TEXT, type TEXT DEFAULT 'info', read INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS builds (id TEXT PRIMARY KEY, project_id INTEGER, status TEXT DEFAULT 'building', progress INTEGER DEFAULT 0, message TEXT, url TEXT, created_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, event_type TEXT NOT NULL, event_data TEXT, ip_address TEXT, user_agent TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS project_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, version_number INTEGER NOT NULL, generated_code TEXT, screenshot_url TEXT, created_by INTEGER, created_at TEXT DEFAULT (datetime('now')), message TEXT, FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS error_history (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, error_type TEXT NOT NULL, error_message TEXT, docker_logs TEXT, correction_attempt INTEGER DEFAULT 1, corrected INTEGER DEFAULT 0, corrected_code TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS token_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, project_id INTEGER, operation TEXT NOT NULL, model TEXT, input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0, cache_write_tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')));
-    CREATE TABLE IF NOT EXISTS workspaces (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_id INTEGER NOT NULL, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(owner_id) REFERENCES users(id));
-    CREATE TABLE IF NOT EXISTS workspace_members (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role TEXT DEFAULT 'editor', invited_by INTEGER, joined_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(workspace_id) REFERENCES workspaces(id), FOREIGN KEY(user_id) REFERENCES users(id), UNIQUE(workspace_id, user_id));
-    CREATE TABLE IF NOT EXISTS project_memory (project_id INTEGER PRIMARY KEY, content TEXT NOT NULL DEFAULT '', updated_at TEXT DEFAULT (datetime('now')), updated_by INTEGER, FOREIGN KEY(project_id) REFERENCES projects(id));
-    CREATE TABLE IF NOT EXISTS ai_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, user_id INTEGER NOT NULL, job_id TEXT, rating INTEGER NOT NULL, comment TEXT, created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY(project_id) REFERENCES projects(id), FOREIGN KEY(user_id) REFERENCES users(id));
-    CREATE INDEX IF NOT EXISTS idx_ai_feedback_project ON ai_feedback(project_id);
-    CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback(created_at);
-
-    -- SECURITY: append-only audit log of sensitive actions (login, delete, modify, etc.)
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      user_email TEXT,
-      action TEXT NOT NULL,
-      resource_type TEXT,
-      resource_id TEXT,
-      ip TEXT,
-      user_agent TEXT,
-      details TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id);
-    CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
-    CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
-  `);
-
-  // ─── AUDIT LOG HELPER ───
-  // Append-only logging of security-sensitive actions. Never throws (defensive).
-  global.auditLog = function(req, user, action, resourceType, resourceId, details) {
-    try {
-      const ip = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.connection?.remoteAddress || null;
-      const userAgent = req?.headers?.['user-agent']?.substring(0, 200) || null;
-      const detailsStr = details ? (typeof details === 'string' ? details : JSON.stringify(details).substring(0, 500)) : null;
-      db.prepare(
-        'INSERT INTO audit_log (user_id, user_email, action, resource_type, resource_id, ip, user_agent, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-      ).run(user?.id || null, user?.email || null, action, resourceType || null, resourceId ? String(resourceId) : null, ip, userAgent, detailsStr);
-    } catch (e) {
-      console.warn('[AuditLog] failed to log:', e.message);
-    }
-  };
-  const bcrypt = require('bcryptjs');
-  const ADMIN_EMAIL = 'admin@prestige-build.dev';
-  const ADMIN_PASSWORD = 'Prestige2026!';
-  const adminExists = db.prepare("SELECT id FROM users WHERE email=?").get(ADMIN_EMAIL);
-  if (!adminExists) {
-    db.prepare('INSERT INTO users (email,password,name,role) VALUES (?,?,?,?)').run(ADMIN_EMAIL, bcrypt.hashSync(ADMIN_PASSWORD, 12), 'Administrateur', 'admin');
-    console.log(`[DB] Admin account created: ${ADMIN_EMAIL}`);
-  } else {
-    // Always sync admin password on startup to prevent desync after redeploy
-    db.prepare('UPDATE users SET password=? WHERE email=?').run(bcrypt.hashSync(ADMIN_PASSWORD, 12), ADMIN_EMAIL);
-  }
-  // Log all users on startup (never touch agent passwords — they persist in the volume)
-  const allUsers = db.prepare('SELECT id, email, role FROM users').all();
-  console.log(`[DB] ${allUsers.length} user(s): ${allUsers.map(u => u.email + ' (' + u.role + ')').join(', ')}`);
+  db = initDatabase(ctx);
+  ctx.db = db;
 } catch(e) { console.error('DB:', e.message); }
 
-// Add missing columns (safe — ALTER TABLE errors silently if column exists)
-try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) { /* already exists */ }
-try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAULT 50'); } catch(e) { /* already exists */ }
-try { db.exec('ALTER TABLE users ADD COLUMN monthly_generation_limit INTEGER DEFAULT 500'); } catch(e) { /* already exists */ }
-try { db.exec('ALTER TABLE projects ADD COLUMN workspace_id INTEGER'); } catch(e) { /* already exists */ }
-
-// ─── #2 DATABASE INDEXES (performance on frequent queries) ───
-try { db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
-  CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
-  CREATE INDEX IF NOT EXISTS idx_projects_workspace ON projects(workspace_id);
-  CREATE INDEX IF NOT EXISTS idx_project_messages_project ON project_messages(project_id);
-  CREATE INDEX IF NOT EXISTS idx_analytics_project_type ON analytics(project_id, event_type);
-  CREATE INDEX IF NOT EXISTS idx_analytics_created ON analytics(created_at);
-  CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage(user_id, created_at);
-  CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(project_id);
-  CREATE INDEX IF NOT EXISTS idx_builds_project ON builds(project_id);
-  CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
-  CREATE INDEX IF NOT EXISTS idx_error_history_project ON error_history(project_id);
-  CREATE INDEX IF NOT EXISTS idx_project_versions_project ON project_versions(project_id);
-`); console.log('[DB] Indexes created/verified'); } catch(e) { console.warn('[DB] Index creation:', e.message); }
-
-// ─── #5 ANALYTICS RETENTION (cleanup old data > 90 days) ───
-try {
-  const deleted = db.prepare("DELETE FROM analytics WHERE created_at < datetime('now', '-90 days')").run();
-  if (deleted.changes > 0) console.log(`[DB] Cleaned ${deleted.changes} analytics records older than 90 days`);
-} catch(e) { /* ignore */ }
-
-// ─── SSE CLIENTS FOR REAL-TIME COLLABORATION ───
-const projectSSEClients = new Map(); // Map<projectId, Set<{res, userId, userName, connectedAt}>>
-const MAX_COLLABORATORS_PER_PROJECT = 20;
-
-// ─── JOBS MAP FOR POLLING-BASED GENERATION ───
-const generationJobs = new Map(); // Map<job_id, {status, code, error, progress, project_id, user_id}>
+// ─── SSE & JOBS — from ctx ───
+const projectSSEClients = ctx.projectSSEClients;
+const generationJobs = ctx.generationJobs;
 
 // ─── SITES DIRECTORY FOR PUBLISHED SITES ───
 const SITES_DIR = process.env.SITES_DIR || '/data/sites';
@@ -825,21 +527,7 @@ if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true
 const SCREENSHOTS_DIR = process.env.SCREENSHOTS_DIR || '/data/screenshots';
 if (!fs.existsSync(SCREENSHOTS_DIR)) { try { fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SCREENSHOTS_DIR:', e.message); } }
 
-// ─── PATH VALIDATION HELPER ───
-function isPathSafe(basePath, targetPath) {
-  const resolvedBase = path.resolve(basePath);
-  const resolvedTarget = path.resolve(targetPath);
-  return resolvedTarget.startsWith(resolvedBase + path.sep) || resolvedTarget === resolvedBase;
-}
-
-// ─── JSON VALIDATION HELPER ───
-function isValidJson(filePath) {
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    JSON.parse(content);
-    return true;
-  } catch { return false; }
-}
+// Path/JSON validation — delegated to src/middleware/validation.js (imported above)
 
 // ─── CADDY CUSTOM DOMAIN HELPER ───
 async function addCustomDomainToCaddy(customDomain, siteDir) {
@@ -852,64 +540,11 @@ async function addCustomDomainToCaddy(customDomain, siteDir) {
   return { success: true, domain: customDomain };
 }
 
-// ─── AUTH ───
-function signToken(p) {
-  const h=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url');
-  // Internal agency tool: 7-day expiry (was 24h) to avoid daily re-login for the team.
-  // Existing tokens keep their original 24h expiry until they naturally expire.
-  const b=Buffer.from(JSON.stringify({...p,exp:Math.floor(Date.now()/1000)+86400*7})).toString('base64url'); // 7d expiry
-  const s=crypto.createHmac('sha256',JWT_SECRET).update(`${h}.${b}`).digest('base64url');
-  return `${h}.${b}.${s}`;
-}
-function verifyToken(t) {
-  if(!t) return null;
-  try {
-    const [h,b,s]=t.split('.');
-    if(crypto.createHmac('sha256',JWT_SECRET).update(`${h}.${b}`).digest('base64url')!==s) return null;
-    const p=JSON.parse(Buffer.from(b,'base64url').toString());
-    return p.exp<Math.floor(Date.now()/1000)?null:p;
-  } catch{return null;}
-}
-function getAuth(req) {
-  // Check Authorization header first
-  const headerToken = (req.headers['authorization']||'').replace('Bearer ','');
-  // #8 Check token blacklist (logout)
-  if (headerToken && global._tokenBlacklist?.has(headerToken)) return null;
-  if (headerToken) return verifyToken(headerToken);
-  // Check query string (for SSE and initial iframe load)
-  const urlParts = req.url.split('?');
-  if (urlParts.length > 1) {
-    const params = new URLSearchParams(urlParts[1]);
-    const queryToken = params.get('token');
-    if (queryToken) return verifyToken(queryToken);
-  }
-  // Check cookie (for iframe sub-requests: CSS, JS, fetch, images)
-  const cookies = req.headers.cookie || '';
-  const cookieMatch = cookies.match(/(?:^|;\s*)pbp_token=([^;]+)/);
-  if (cookieMatch) return verifyToken(cookieMatch[1]);
-  return null;
-}
-function json(res,code,data) { res.writeHead(code,{'Content-Type':'application/json'}); res.end(JSON.stringify(data)); }
+// ─── AUTH, JSON, CORS, BODY ───
+// Delegated to src/middleware/ (imported above as authMiddleware, corsMiddleware, bodyMiddleware)
+// Backwards-compat: keep cors() function name used in server handler
 function cors(res) {
-  // Allow only our own domain + localhost for development
-  const allowedOrigins = process.env.CORS_ORIGIN || 'https://app.prestige-build.dev';
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigins);
-  res.setHeader('Access-Control-Allow-Methods','GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-}
-function getBody(req, maxSize = 5 * 1024 * 1024) {
-  return new Promise(r => {
-    let b = '';
-    let size = 0;
-    req.on('data', c => {
-      size += c.length;
-      if (size > maxSize) { req.destroy(); r({}); return; }
-      b += c;
-    });
-    req.on('end', () => { try { r(JSON.parse(b)); } catch { r({}); } });
-    req.on('error', () => r({}));
-  });
+  corsMiddleware.setCorsHeaders(res);
 }
 
 // ─── STREAM CLAUDE ───
@@ -1227,8 +862,7 @@ function writeDefaultReactProject(projectDir) {
 // Track active Claude Code processes per project
 const claudeCodeProcesses = new Map();
 
-// Timeout for Claude API calls (10 minutes — complex projects need time)
-const CLAUDE_CODE_TIMEOUT_MS = 10 * 60 * 1000;
+// CLAUDE_CODE_TIMEOUT_MS imported from src/config.js
 
 // Check if Claude Code CLI is available on this system
 let _claudeCodeAvailable = null;
@@ -1815,7 +1449,20 @@ const CODE_TOOLS = [
       },
       required: ['prompt', 'save_path']
     }
-  }
+  },
+  // ─── NEW TOOLS (Agent Mode) ───
+  {
+    name: 'run_command',
+    description: 'Execute a shell command inside the project container. Allowed: node, npm, npx, cat, ls, pwd, grep, find. Use for testing builds, installing packages, or running scripts. Returns stdout/stderr.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to run (e.g. "npm run build", "node --check server.js", "ls src/components/")' },
+        cwd: { type: 'string', description: 'Working directory inside container (default: /app)' }
+      },
+      required: ['command']
+    }
+  },
 ];
 
 // ─── TOOL EXECUTION HANDLERS ───
@@ -2085,6 +1732,26 @@ function executeServerTool(toolName, toolInput) {
     // Handled above in the generate_image block
   }
 
+  // ─── RUN COMMAND IN CONTAINER (Agent Mode) ───
+  if (toolName === 'run_command' && toolInput.command) {
+    return (async () => {
+      try {
+        const result = await containerExecService.execInContainer(
+          toolInput._projectId || toolInput.project_id,
+          toolInput.command,
+          { cwd: toolInput.cwd }
+        );
+        let output = '';
+        if (result.stdout) output += result.stdout;
+        if (result.stderr) output += (output ? '\n\nSTDERR:\n' : '') + result.stderr;
+        if (result.timedOut) output += '\n\n[TIMEOUT]';
+        return output || '(no output)';
+      } catch(e) {
+        return `Erreur: ${e.message}`;
+      }
+    })();
+  }
+
   if (toolName === 'enable_stripe' && toolInput.project_id && db) {
     const keyName = toolInput.stripe_key_name || 'STRIPE_SECRET_KEY';
     try {
@@ -2250,7 +1917,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images', 'generate_image'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images', 'generate_image', 'run_command'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -6140,33 +5807,7 @@ function saveProjectVersion(projectId, code, userId, message) {
   } catch(e) { console.error('Version save error:', e.message); return null; }
 }
 
-// ─── NOTIFY SSE CLIENTS ───
-function notifyProjectClients(projectId, event, data, excludeUserId = null) {
-  const clients = projectSSEClients.get(projectId);
-  if (!clients) return;
-  const dead = [];
-  clients.forEach(client => {
-    if (excludeUserId && client.userId === excludeUserId) return;
-    try {
-      client.res.write(`data: ${JSON.stringify({ type: event, ...data, timestamp: Date.now() })}\n\n`);
-    } catch(e) { dead.push(client); }
-  });
-  // Clean dead connections
-  dead.forEach(c => clients.delete(c));
-}
-
-// Get list of users currently connected to a project
-function getProjectCollaborators(projectId) {
-  const clients = projectSSEClients.get(projectId);
-  if (!clients || clients.size === 0) return [];
-  const seen = new Map();
-  clients.forEach(c => {
-    if (!seen.has(c.userId)) {
-      seen.set(c.userId, { userId: c.userId, userName: c.userName, connectedAt: c.connectedAt });
-    }
-  });
-  return Array.from(seen.values());
-}
+// ─── NOTIFY SSE CLIENTS — delegated to src/services/sse.js (imported above) ───
 
 // ─── INJECT TRACKING SCRIPT INTO GENERATED CODE ───
 function injectTrackingScript(html, projectId, subdomain) {
@@ -9169,7 +8810,7 @@ const server = http.createServer(async (req, res) => {
 
   // ─── GENERATE START (POLLING) ───
   if (url==='/api/generate/start' && req.method==='POST') {
-    const {project_id, message, skip_clarification}=await getBody(req);
+    const {project_id, message, skip_clarification, mode}=await getBody(req);
 
     // #3 Validate input
     if (!message || typeof message !== 'string' || message.trim().length < 3) {
@@ -9271,13 +8912,14 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // Load persistent project memory (best-effort, never blocks)
+    // Load persistent project memory + conversation summaries (best-effort, never blocks)
     let projectMemory = null;
     if (project_id) {
       try {
-        const row = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(project_id);
-        if (row && row.content && row.content.trim().length > 0) projectMemory = row.content;
-      } catch (e) { /* table may not exist on first run, fail silent */ }
+        // Combine project memory with conversation summaries
+        const memoryBlock = conversationMemoryService.buildConversationMemoryBlock(project_id);
+        if (memoryBlock && memoryBlock.trim().length > 0) projectMemory = memoryBlock;
+      } catch (e) { /* fail silent */ }
     }
 
     const messages = ai ? ai.buildConversationContext(project, history, userMsg, projectKeys, llmSelectedFiles, projectMemory) : [{role:'user', content: userMsg}];
@@ -9300,10 +8942,31 @@ const server = http.createServer(async (req, res) => {
         job.status = 'error';
         job.error = e.message;
       }
+    } else if (mode === 'agent') {
+      // ─── AGENT MODE: autonomous plan/execute/validate/fix loop ───
+      activeGenerations++;
+      const agentProject = project || { id: project_id, title: '', project_type: '', brief: message };
+      agentModeService.runAgentLoop(jobId, user, agentProject, message, {
+        callClaudeAPI,
+        tools: CODE_TOOLS,
+        containerExec: containerExecService,
+        readProjectFiles: readProjectFilesRecursive,
+        formatProjectCode
+      }).finally(() => { activeGenerations--; });
+
+      // Auto-summarize conversation in background
+      if (project_id) {
+        conversationMemoryService.autoSummarizeIfNeeded(project_id).catch(() => {});
+      }
     } else {
       // Code mode: full generation pipeline
       activeGenerations++;
       generateClaude(messages, jobId, brief);
+
+      // Auto-summarize conversation in background
+      if (project_id) {
+        conversationMemoryService.autoSummarizeIfNeeded(project_id).catch(() => {});
+      }
     }
     return;
   }
@@ -11714,6 +11377,26 @@ export default defineConfig({
     const projectId = parseInt(url.split('/')[3]);
     notifyProjectClients(projectId, 'user_typing', { userName: user.name, userId: user.id }, user.id);
     json(res, 200, { ok: true });
+    return;
+  }
+
+  // ─── PROJECT MEMORY API ───
+  if (url.match(/^\/api\/projects\/\d+\/memory$/) && req.method==='GET') {
+    const projectId = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const memory = conversationMemoryService.getProjectMemory(projectId);
+    const summaries = conversationMemoryService.getConversationSummaries(projectId);
+    json(res, 200, { memory: memory || '', summaries });
+    return;
+  }
+  if (url.match(/^\/api\/projects\/\d+\/memory$/) && req.method==='PUT') {
+    const projectId = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé.' }); return; }
+    const { content } = await getBody(req);
+    const ok = conversationMemoryService.setProjectMemory(projectId, content || '', user.id);
+    json(res, ok ? 200 : 500, ok ? { ok: true } : { error: 'Erreur sauvegarde mémoire' });
     return;
   }
 
