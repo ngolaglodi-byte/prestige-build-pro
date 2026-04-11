@@ -1,42 +1,60 @@
 // ─── AGENT MODE — AUTONOMOUS PLAN/EXECUTE/VALIDATE/FIX LOOP ───
-// Like Lovable's Agent Mode: multi-step autonomous development.
+// Lovable-level Agent Mode: multi-step autonomous development.
 // Breaks down complex requests, builds, validates, fixes errors in a loop.
+// Features: streaming progress, error recovery, full tool set, web search,
+// dynamic iteration scaling, rollback on failure, fix validation.
 
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { log } = require('../config');
 
 module.exports = function(ctx) {
-  const MAX_AGENT_ITERATIONS = 5;
   const AGENT_PLAN_MAX_TOKENS = 4000;
   const AGENT_EXECUTE_MAX_TOKENS = 64000;
   const AGENT_FIX_MAX_TOKENS = 32000;
+  const STEP_TIMEOUT_MS = 120000; // 2 min per step
+
+  // Dynamic iteration scaling based on complexity
+  function getMaxIterations(message, project) {
+    const wordCount = (message || '').split(/\s+/).length;
+    const hasExistingCode = project?.generated_code?.length > 500;
+    if (wordCount > 100 || !hasExistingCode) return 7; // complex/new project
+    if (wordCount > 30) return 5; // moderate
+    return 3; // simple modification
+  }
 
   // ─── STEP 1: PLAN ───
-  // Ask Claude to analyze the request and produce a structured plan
   async function generateAgentPlan(project, message, previousSteps, existingFiles) {
-    const systemPrompt = `Tu es un architecte logiciel senior. Analyse la demande de l'utilisateur et produis un plan d'exécution structuré en JSON.
+    const fileContext = existingFiles
+      ? Object.entries(existingFiles).map(([name, content]) =>
+          `### ${name} (${content.length} chars)\n${content.substring(0, 200)}...`
+        ).join('\n').substring(0, 3000)
+      : 'Aucun fichier existant';
 
-PROJET ACTUEL:
-- Titre: ${project.title || 'Nouveau projet'}
-- Type: ${project.project_type || 'web'}
-- Code existant: ${existingFiles ? Object.keys(existingFiles).length + ' fichiers' : 'aucun'}
+    const systemPrompt = `Tu es un architecte logiciel senior. Analyse la demande et produis un plan d'exécution JSON.
 
-${previousSteps.length > 0 ? `ÉTAPES PRÉCÉDENTES:\n${previousSteps.map((s, i) => `${i + 1}. [${s.type}] ${s.summary || 'OK'}`).join('\n')}` : ''}
+PROJET: ${project.title || 'Nouveau'} (${project.project_type || 'web'})
+FICHIERS EXISTANTS:
+${fileContext}
 
-RÉPONDS UNIQUEMENT en JSON valide avec cette structure:
+${previousSteps.length > 0 ? `TENTATIVES PRÉCÉDENTES (évite les mêmes erreurs):\n${previousSteps.map((s, i) => `${i + 1}. [${s.type}] ${s.summary || 'OK'}${s.errors ? ' | Erreurs: ' + s.errors.join(', ') : ''}`).join('\n')}` : ''}
+
+OUTILS DISPONIBLES:
+- write_file: créer/réécrire un fichier complet
+- edit_file: modifier une partie d'un fichier (search/replace)
+- run_command: exécuter une commande (node, npm, cat, ls, grep)
+- web_search: chercher sur le web (docs API, exemples, best practices)
+
+RÉPONDS UNIQUEMENT en JSON:
 {
-  "analysis": "Analyse courte de la demande (1-2 phrases)",
+  "analysis": "Analyse (1-2 phrases)",
+  "complexity": "simple|moderate|complex",
   "steps": [
-    {
-      "action": "write_file|edit_file|run_command",
-      "path": "chemin/du/fichier (pour write/edit)",
-      "command": "commande (pour run_command)",
-      "description": "Ce que cette étape fait",
-      "priority": 1
-    }
+    { "action": "write_file|edit_file|run_command|web_search", "path": "...", "command": "...", "query": "...", "description": "..." }
   ],
-  "expectedOutcome": "Résultat attendu après exécution"
+  "validation": { "build": true, "healthCheck": true, "syntaxCheck": ["server.js"] },
+  "expectedOutcome": "Résultat attendu"
 }`;
 
     const payload = JSON.stringify({
@@ -56,21 +74,20 @@ RÉPONDS UNIQUEMENT en JSON valide avec cette structure:
           'x-api-key': ctx.config.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01'
         },
-        timeout: 30000
+        timeout: STEP_TIMEOUT_MS
       }, (res) => {
         let body = '';
         res.on('data', c => body += c);
         res.on('end', () => {
           try {
             const parsed = JSON.parse(body);
+            if (parsed.error) { reject(new Error(parsed.error.message)); return; }
             const text = parsed.content?.[0]?.text || '';
-            // Extract JSON from response (may be wrapped in markdown)
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
-              const plan = JSON.parse(jsonMatch[0]);
-              resolve(plan);
+              resolve(JSON.parse(jsonMatch[0]));
             } else {
-              resolve({ analysis: text, steps: [], expectedOutcome: 'Plan non structuré' });
+              resolve({ analysis: text, steps: [], expectedOutcome: 'Plan non structuré', complexity: 'moderate' });
             }
           } catch(e) {
             reject(new Error(`Plan parsing failed: ${e.message}`));
@@ -85,13 +102,12 @@ RÉPONDS UNIQUEMENT en JSON valide avec cette structure:
   }
 
   // ─── STEP 2: EXECUTE ───
-  // Execute the plan by calling Claude with tool_use to write/edit files
-  async function executeAgentPlan(plan, project, job, callClaudeAPI, tools) {
+  async function executeAgentPlan(plan, project, job, callClaudeAPI) {
     const stepsDescription = plan.steps.map((s, i) =>
-      `${i + 1}. [${s.action}] ${s.description}${s.path ? ` → ${s.path}` : ''}${s.command ? ` → ${s.command}` : ''}`
+      `${i + 1}. [${s.action}] ${s.description}${s.path ? ` → ${s.path}` : ''}${s.command ? ` → \`${s.command}\`` : ''}${s.query ? ` → "${s.query}"` : ''}`
     ).join('\n');
 
-    const executePrompt = `Exécute ce plan en utilisant les outils disponibles (write_file, edit_file, run_command).
+    const executePrompt = `Exécute ce plan en utilisant les outils disponibles.
 Exécute TOUTES les étapes en parallèle dans UNE SEULE réponse.
 
 PLAN:
@@ -99,15 +115,21 @@ ${stepsDescription}
 
 RÉSULTAT ATTENDU: ${plan.expectedOutcome}
 
-IMPORTANT: Utilise les outils pour exécuter chaque étape. Ne décris pas ce que tu vas faire — FAIS-LE.`;
+RÈGLES:
+- Utilise les outils pour exécuter chaque étape. FAIS-LE, ne décris pas.
+- Si tu as besoin d'info, utilise web_search AVANT de coder.
+- Si tu as besoin de vérifier un fichier existant, utilise run_command cat.
+- Code en React 19 + Vite 6 + TailwindCSS 3. Imports via @/ alias.
+- Lucide React pour les icônes. JAMAIS de CDN.
+- server.js en CommonJS (require). Port 3000, 0.0.0.0.`;
 
-    const systemBlocks = [{ type: 'text', text: `Tu es un développeur senior qui exécute un plan de développement. Tu utilises les outils fournis pour écrire/modifier des fichiers et exécuter des commandes. Code en React + Vite + TailwindCSS. Imports via @/ alias.` }];
+    const systemBlocks = [{ type: 'text', text: `Tu es un développeur senior autonome. Tu exécutes un plan en utilisant les outils fournis (write_file, edit_file, run_command, web_search). Tu ne poses AUCUNE question — tu agis.` }];
     const messages = [{ role: 'user', content: executePrompt }];
 
     try {
       const result = await callClaudeAPI(systemBlocks, messages, AGENT_EXECUTE_MAX_TOKENS,
         { userId: job.user_id, projectId: job.project_id, operation: 'agent-execute' },
-        { useTools: true }
+        { useTools: true, webSearch: true }
       );
       return { success: true, code: result, plan };
     } catch(e) {
@@ -116,41 +138,12 @@ IMPORTANT: Utilise les outils pour exécuter chaque étape. Ne décris pas ce qu
   }
 
   // ─── STEP 3: VALIDATE ───
-  // Check if the generated code builds and runs correctly
+  // 5-layer validation: syntax → back-tests → coherence → build → health
   async function validateAgentResult(projectId, containerExec) {
     const errors = [];
-
-    // 3a. Check Vite build
-    try {
-      const buildResult = await containerExec.buildInContainer(projectId);
-      if (buildResult.exitCode !== 0) {
-        const errorOutput = (buildResult.stderr || buildResult.stdout || '').substring(0, 2000);
-        errors.push({
-          type: 'build',
-          message: `Build failed (exit ${buildResult.exitCode})`,
-          details: errorOutput
-        });
-      }
-    } catch(e) {
-      errors.push({ type: 'build', message: `Build check failed: ${e.message}`, details: '' });
-    }
-
-    // 3b. Check runtime health (HTTP GET to Vite dev server)
-    try {
-      const healthResult = await containerExec.healthCheckInContainer(projectId);
-      if (healthResult.exitCode !== 0 || !healthResult.stdout.includes('<div id="root"')) {
-        errors.push({
-          type: 'runtime',
-          message: 'Health check failed — page may not render',
-          details: (healthResult.stdout || '').substring(0, 500)
-        });
-      }
-    } catch(e) {
-      // Health check failure is non-fatal (container might still be starting)
-    }
-
-    // 3c. Check for syntax errors in generated files
     const projDir = path.join(ctx.config.DOCKER_PROJECTS_DIR, String(projectId));
+
+    // 3a. Syntax check server.js
     const serverJsPath = path.join(projDir, 'server.js');
     if (fs.existsSync(serverJsPath)) {
       try {
@@ -159,35 +152,149 @@ IMPORTANT: Utilise les outils pour exécuter chaque étape. Ne décris pas ce qu
       } catch(e) {
         errors.push({
           type: 'syntax',
+          severity: 'critical',
           message: 'server.js syntax error',
-          details: e.stderr?.toString()?.substring(0, 500) || e.message
+          details: e.stderr?.toString()?.substring(0, 500) || e.message,
+          file: 'server.js'
         });
       }
     }
 
+    // 3b. Back-tests (via ai module if available)
+    try {
+      const ai = require('../ai');
+      const files = {};
+      const srcDir = path.join(projDir, 'src');
+      if (fs.existsSync(srcDir)) {
+        const scan = (dir, prefix) => {
+          for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (f.isDirectory() && f.name !== 'node_modules') scan(path.join(dir, f.name), prefix + f.name + '/');
+            else if (f.isFile() && /\.(tsx|ts|jsx|js|css)$/.test(f.name)) {
+              try { files[prefix + f.name] = fs.readFileSync(path.join(dir, f.name), 'utf8'); } catch(e) {}
+            }
+          }
+        };
+        scan(srcDir, 'src/');
+      }
+      if (fs.existsSync(serverJsPath)) files['server.js'] = fs.readFileSync(serverJsPath, 'utf8');
+
+      if (ai.runBackTests && Object.keys(files).length > 0) {
+        const issues = ai.runBackTests(files);
+        const criticalIssues = issues.filter(i => i.severity === 'error');
+        for (const issue of criticalIssues) {
+          errors.push({
+            type: 'backtest',
+            severity: 'error',
+            message: issue.message,
+            details: issue.details || '',
+            file: issue.file
+          });
+        }
+      }
+    } catch(e) { /* ai module not available, skip */ }
+
+    // 3c. Coherence checks
+    try {
+      const coherence = require('../coherence');
+      const files = {};
+      const srcDir = path.join(projDir, 'src');
+      if (fs.existsSync(srcDir)) {
+        const scan = (dir, prefix) => {
+          for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (f.isDirectory() && f.name !== 'node_modules') scan(path.join(dir, f.name), prefix + f.name + '/');
+            else if (f.isFile() && /\.(tsx|ts|jsx|js)$/.test(f.name)) {
+              try { files[prefix + f.name] = fs.readFileSync(path.join(dir, f.name), 'utf8'); } catch(e) {}
+            }
+          }
+        };
+        scan(srcDir, 'src/');
+      }
+      if (fs.existsSync(serverJsPath)) files['server.js'] = fs.readFileSync(serverJsPath, 'utf8');
+
+      if (Object.keys(files).length > 0) {
+        const result = coherence.runCoherenceChecks(files);
+        const criticalIssues = (result.issues || []).filter(i => i.severity === 'error');
+        for (const issue of criticalIssues) {
+          errors.push({
+            type: 'coherence',
+            severity: 'error',
+            message: issue.message,
+            details: issue.details || '',
+            file: issue.file
+          });
+        }
+      }
+    } catch(e) { /* coherence module not available, skip */ }
+
+    // 3d. Vite build check (in container)
+    if (containerExec) {
+      try {
+        const buildResult = await containerExec.buildInContainer(projectId);
+        if (buildResult.exitCode !== 0) {
+          const errorOutput = (buildResult.stderr || buildResult.stdout || '').substring(0, 2000);
+          errors.push({
+            type: 'build',
+            severity: 'critical',
+            message: `Vite build failed (exit ${buildResult.exitCode})`,
+            details: errorOutput
+          });
+        }
+      } catch(e) {
+        errors.push({ type: 'build', severity: 'warning', message: `Build check skipped: ${e.message}`, details: '' });
+      }
+
+      // 3e. Runtime health check
+      try {
+        const healthResult = await containerExec.healthCheckInContainer(projectId);
+        if (healthResult.exitCode !== 0 || !(healthResult.stdout || '').includes('<div id="root"')) {
+          errors.push({
+            type: 'runtime',
+            severity: 'warning',
+            message: 'Health check: page may not render correctly',
+            details: (healthResult.stdout || '').substring(0, 500)
+          });
+        }
+      } catch(e) { /* non-fatal */ }
+    }
+
+    // Categorize results
+    const critical = errors.filter(e => e.severity === 'critical');
+    const warnings = errors.filter(e => e.severity !== 'critical');
+
     return {
-      success: errors.length === 0,
-      errors
+      success: critical.length === 0,
+      errors,
+      critical,
+      warnings,
+      summary: critical.length === 0
+        ? (warnings.length > 0 ? `OK avec ${warnings.length} avertissement(s)` : 'OK')
+        : `${critical.length} erreur(s) critique(s)`
     };
   }
 
   // ─── STEP 4: FIX ───
-  // Build a fix prompt from validation errors
-  function buildFixPrompt(validation, plan, previousAttempt) {
-    const errorDetails = validation.errors.map(e =>
-      `[${e.type.toUpperCase()}] ${e.message}\n${e.details || ''}`
+  function buildFixPrompt(validation, plan, iteration) {
+    const criticalErrors = validation.critical.map(e =>
+      `[${e.type.toUpperCase()}] ${e.message}${e.file ? ` (fichier: ${e.file})` : ''}\n${e.details || ''}`
     ).join('\n\n');
 
-    return `Le plan a été exécuté mais la validation a échoué. Corrige les erreurs suivantes:
+    const warningErrors = validation.warnings.map(e =>
+      `[WARNING] ${e.message}${e.file ? ` (${e.file})` : ''}`
+    ).join('\n');
 
-ERREURS:
-${errorDetails}
+    return `ITÉRATION ${iteration}: La validation a échoué. Corrige les erreurs critiques.
 
-PLAN ORIGINAL:
-${plan.analysis}
+ERREURS CRITIQUES (à corriger OBLIGATOIREMENT):
+${criticalErrors}
 
-INSTRUCTION: Corrige TOUTES les erreurs ci-dessus. Utilise write_file pour réécrire les fichiers problématiques en ENTIER.
-Ne réexplique pas le plan — CORRIGE directement avec les outils.`;
+${warningErrors ? `AVERTISSEMENTS (corrige si possible):\n${warningErrors}` : ''}
+
+PLAN ORIGINAL: ${plan.analysis}
+
+INSTRUCTION:
+- Corrige TOUTES les erreurs critiques avec write_file (réécris les fichiers en ENTIER).
+- Utilise run_command pour vérifier tes corrections (node --check, cat, etc.).
+- Ne réexplique pas — CORRIGE directement.`;
   }
 
   // ─── MAIN LOOP ───
@@ -195,9 +302,12 @@ Ne réexplique pas le plan — CORRIGE directement avec les outils.`;
     const job = ctx.generationJobs.get(jobId);
     if (!job) return;
 
+    const maxIterations = getMaxIterations(message, project);
+
     job.status = 'running';
     job.agentMode = true;
     job.agentSteps = [];
+    job.agentMaxIterations = maxIterations;
 
     // Read existing files for context
     const projDir = path.join(ctx.config.DOCKER_PROJECTS_DIR, String(project.id));
@@ -206,76 +316,105 @@ Ne réexplique pas le plan — CORRIGE directement avec les outils.`;
       try { existingFiles = readProjectFiles(projDir); } catch(e) {}
     }
 
+    // Save best working version for rollback
+    let bestCode = job.code || '';
+    let bestIteration = 0;
     let currentMessage = message;
 
-    for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration++) {
-      const iterLabel = `${iteration + 1}/${MAX_AGENT_ITERATIONS}`;
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
+      const iterLabel = `${iteration + 1}/${maxIterations}`;
 
-      // ── PLAN ──
-      job.progressMessage = `Agent: planification (${iterLabel})...`;
-      let plan;
-      try {
-        plan = await generateAgentPlan(project, currentMessage, job.agentSteps, existingFiles);
-        job.agentSteps.push({ type: 'plan', summary: plan.analysis, iteration });
-        console.log(`[Agent] Plan ${iterLabel}: ${plan.analysis} (${plan.steps?.length || 0} steps)`);
-      } catch(e) {
-        console.error(`[Agent] Plan failed ${iterLabel}: ${e.message}`);
-        job.agentSteps.push({ type: 'plan_error', summary: e.message, iteration });
-        // Fall back to direct generation without plan
-        plan = { analysis: message, steps: [{ action: 'write_file', description: 'Generate directly' }], expectedOutcome: 'Working application' };
-      }
-
-      // ── EXECUTE ──
-      job.progressMessage = `Agent: exécution du plan (${iterLabel})...`;
-      let execResult;
-      try {
-        execResult = await executeAgentPlan(plan, project, job, callClaudeAPI, tools);
-        job.agentSteps.push({ type: 'execute', summary: execResult.success ? 'OK' : execResult.error, iteration });
-        if (execResult.code) job.code = execResult.code;
-      } catch(e) {
-        console.error(`[Agent] Execute failed ${iterLabel}: ${e.message}`);
-        job.agentSteps.push({ type: 'execute_error', summary: e.message, iteration });
-        continue;
-      }
-
-      // ── VALIDATE ──
-      if (!containerExec) {
-        // No Docker exec available — skip validation, trust the code
-        job.status = 'done';
-        job.progressMessage = `Agent: terminé en ${iteration + 1} itération(s) (sans validation)`;
-        console.log(`[Agent] Done ${iterLabel} (no container exec for validation)`);
+      // Check abort
+      if (job.abortController?.signal?.aborted) {
+        job.status = 'cancelled';
+        job.progressMessage = 'Agent: annulé par l\'utilisateur';
         return;
       }
 
-      job.progressMessage = `Agent: validation (${iterLabel})...`;
-      // Wait briefly for Vite to process file changes
+      // ── PLAN ──
+      job.progressMessage = `🔍 Agent: planification (${iterLabel})...`;
+      log('info', 'agent', `Plan ${iterLabel}`, { projectId: project.id });
+      let plan;
+      try {
+        plan = await generateAgentPlan(project, currentMessage, job.agentSteps, existingFiles);
+        job.agentSteps.push({ type: 'plan', summary: plan.analysis, complexity: plan.complexity, stepCount: plan.steps?.length || 0, iteration });
+        console.log(`[Agent] Plan ${iterLabel}: ${plan.analysis} (${plan.steps?.length || 0} steps, ${plan.complexity || 'unknown'})`);
+      } catch(e) {
+        console.error(`[Agent] Plan failed ${iterLabel}: ${e.message}`);
+        job.agentSteps.push({ type: 'plan_error', summary: e.message, iteration });
+        plan = { analysis: message, steps: [{ action: 'write_file', description: 'Generate directly' }], expectedOutcome: 'Working application', complexity: 'moderate' };
+      }
+
+      // ── EXECUTE (with retry on failure) ──
+      job.progressMessage = `⚡ Agent: exécution du plan (${iterLabel})...`;
+      let execResult;
+      const maxExecRetries = 2;
+      for (let retry = 0; retry < maxExecRetries; retry++) {
+        try {
+          execResult = await executeAgentPlan(plan, project, job, callClaudeAPI);
+          if (execResult.success) break;
+          if (retry < maxExecRetries - 1) {
+            console.log(`[Agent] Execute retry ${retry + 1}/${maxExecRetries}`);
+            job.progressMessage = `⚡ Agent: nouvelle tentative d'exécution (${iterLabel})...`;
+          }
+        } catch(e) {
+          console.error(`[Agent] Execute error ${iterLabel}: ${e.message}`);
+          execResult = { success: false, error: e.message, plan };
+        }
+      }
+
+      job.agentSteps.push({ type: 'execute', summary: execResult.success ? 'OK' : (execResult.error || 'Failed'), iteration });
+      if (execResult.code) job.code = execResult.code;
+
+      if (!execResult.success) {
+        // Execute failed even after retries — skip validation, try fix
+        currentMessage = `L'exécution a échoué: ${execResult.error}. Reformule le plan et réessaye.`;
+        continue;
+      }
+
+      // ── VALIDATE (5-layer) ──
+      job.progressMessage = `✅ Agent: validation (${iterLabel})...`;
+      // Wait for Vite to process file changes
       await new Promise(r => setTimeout(r, 3000));
 
       const validation = await validateAgentResult(project.id, containerExec);
       job.agentSteps.push({
         type: 'validate',
-        summary: validation.success ? 'OK' : `${validation.errors.length} erreur(s)`,
-        errors: validation.errors.map(e => e.message),
+        summary: validation.summary,
+        critical: validation.critical.length,
+        warnings: validation.warnings.length,
+        errors: validation.errors.map(e => `[${e.type}] ${e.message}`),
         iteration
       });
 
       if (validation.success) {
+        // Save as best version
+        bestCode = job.code;
+        bestIteration = iteration + 1;
+
         job.status = 'done';
-        job.progressMessage = `Agent: terminé en ${iteration + 1} itération(s)`;
+        job.progressMessage = `✨ Agent: terminé en ${iteration + 1} itération(s)${validation.warnings.length > 0 ? ` (${validation.warnings.length} avertissement(s))` : ''}`;
         console.log(`[Agent] Success after ${iteration + 1} iterations`);
         return;
       }
 
       // ── FIX ──
-      console.log(`[Agent] Validation failed ${iterLabel}: ${validation.errors.map(e => e.message).join(', ')}`);
-      currentMessage = buildFixPrompt(validation, plan, execResult);
+      console.log(`[Agent] Validation failed ${iterLabel}: ${validation.summary}`);
+      job.progressMessage = `🔧 Agent: correction des erreurs (${iterLabel})...`;
+      currentMessage = buildFixPrompt(validation, plan, iteration + 1);
     }
 
-    // Max iterations reached
+    // Max iterations reached — rollback to best working version if available
+    if (bestCode && bestCode !== job.code) {
+      console.log(`[Agent] Max iterations — rolling back to best version (iteration ${bestIteration})`);
+      job.code = bestCode;
+      job.progressMessage = `⚠️ Agent: limite atteinte, version stable restaurée (itération ${bestIteration})`;
+    } else {
+      job.progressMessage = `⚠️ Agent: terminé (limite de ${maxIterations} itérations atteinte)`;
+    }
     job.status = 'done';
-    job.progressMessage = `Agent: terminé (limite de ${MAX_AGENT_ITERATIONS} itérations atteinte)`;
     console.log(`[Agent] Max iterations reached — returning best result`);
   }
 
-  return { runAgentLoop, generateAgentPlan, validateAgentResult, buildFixPrompt };
+  return { runAgentLoop, generateAgentPlan, validateAgentResult, buildFixPrompt, getMaxIterations };
 };

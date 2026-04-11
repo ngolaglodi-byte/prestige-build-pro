@@ -690,6 +690,24 @@ export default defineConfig({
 6. Corrige si erreur, reteste
 7. Quand tout fonctionne, écris le fichier \`READY\`
 8. Si échec après 5 tentatives, écris \`ERROR\`
+
+## Recherche Web
+
+Tu as accès à la recherche web. Utilise-la PROACTIVEMENT pour :
+- Trouver la documentation d'APIs ou libraries que tu ne connais pas
+- Vérifier la syntaxe exacte d'un composant Radix UI ou Recharts
+- Chercher des exemples de code pour des patterns complexes (OAuth, Stripe, etc.)
+- Résoudre des erreurs de build que tu ne comprends pas
+NE PAS chercher pour des choses basiques que tu connais déjà (React, TailwindCSS, Express).
+
+## Exécution de commandes
+
+Tu peux exécuter des commandes dans le projet :
+- \`node --check server.js\` pour vérifier la syntaxe
+- \`npm run build\` pour vérifier que le build passe
+- \`cat src/App.tsx\` pour relire un fichier
+- \`ls src/components/\` pour voir les fichiers existants
+Utilise ces commandes pour VALIDER ton travail avant d'écrire READY.
 `;
 }
 
@@ -1734,10 +1752,12 @@ function executeServerTool(toolName, toolInput) {
 
   // ─── RUN COMMAND IN CONTAINER (Agent Mode) ───
   if (toolName === 'run_command' && toolInput.command) {
+    const execProjectId = toolInput.project_id || toolInput._projectId;
+    if (!execProjectId) return Promise.resolve('Erreur: project_id manquant pour run_command');
     return (async () => {
       try {
         const result = await containerExecService.execInContainer(
-          toolInput._projectId || toolInput.project_id,
+          execProjectId,
           toolInput.command,
           { cwd: toolInput.cwd }
         );
@@ -2110,22 +2130,22 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
     const model = opts.model || 'claude-sonnet-4-20250514';
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
     if (opts.useTools) {
-      apiPayload.tools = CODE_TOOLS;
-      apiPayload.tool_choice = { type: 'auto' }; // let Claude decide when to use tools
+      apiPayload.tools = [...CODE_TOOLS];
+      // Add web_search tool when requested (Agent Mode, standard generation)
+      if (opts.webSearch !== false) {
+        apiPayload.tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+      }
+      apiPayload.tool_choice = { type: 'auto' };
     }
     const payload = JSON.stringify(apiPayload);
 
     // ── Job abort signal propagation ──
-    // If a jobId is set (in opts or trackingInfo), look up the AbortController stored
-    // on the job. The signal is forwarded to https.request via reqOpts.signal so user
-    // can cancel mid-flight. Recursive tool-loop calls inherit via {...opts} spread.
     let abortSignal = opts.signal || null;
     const linkedJobId = opts.jobId || trackingInfo?.jobId;
     if (!abortSignal && linkedJobId) {
       const linkedJob = generationJobs.get(linkedJobId);
       if (linkedJob && linkedJob.abortController) abortSignal = linkedJob.abortController.signal;
     }
-    // Fast-fail if user already aborted before we even sent the request
     if (abortSignal && abortSignal.aborted) {
       const e = new Error('Requête annulée.');
       e.name = 'AbortError';
@@ -2137,7 +2157,8 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
       hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
       headers: {
         'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': opts.useTools ? 'prompt-caching-2024-07-31,web-search-2025-03-05' : 'prompt-caching-2024-07-31',
         'Content-Length': Buffer.byteLength(payload)
       }
     };
@@ -2183,8 +2204,12 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                   for (const tc of allToolCalls) {
                     if (['write_file', 'edit_file', 'line_replace'].includes(tc.name)) {
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: `OK — ${tc.name} ${tc.input?.path || ''}` });
+                    } else if (tc.name === 'web_search') {
+                      // Anthropic server-side tool — result is handled by the API, not by us.
+                      // Just acknowledge the tool call so the conversation can continue.
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: 'OK — web search completed' });
                     } else {
-                      // Server-side tools: execute and return result
+                      // Our server-side tools: execute and return result
                       const input = { ...tc.input };
                       if (projDir) input._projectDir = projDir;
                       if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
@@ -5585,7 +5610,7 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
 
 // ─── GENERATE CLAUDE WITH IMAGE (NON-STREAMING, FOR POLLING) ───
 // ─── GENERATE CLAUDE CODE FROM IMAGE ───
-function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
+async function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
   const job = generationJobs.get(jobId);
   if (!job) return;
   
@@ -5638,12 +5663,16 @@ Tu es Prestige AI, le meilleur générateur d'applications React. Tu travailles 
 ## Brief
 Analyse l'image design-reference.png et reproduis FIDÈLEMENT ce design en React + TailwindCSS.
 
-## Instructions de reproduction
-1. Analyse la structure visuelle : header, sections, footer, disposition des éléments
-2. Identifie la palette de couleurs et les traduis en classes Tailwind
-3. Reproduis la typographie avec les utilities Tailwind
-4. Reproduis les espacements et marges
-5. Adapte pour le responsive (mobile-first avec sm:, md:, lg:)
+## Instructions de reproduction (PRÉCISES)
+1. **Structure visuelle** : header, sections, footer, grilles, sidebar — reproduis le LAYOUT EXACT
+2. **Couleurs PRÉCISES** : extrais les couleurs hex exactes de l'image. Configure-les dans tailwind.config.js
+3. **Typographie** : identifie les tailles, poids, inter-lignage. Utilise les utilities Tailwind correspondants
+4. **Espacements** : reproduis les marges et paddings visuels avec précision (px → rem)
+5. **Responsive** : mobile-first avec sm:, md:, lg: breakpoints
+6. **OCR / Texte** : lis TOUT le texte visible dans l'image (titres, boutons, labels, paragraphes) et reproduis-le MOT POUR MOT dans le code. Ne remplace JAMAIS le texte par du placeholder
+7. **Images** : si l'image contient des photos, utilise des images similaires via picsum.photos/seed/DESCRIPTIF
+8. **Icônes** : identifie les icônes visibles et utilise les équivalents Lucide React
+9. **Animations** : reproduis les effets visuels subtils (hover, transitions, ombres)
 
 ## Architecture React + Vite
 
@@ -5770,9 +5799,44 @@ Crée un projet React complet :
       const allFiles = readProjectFilesRecursive(projectDir);
       if (Object.keys(allFiles).length >= 3) {
         job.code = formatProjectCode(allFiles);
+        job.progressMessage = 'Validation du design...';
+
+        // ── IMAGE-TO-CODE VALIDATION + AUTO-FIX ──
+        // After generation, validate build in background & auto-fix if needed
         job.status = 'done';
-        job.progressMessage = 'Design reproduit avec succès !';
-        console.log(`[Claude Code Image] Generation successful for project ${projectId} — ${Object.keys(allFiles).length} files`);
+        job.progressMessage = 'Design reproduit — validation en cours...';
+        console.log(`[Claude Code Image] Generation complete for project ${projectId} — ${Object.keys(allFiles).length} files`);
+
+        // Background validation + auto-fix (non-blocking — user sees result immediately)
+        if (containerExecService && ctx.docker) {
+          (async () => {
+            try {
+              const buildResult = await containerExecService.buildInContainer(projectId);
+              if (buildResult.exitCode !== 0) {
+                console.log(`[Claude Code Image] Build failed — running auto-fix for project ${projectId}`);
+                job.progressMessage = 'Correction automatique du design...';
+                const fixJobId = crypto.randomUUID();
+                generationJobs.set(fixJobId, { status: 'pending', code: job.code, error: null, progress: 0, project_id: projectId, user_id: job.user_id });
+                try {
+                  await agentModeService.runAgentLoop(fixJobId, { id: job.user_id }, { id: projectId, title: 'Image Design', project_type: 'web' },
+                    `Le projet a des erreurs de build après génération depuis une image. Corrige toutes les erreurs. Build output: ${(buildResult.stderr || buildResult.stdout || '').substring(0, 1500)}`,
+                    { callClaudeAPI, tools: CODE_TOOLS, containerExec: containerExecService, readProjectFiles: readProjectFilesRecursive, formatProjectCode }
+                  );
+                  const fixJob = generationJobs.get(fixJobId);
+                  if (fixJob?.code) job.code = fixJob.code;
+                } catch(fixErr) {
+                  console.warn(`[Claude Code Image] Auto-fix failed: ${fixErr.message}`);
+                }
+                generationJobs.delete(fixJobId);
+              }
+              job.progressMessage = 'Design reproduit avec succès !';
+            } catch(e) {
+              console.warn(`[Claude Code Image] Validation skipped: ${e.message}`);
+            }
+          })();
+        } else {
+          job.progressMessage = 'Design reproduit avec succès !';
+        }
       } else {
         console.warn(`[Claude Code Image] Only ${Object.keys(allFiles).length} files found, writing defaults`);
         writeDefaultReactProject(projectDir);
@@ -7517,7 +7581,9 @@ ${clientLogContext}
 CODE COMPLET DU PROJET:
 ${originalCode}
 
-CORRIGE l'erreur. Retourne TOUS les fichiers modifiés avec ### markers.
+CORRIGE l'erreur. Utilise les outils disponibles (write_file, edit_file, run_command, web_search).
+- Utilise run_command pour vérifier ta correction (node --check, npm run build)
+- Utilise web_search si tu as besoin de documentation
 
 RÈGLES:
 1. Format ### pour chaque fichier (### package.json, ### server.js, ### src/App.tsx, etc.)
@@ -7768,6 +7834,28 @@ async function autoCorrectProject(projectId, onProgress) {
     correctionAttempts.set(projectId, currentAttempts + 1);
 
     if (correctionAttempts.get(projectId) >= MAX_AUTO_CORRECTION_ATTEMPTS) {
+      // ── LAYER 4: Agent Mode fallback ──
+      // Standard correction exhausted — try Agent Mode as last resort
+      console.log(`[AutoCorrect] Max attempts for project ${projectId} — trying Agent Mode fallback`);
+      try {
+        const project = db.prepare('SELECT * FROM projects WHERE id=?').get(projectId);
+        if (project && agentModeService) {
+          const fallbackJobId = crypto.randomUUID();
+          generationJobs.set(fallbackJobId, { status: 'pending', code: project.generated_code || '', error: null, progress: 0, project_id: projectId });
+          await agentModeService.runAgentLoop(fallbackJobId, { id: project.user_id }, project,
+            `Le projet a des erreurs après ${MAX_AUTO_CORRECTION_ATTEMPTS} tentatives de correction. Erreur: ${e.message}. Corrige tous les problèmes.`,
+            { callClaudeAPI, tools: CODE_TOOLS, containerExec: containerExecService, readProjectFiles: readProjectFilesRecursive, formatProjectCode }
+          );
+          const fallbackJob = generationJobs.get(fallbackJobId);
+          if (fallbackJob?.code) {
+            console.log(`[AutoCorrect] Agent Mode fallback succeeded for project ${projectId}`);
+            return { success: true, code: fallbackJob.code, via: 'agent-fallback' };
+          }
+        }
+      } catch(agentErr) {
+        console.warn(`[AutoCorrect] Agent Mode fallback failed: ${agentErr.message}`);
+      }
+
       return {
         success: false,
         reason: 'max_attempts',
