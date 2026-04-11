@@ -5623,6 +5623,82 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
         }
       }
 
+      // ── VITE BUILD CHECK: the DEFINITIVE validation (like Lovable) ──
+      // Run a REAL vite build inside the container. If it fails, we get the EXACT
+      // error from Vite's parser (file, line, column, error message) and ask Claude
+      // to fix it. This catches EVERYTHING: syntax errors, missing imports, broken
+      // JSX, type errors — regardless of whether we have a regex for it.
+      //
+      // This replaces the pattern of adding back-test regexes one by one.
+      // Vite IS the validator. If Vite says OK → the code compiles → preview works.
+      if (job.project_id) {
+        const containerName = getContainerName(job.project_id);
+        const buildMaxRetries = 3;
+
+        for (let buildAttempt = 1; buildAttempt <= buildMaxRetries; buildAttempt++) {
+          try {
+            const isRunning = await isContainerRunningAsync(job.project_id);
+            if (!isRunning) break; // can't build if container is down
+
+            job.progressMessage = buildAttempt === 1
+              ? 'Vérification du build...'
+              : `Correction automatique (tentative ${buildAttempt}/${buildMaxRetries})...`;
+
+            // Run vite build — if it succeeds, the code is valid
+            execSync(
+              `docker exec ${containerName} npx vite build --mode development 2>&1`,
+              { timeout: 60000, encoding: 'utf8' }
+            );
+            console.log(`[BuildCheck] vite build OK for project ${job.project_id}`);
+            break; // ✅ Build succeeded — code is valid
+
+          } catch (buildErr) {
+            // ❌ Build failed — extract the EXACT error
+            const errorOutput = (buildErr.stdout || '') + (buildErr.stderr || buildErr.message || '');
+            // Extract the most useful part (Vite error lines, not the full stack)
+            const errorLines = errorOutput.split('\n')
+              .filter(l => l.includes('error') || l.includes('Error') || l.includes('✘') ||
+                           l.includes('Could not resolve') || l.includes('Unexpected') ||
+                           l.includes('is not defined') || l.includes('does not exist') ||
+                           /\.(tsx|ts|jsx|js):\d+/.test(l))
+              .slice(0, 10)
+              .join('\n');
+            const shortError = errorLines || errorOutput.substring(0, 500);
+
+            console.log(`[BuildCheck] vite build FAILED (attempt ${buildAttempt}/${buildMaxRetries}): ${shortError.substring(0, 200)}`);
+
+            if (buildAttempt >= buildMaxRetries) {
+              // Give up — log the error, let the user see the result anyway
+              console.warn(`[BuildCheck] Failed after ${buildMaxRetries} attempts. Proceeding with broken code.`);
+              log('warn', 'build', 'vite build failed after max retries', {
+                jobId, projectId: job.project_id, error: shortError.substring(0, 500)
+              });
+              break;
+            }
+
+            // Ask Claude to fix the EXACT error
+            try {
+              const fixPrompt = `Le code que tu as généré ne compile PAS. Voici l'erreur exacte de Vite build :\n\n${shortError}\n\nCorrige le(s) fichier(s) concerné(s) avec edit_file ou write_file. Ne touche que ce qui est cassé.`;
+              const fixSystemBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige les erreurs.' }];
+              const fixCode = await callClaudeAPI(
+                fixSystemBlocks,
+                [{ role: 'user', content: fixPrompt }],
+                16000,
+                { userId: job.user_id, projectId: job.project_id, operation: 'build-fix', jobId },
+                { useTools: true }
+              );
+              if (fixCode) {
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                writeGeneratedFiles(projDir, fixCode, job.project_id);
+                console.log(`[BuildCheck] Claude fix applied, retrying build...`);
+              }
+            } catch (fixErr) {
+              console.warn(`[BuildCheck] Claude fix failed: ${fixErr.message}`);
+            }
+          }
+        }
+      }
+
       // ── AUTO-FOLLOW-UP: Use GPT-4 Mini to verify completeness (GENERIC, UNLIMITED) ──
       // Instead of hardcoded checks, ask GPT-4 Mini: "the user asked X, the AI did Y, what's missing?"
       // This works for ANY feature, ANY complexity, ANY subject — no hardcoded keywords.
