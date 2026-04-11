@@ -224,6 +224,17 @@ button.card { padding: 0; }
 .clarify-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .clarify-skip-btn { background: transparent; color: var(--text-muted); border: 1px solid var(--bg-elevated); padding: 8px 16px; border-radius: var(--radius-md); cursor: pointer; font-size: 0.85rem; }
 .clarify-skip-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.chat-upload-btn { width: 40px; height: 40px; background: transparent; border: 1px solid var(--bg-elevated); border-radius: var(--radius-md); color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--transition-fast); flex-shrink: 0; }
+.chat-upload-btn:hover { border-color: var(--gold); color: var(--gold); }
+.upload-preview { display: none; padding: 8px var(--space-md); background: var(--bg-elevated); border: 1px solid var(--gold-border); border-radius: var(--radius-md); margin-bottom: var(--space-sm); }
+.upload-preview.active { display: flex; align-items: center; gap: 10px; }
+.upload-preview img { width: 48px; height: 48px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--gold-border); }
+.upload-preview-info { flex: 1; min-width: 0; }
+.upload-preview-name { font-size: 0.8rem; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-preview-size { font-size: 0.7rem; color: var(--text-muted); }
+.upload-preview-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 1.1rem; padding: 4px; }
+.upload-preview-remove:hover { color: #ef4444; }
+.chat-dropzone-highlight { outline: 2px dashed var(--gold); outline-offset: -4px; background: rgba(212, 168, 32, 0.05); }
 .queue-indicator { display: none; padding: var(--space-sm) var(--space-md); background: rgba(212, 168, 32, 0.08); border: 1px solid var(--gold-border); border-radius: var(--radius-md); margin-bottom: var(--space-sm); cursor: pointer; transition: var(--transition-fast); }
 .queue-indicator.has-items { display: block; }
 .queue-indicator:hover { background: rgba(212, 168, 32, 0.12); }
@@ -580,7 +591,8 @@ button.card { padding: 0; }
                   <div class="queue-list" id="queue-list"></div>
                 </div>
                 <div class="chat-suggestions" id="chat-suggestions"><span class="chat-suggestion" onclick="insertSuggestion('/couleurs ')">/couleurs</span><span class="chat-suggestion" onclick="insertSuggestion('/style ')">/style</span><span class="chat-suggestion" onclick="insertSuggestion('/section ')">/section</span><span class="chat-suggestion" onclick="insertSuggestion('/mobile')">/mobile</span><span class="chat-suggestion" onclick="insertSuggestion('/animations')">/animations</span><span class="chat-suggestion" onclick="insertSuggestion('/seo')">/seo</span><span class="chat-suggestion" onclick="insertSuggestion('/dark')">/dark</span><span class="chat-suggestion" onclick="insertSuggestion('/premium')">/premium</span></div>
-                <div class="chat-input-row"><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="2"></textarea><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
+                <div class="upload-preview" id="chat-upload-preview"></div>
+                <div class="chat-input-row"><button class="chat-upload-btn" id="chat-upload-btn" onclick="document.getElementById('chat-file-input').click()" title="Uploader une image/logo dans le projet"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg><input type="file" id="chat-file-input" accept="image/*,.pdf,.svg" style="display:none;" /></button><textarea class="chat-input" id="chat-input" placeholder="Décrivez ce que vous voulez..." rows="2"></textarea><button class="chat-plan-btn" id="chat-plan-btn" onclick="sendPlanMessage()" title="Crée un plan validable avant de générer le code">Plan</button><button class="chat-send" id="chat-send-btn" data-mode="send" onclick="handleSendClick()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></button></div>
                 <div style="margin-top:var(--space-sm);"><label class="btn btn-secondary" style="cursor:pointer;font-size:0.75rem;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>Uploader une maquette<input type="file" id="image-upload" accept="image/*" style="display:none;"/></label></div>
               </div>
             </div>
@@ -1425,6 +1437,141 @@ function attachFeedbackButtons(assistantDiv, jobId) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CHAT FILE UPLOAD — images, logos, assets uploaded into the project
+// ═══════════════════════════════════════════════════════════════════════════
+// 3 ways to upload: button click, drag-drop on chat, paste from clipboard.
+// File is saved to the project's public/images/ dir via POST /api/projects/:id/upload.
+// The path is prepended to the user's next chat message so Claude knows about it.
+
+let pendingUpload = null; // { file, base64, preview, filename }
+
+// Handle file selection (from button or input)
+document.getElementById('chat-file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) handleFileUpload(file);
+  e.target.value = ''; // reset so same file can be re-selected
+});
+
+// Drag & drop on chat messages area
+(() => {
+  const chatArea = document.getElementById('chat-messages');
+  if (!chatArea) return;
+  chatArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    chatArea.classList.add('chat-dropzone-highlight');
+  });
+  chatArea.addEventListener('dragleave', () => {
+    chatArea.classList.remove('chat-dropzone-highlight');
+  });
+  chatArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    chatArea.classList.remove('chat-dropzone-highlight');
+    const file = e.dataTransfer?.files?.[0];
+    if (file && file.type.startsWith('image/')) handleFileUpload(file);
+  });
+})();
+
+// Paste from clipboard (Ctrl+V / Cmd+V on the textarea)
+document.getElementById('chat-input').addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) handleFileUpload(file);
+      break;
+    }
+  }
+});
+
+function handleFileUpload(file) {
+  if (!currentProject) {
+    addChatMessage('assistant', 'Ouvrez un projet avant d\'uploader un fichier.');
+    return;
+  }
+  // Validate type
+  const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/svg+xml', 'application/pdf'];
+  if (!allowedTypes.includes(file.type)) {
+    addChatMessage('assistant', 'Type non supporté. Acceptés : PNG, JPG, GIF, WebP, SVG, PDF.');
+    return;
+  }
+  // Validate size (10MB)
+  if (file.size > 10 * 1024 * 1024) {
+    addChatMessage('assistant', 'Fichier trop volumineux (max 10 MB).');
+    return;
+  }
+  // Read as base64 + show preview
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const base64 = ev.target.result.split(',')[1];
+    const preview = ev.target.result; // data: URL for img src
+    pendingUpload = {
+      file,
+      base64,
+      preview,
+      filename: file.name,
+      contentType: file.type,
+      size: file.size
+    };
+    showUploadPreview();
+  };
+  reader.readAsDataURL(file);
+}
+
+function showUploadPreview() {
+  const container = document.getElementById('chat-upload-preview');
+  if (!container || !pendingUpload) return;
+  container.className = 'upload-preview active';
+  const isImage = pendingUpload.contentType.startsWith('image/');
+  container.innerHTML = `
+    ${isImage ? `<img src="${pendingUpload.preview}" alt="preview" />` : '<div style="width:48px;height:48px;display:flex;align-items:center;justify-content:center;background:var(--bg-primary);border-radius:var(--radius-sm);font-size:1.5rem;">📄</div>'}
+    <div class="upload-preview-info">
+      <div class="upload-preview-name">${escapeHtml(pendingUpload.filename)}</div>
+      <div class="upload-preview-size">${(pendingUpload.size / 1024).toFixed(1)} KB — sera uploadé avec le prochain message</div>
+    </div>
+    <button class="upload-preview-remove" onclick="cancelUpload()" title="Annuler">×</button>
+  `;
+  // Focus the chat input so user can type their message
+  document.getElementById('chat-input').focus();
+}
+
+function cancelUpload() {
+  pendingUpload = null;
+  const container = document.getElementById('chat-upload-preview');
+  if (container) {
+    container.className = 'upload-preview';
+    container.innerHTML = '';
+  }
+}
+
+// Upload the file to the server, returns the path or null on error
+async function uploadFileToProject(upload) {
+  if (!currentProject || !upload) return null;
+  try {
+    const res = await fetch('/api/projects/' + currentProject.id + '/upload', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        filename: upload.filename,
+        base64: upload.base64,
+        content_type: upload.contentType
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'HTTP ' + res.status);
+    }
+    const data = await res.json();
+    return data.path; // e.g., '/images/logo.png'
+  } catch (e) {
+    console.error('[upload] failed:', e.message);
+    addChatMessage('assistant', 'Erreur upload : ' + e.message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PROJECT MEMORY — persistent free-form notes injected in every generation
 // ═══════════════════════════════════════════════════════════════════════════
 async function loadProjectMemory() {
@@ -1550,8 +1697,29 @@ document.getElementById('chat-input').addEventListener('keydown', (e) => {
 
 async function sendChatMessage(message) {
   const input = document.getElementById('chat-input');
-  const msg = (typeof message === 'string' ? message : input.value).trim();
-  if (!msg || !currentProject) return;
+  let msg = (typeof message === 'string' ? message : input.value).trim();
+  if (!msg && !pendingUpload) return;
+  if (!currentProject) return;
+
+  // If a file is pending upload, upload it first and prepend path to message
+  if (pendingUpload) {
+    const uploadPath = await uploadFileToProject(pendingUpload);
+    if (uploadPath) {
+      const uploadInfo = `[Fichier uploadé dans le projet : ${uploadPath} (${(pendingUpload.size / 1024).toFixed(0)} KB)]\nUtilise le chemin "${uploadPath}" pour référencer ce fichier dans le code (ex: <img src="${uploadPath}" />).\n\n`;
+      msg = uploadInfo + (msg || `Utilise ce fichier (${uploadPath}) dans le site.`);
+      // Show the image in chat as a user message
+      if (pendingUpload.contentType.startsWith('image/')) {
+        const imgDiv = document.createElement('div');
+        imgDiv.className = 'chat-message user';
+        imgDiv.innerHTML = `<img src="${pendingUpload.preview}" alt="${escapeHtml(pendingUpload.filename)}" style="max-width:200px;max-height:150px;border-radius:var(--radius-sm);"/>`;
+        document.getElementById('chat-messages').appendChild(imgDiv);
+      }
+    }
+    cancelUpload();
+  }
+
+  if (!msg) return;
+
   // If a job is already running, queue this message instead of sending immediately
   if (currentJobId !== null) {
     if (typeof message !== 'string') input.value = '';
@@ -1559,7 +1727,7 @@ async function sendChatMessage(message) {
     return;
   }
   if (typeof message !== 'string') input.value = '';
-  addChatMessage('user', msg);
+  addChatMessage('user', msg.includes('[Fichier uploadé') ? msg.split('\n\n').pop() || msg : msg);
   currentJobCancelled = false;
 
   const assistantDiv = document.createElement('div');

@@ -9168,6 +9168,86 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ─── PROJECT FILE UPLOAD — images, logos, assets into project's public/ dir ───
+  // POST /api/projects/:id/upload { filename, base64, content_type }
+  // Saves the file to the project's public/images/ directory so Vite serves it
+  // as a static asset. Claude references it via /images/filename in generated code.
+  const uploadMatch = url.match(/^\/api\/projects\/(\d+)\/upload$/);
+  if (uploadMatch && req.method === 'POST') {
+    const projectId = parseInt(uploadMatch[1], 10);
+
+    // Auth + ownership
+    const project = db.prepare('SELECT user_id FROM projects WHERE id=?').get(projectId);
+    if (!project || (user.role !== 'admin' && project.user_id !== user.id)) {
+      json(res, 403, { error: 'Accès refusé.' });
+      return;
+    }
+
+    const body = await getBody(req, 15 * 1024 * 1024); // 15MB max (base64 overhead)
+    const { filename, base64, content_type } = body || {};
+
+    // Validate filename
+    if (!filename || typeof filename !== 'string') {
+      json(res, 400, { error: 'filename requis.' });
+      return;
+    }
+    // Sanitize: strip path traversal, special chars, limit length
+    const sanitized = filename
+      .replace(/[^a-zA-Z0-9._-]/g, '_')  // only safe chars
+      .replace(/\.{2,}/g, '.')             // no double dots
+      .substring(0, 100);                  // max 100 chars
+    if (!sanitized || sanitized === '.' || sanitized === '_') {
+      json(res, 400, { error: 'Nom de fichier invalide.' });
+      return;
+    }
+
+    // Validate content type (images + PDF + SVG)
+    const ALLOWED_TYPES = new Set([
+      'image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp',
+      'image/svg+xml', 'image/x-icon', 'image/ico',
+      'application/pdf'
+    ]);
+    if (content_type && !ALLOWED_TYPES.has(content_type)) {
+      json(res, 400, { error: `Type non supporté: ${content_type}. Acceptés: images, SVG, PDF.` });
+      return;
+    }
+
+    // Validate base64
+    if (!base64 || typeof base64 !== 'string' || base64.length < 10) {
+      json(res, 400, { error: 'base64 requis.' });
+      return;
+    }
+    const buffer = Buffer.from(base64, 'base64');
+    if (buffer.length > 10 * 1024 * 1024) { // 10MB raw file max
+      json(res, 400, { error: 'Fichier trop volumineux (max 10MB).' });
+      return;
+    }
+
+    // Save to project's public/images/ directory
+    const projectDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+    const imagesDir = path.join(projectDir, 'public', 'images');
+    if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
+
+    const filePath = path.join(imagesDir, sanitized);
+    try {
+      fs.writeFileSync(filePath, buffer);
+      log('info', 'upload', 'file saved', {
+        projectId, filename: sanitized, size: buffer.length, userId: user.id
+      });
+      json(res, 200, {
+        ok: true,
+        path: `/images/${sanitized}`,
+        filename: sanitized,
+        size: buffer.length,
+        url: `/run/${projectId}/images/${sanitized}`
+      });
+    } catch (e) {
+      log('error', 'upload', 'write failed', { projectId, error: e.message });
+      json(res, 500, { error: 'Erreur sauvegarde fichier: ' + e.message });
+    }
+    return;
+  }
+
   // ─── PROJECT MEMORY — persistent free-form preferences per project ───
   // Lets the agent capture client preferences ("no blue", "always sober", "footer minimal")
   // so they're injected into EVERY future generation. Solves the 4-message context limit.
