@@ -7892,7 +7892,10 @@ async function monitorContainers() {
     for (const project of projects) {
       const running = await isContainerRunningAsync(project.id);
       const lastAccess = containerLastAccess.get(project.id) || 0;
-      const idle = Date.now() - lastAccess;
+      // If container was never accessed (lastAccess=0), don't kill it — it was just created
+      // Use project.updated_at as fallback to know when it was last active
+      const effectiveLastAccess = lastAccess > 0 ? lastAccess : (project.updated_at ? new Date(project.updated_at).getTime() : Date.now());
+      const idle = Date.now() - effectiveLastAccess;
 
       // Auto-sleep: stop idle pbp-project-* containers only (never the main Prestige container)
       const targetContainer = getContainerName(project.id);
@@ -9957,6 +9960,8 @@ export default defineConfig({
     const id=parseInt(url.split('/').pop());
     const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     if (!p||(user.role!=='admin'&&p.user_id!==user.id)) { json(res,403,{error:'Accès refusé.'}); return; }
+    // Track access so auto-sleep doesn't kill the container while user is working
+    containerLastAccess.set(id, Date.now());
     json(res,200,{...p,messages:db.prepare('SELECT * FROM project_messages WHERE project_id=? ORDER BY id ASC').all(id)}); return;
   }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='PUT') {
