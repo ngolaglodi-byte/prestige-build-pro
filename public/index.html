@@ -654,7 +654,7 @@ button.card { padding: 0; }
               <button class="btn btn-ghost" id="toggle-code-btn" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></button>
             </div>
           </div>
-          <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
+          <div class="preview-container"><div id="vite-error-banner" style="display:none;background:#1a0505;border:1px solid #ef4444;border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:0.8rem;"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;"><div style="display:flex;align-items:center;gap:6px;color:#ef4444;font-weight:600;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Erreur detectee</div><div style="display:flex;gap:6px;"><button onclick="tryToFix()" style="background:#D4A820;color:#0d1120;border:none;padding:4px 12px;border-radius:4px;font-weight:600;font-size:0.75rem;cursor:pointer;">Corriger</button><button onclick="dismissError()" style="background:transparent;color:#666;border:1px solid #333;padding:4px 8px;border-radius:4px;font-size:0.75rem;cursor:pointer;">✕</button></div></div><pre id="vite-error-text" style="color:#fca5a5;margin-top:6px;font-size:0.7rem;max-height:80px;overflow:auto;white-space:pre-wrap;word-break:break-all;"></pre></div><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
         </div>
         <!-- Code editor panel removed: Fichiers tab in sidebar replaces it (like Lovable) -->
       </div>
@@ -1231,6 +1231,7 @@ async function openWorkspace(id) {
 function closeWorkspace() {
   if (projectSSE) { projectSSE.close(); projectSSE = null; }
   stopLogsPolling();
+  stopErrorDetection();
   // Notify server to mark container idle (triggers auto-sleep after timeout)
   if (currentProject && currentProject.id && token) {
     fetch('/api/projects/' + currentProject.id + '/close', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } }).catch(() => {});
@@ -2729,6 +2730,85 @@ function stopLogsPolling() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TRY TO FIX — Detect Vite errors and offer one-click AI fix (like Lovable)
+// ═══════════════════════════════════════════════════════════════════════════
+var lastDetectedError = null;
+var errorCheckInterval = null;
+
+function startErrorDetection() {
+  if (errorCheckInterval) clearInterval(errorCheckInterval);
+  errorCheckInterval = setInterval(checkForViteErrors, 10000); // every 10s
+  // First check after 5s
+  setTimeout(checkForViteErrors, 5000);
+}
+
+function stopErrorDetection() {
+  if (errorCheckInterval) { clearInterval(errorCheckInterval); errorCheckInterval = null; }
+  dismissError();
+}
+
+async function checkForViteErrors() {
+  if (!currentProject || !currentProject.id) return;
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/logs');
+    if (!r.logs) return;
+    // Parse Vite errors from logs
+    const lines = r.logs.split('\n');
+    const errorLines = lines.filter(l =>
+      (l.includes('[vite]') && (l.includes('error') || l.includes('Error'))) ||
+      l.includes('Pre-transform error') ||
+      l.includes('Internal server error') ||
+      l.includes('does not exist') ||
+      l.includes('Failed to resolve') ||
+      l.includes('Cannot find module') ||
+      l.includes('Unterminated') ||
+      l.includes('SyntaxError') ||
+      l.includes('TypeError')
+    ).filter(l =>
+      !l.includes('ECONNREFUSED') && !l.includes('health')
+    );
+    if (errorLines.length > 0) {
+      const latestError = errorLines[errorLines.length - 1].trim();
+      if (latestError !== lastDetectedError) {
+        lastDetectedError = latestError;
+        showErrorBanner(latestError);
+      }
+    } else {
+      // No errors — hide banner if shown
+      if (lastDetectedError) {
+        lastDetectedError = null;
+        dismissError();
+      }
+    }
+  } catch {}
+}
+
+function showErrorBanner(errorText) {
+  const banner = document.getElementById('vite-error-banner');
+  const errorEl = document.getElementById('vite-error-text');
+  if (banner && errorEl) {
+    errorEl.textContent = errorText;
+    banner.style.display = 'block';
+  }
+}
+
+function dismissError() {
+  const banner = document.getElementById('vite-error-banner');
+  if (banner) banner.style.display = 'none';
+}
+
+async function tryToFix() {
+  if (!currentProject || !lastDetectedError) return;
+  dismissError();
+  // Send the error to the chat as a fix request
+  const fixMessage = 'Corrige cette erreur Vite dans le projet :\n\n' + lastDetectedError + '\n\nAnalyse le fichier concerne et corrige le probleme.';
+  // Inject into chat input and send
+  document.getElementById('chat-input').value = fixMessage;
+  sendChatMessage(fixMessage);
+  lastDetectedError = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // DOCKER CONTAINER RESTART
 // ═══════════════════════════════════════════════════════════════════════════
 async function restartProject() {
@@ -3126,6 +3206,7 @@ function loadDockerPreview(url) {
 
   // Start logs polling when preview is loaded
   startLogsPolling();
+  startErrorDetection();
 }
 
 function showCredentialsOverlay(creds) {
