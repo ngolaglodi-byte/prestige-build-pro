@@ -2840,17 +2840,11 @@ function loadDockerPreview(url) {
     return;
   }
 
-  // Use subdomain preview if available (FAST PATH — bypasses Node.js proxy overhead).
-  // Falls back to /run/{id}/ path if subdomain is not configured.
-  const subdomainUrl = `https://p${currentProject.id}-preview.prestige-build.dev/`;
-  const legacyUrl = url || `/run/${currentProject.id}/`;
+  // Use /run/{id}/ path — same domain, no SSL/iframe issues
+  const previewUrl = url || `/run/${currentProject.id}/`;
+  const authenticatedUrl = previewUrl;
 
-  // Try subdomain first — if it fails (DNS not configured, etc.), fall back to legacy
-  let previewUrl = subdomainUrl;
-  let authenticatedUrl = previewUrl; // subdomain doesn't need token (no auth on preview proxy)
-
-  // Show the clean subdomain URL to the user
-  document.getElementById('preview-url').textContent = subdomainUrl;
+  document.getElementById('preview-url').textContent = window.location.origin + `/run/${currentProject.id}/`;
 
   // Show spinner while iframe loads
   loading.style.display = 'flex';
