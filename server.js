@@ -430,6 +430,7 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
     "react-dom": "19.1.0",
     "react-router-dom": "7.6.1",
     "lucide-react": "0.511.0",
+    "class-variance-authority": "0.7.1",
     clsx: "2.1.1",
     "tailwind-merge": "3.3.0",
     sonner: "2.0.3",
@@ -4771,7 +4772,7 @@ function writeGeneratedFiles(projectDir, code, projectId) {
 
       // Fix imports of packages not in package.json — remove them to prevent Vite crash
       const INSTALLED_PACKAGES = new Set([
-        'react', 'react-dom', 'react-router-dom', 'lucide-react', 'clsx', 'tailwind-merge',
+        'react', 'react-dom', 'react-router-dom', 'lucide-react', 'class-variance-authority', 'clsx', 'tailwind-merge',
         'sonner', 'cmdk', 'date-fns', 'recharts', 'embla-carousel-react', 'react-day-picker',
         'input-otp', 'react-resizable-panels', 'tailwindcss-animate',
         '@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs',
