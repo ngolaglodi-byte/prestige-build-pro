@@ -1174,6 +1174,48 @@ function runBackTests(files) {
     }
   }
 
+  // ─── BROKEN IMPORT SYNTAX (ERROR — Babel parser crash → blank screen) ───
+  // Claude sometimes generates truncated/malformed import statements, especially
+  // multi-line imports where the `import {` gets cut off but `} from '...'` remains.
+  // Babel can't parse this → Vite crash → blank iframe.
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      // Detect orphan `} from '...'` without a preceding `import {`
+      if (/^\}\s*from\s+['"]/.test(line)) {
+        // Check if a previous line has `import {` that's still open
+        let hasOpenImport = false;
+        for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+          if (/import\s*\{/.test(lines[j]) && !lines[j].includes('}')) {
+            hasOpenImport = true;
+            break;
+          }
+        }
+        if (!hasOpenImport) {
+          issues.push({
+            file: fn,
+            issue: 'BROKEN_IMPORT_SYNTAX',
+            message: `Ligne ${i + 1}: "} from '...'" sans "import {" correspondant — import tronqué. Réécrire l'import complet sur une seule ligne.`
+          });
+        }
+      }
+    }
+    // Check for unclosed braces in the file (common syntax error)
+    const opens = (content.match(/\{/g) || []).length;
+    const closes = (content.match(/\}/g) || []).length;
+    if (opens !== closes && Math.abs(opens - closes) > 2) {
+      issues.push({
+        file: fn,
+        issue: 'UNBALANCED_BRACES',
+        severity: 'warning',
+        message: `${opens} "{" vs ${closes} "}" — accolades déséquilibrées, probable erreur de syntaxe`
+      });
+    }
+  }
+
   // ─── REQUIRE() IN TSX/JSX FILES (ERROR — Vite can't handle CommonJS in ESM) ───
   // Claude sometimes writes require() in React files (confusing frontend ESM with backend CJS).
   // Vite transpiles ESM only — require() causes "require is not defined" at runtime → blank.
