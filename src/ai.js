@@ -1330,12 +1330,15 @@ function runBackTests(files) {
 // The plan is then shown to the user for approval before any code is generated.
 const PLAN_SYSTEM_PROMPT = `Tu es Prestige AI en MODE PLANIFICATION. Tu ne codes pas. Tu produis UNIQUEMENT un plan d'action en Markdown.
 
+IMPORTANT : Le code COMPLET du projet t'est fourni ci-dessous. LIS-LE ENTIEREMENT avant de proposer un plan. Ton plan doit etre base sur le code REEL, pas sur des suppositions.
+
 REGLES STRICTES :
 - ZERO outil. Pas de write_file, edit_file, view_file. Markdown uniquement.
 - Reponse 100% en francais.
 - 600 mots maximum, concis.
 - Pas de blocs de code (\`\`\`). Juste du texte structure.
 - Si la demande est ambigue, propose 2 interpretations dans la section Objectif au lieu d'inventer.
+- Base tes propositions sur le code EXISTANT — ne propose pas de modifier des fichiers qui n'existent pas ou d'ajouter des imports deja presents.
 
 STRUCTURE IMPOSEE (4 sections, dans cet ordre exact) :
 
@@ -1368,7 +1371,9 @@ function buildPlanContext(project, history, userMessage) {
     lines.push('');
   }
 
-  // File list (no content) extracted from generated_code
+  // ── LOVABLE MODEL: send FULL file content so the plan is based on real code ──
+  // Previously: only sent file names + line counts → Claude guessed the content.
+  // Now: sends the actual code so Claude can plan based on what REALLY exists.
   let hasCode = false;
   if (project && project.generated_code && project.generated_code.length > 100) {
     try {
@@ -1376,40 +1381,12 @@ function buildPlanContext(project, history, userMessage) {
       const fileNames = Object.keys(files);
       if (fileNames.length > 0) {
         hasCode = true;
-        lines.push(`# Fichiers existants (${fileNames.length})`);
-        for (const fn of fileNames.slice(0, 60)) {
-          const lineCount = ((files[fn] || '').match(/\n/g) || []).length + 1;
-          lines.push(`- ${fn} (${lineCount} lignes)`);
-        }
-        if (fileNames.length > 60) lines.push(`- ... et ${fileNames.length - 60} autres`);
+        lines.push(`# Code actuel du projet (${fileNames.length} fichiers) — LIS TOUT avant de planifier`);
         lines.push('');
-
-        // Extract routes / tables for richer planning context
-        const appContent = files['src/App.tsx'] || files['src/App.jsx'] || '';
-        const serverContent = files['server.js'] || '';
-        const routes = (appContent.match(/<Route\s+path="([^"]+)"/g) || [])
-          .map(r => (r.match(/path="([^"]+)"/) || [])[1])
-          .filter(Boolean);
-        const tables = (serverContent.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || [])
-          .map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
-        const apiRoutes = (serverContent.match(/app\.(get|post|put|delete)\(['"]([^'"]+)['"]/g) || [])
-          .map(r => (r.match(/['"]([^'"]+)['"]/) || [])[1])
-          .filter(Boolean);
-
-        if (routes.length) {
-          lines.push(`# Routes frontend existantes`);
-          routes.forEach(r => lines.push(`- ${r}`));
-          lines.push('');
-        }
-        if (tables.length) {
-          lines.push(`# Tables SQLite existantes`);
-          tables.forEach(t => lines.push(`- ${t}`));
-          lines.push('');
-        }
-        if (apiRoutes.length) {
-          lines.push(`# Routes API existantes`);
-          apiRoutes.slice(0, 30).forEach(r => lines.push(`- ${r}`));
-          if (apiRoutes.length > 30) lines.push(`- ... et ${apiRoutes.length - 30} autres`);
+        for (const fn of fileNames) {
+          const content = files[fn] || '';
+          lines.push(`### ${fn}`);
+          lines.push(content);
           lines.push('');
         }
       }
