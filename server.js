@@ -5315,9 +5315,12 @@ Règles d'intégration automatique :
     return;
   }
 
+  // Force tool use for plan executions (type: 'any') so Claude MUST call write_file/edit_file
+  // instead of just responding with text. For normal chat, keep 'auto' (Claude decides).
+  const isPlanExecution = job.type === 'plan_execution';
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
     tools: [...CODE_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-    tool_choice: { type: 'auto' }
+    tool_choice: isPlanExecution ? { type: 'any' } : { type: 'auto' }
   };
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
@@ -9700,7 +9703,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Build generation message that injects the validated plan as the source of truth
-    const genMessage = `Implémente exactement ce plan validé par l'utilisateur. Suis-le étape par étape, sans inventer de features supplémentaires.\n\n${planRow.content}`;
+    const genMessage = `INSTRUCTION OBLIGATOIRE : Utilise write_file et edit_file pour modifier CHAQUE fichier listé ci-dessous. NE RÉPONDS PAS en texte. UTILISE LES OUTILS MAINTENANT.\n\nPlan validé par l'utilisateur — implémente chaque étape avec les outils :\n\n${planRow.content}`;
 
     // Create generation job (mirrors /api/generate/start branch for code mode)
     const jobId = crypto.randomUUID();
