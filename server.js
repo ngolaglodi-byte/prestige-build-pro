@@ -5315,12 +5315,15 @@ Règles d'intégration automatique :
     return;
   }
 
-  // Force tool use for plan executions (type: 'any') so Claude MUST call write_file/edit_file
-  // instead of just responding with text. For normal chat, keep 'auto' (Claude decides).
-  const isPlanExecution = job.type === 'plan_execution';
+  // Force tool use (type: 'any') when Claude MUST act, not just talk:
+  // - Plan execution: user approved a plan → must implement it
+  // - File upload: user uploaded a file → must integrate it in the code
+  // - Otherwise: 'auto' (Claude decides if tools are needed)
+  const hasUpload = messages.some(m => typeof m.content === 'string' && m.content.includes('INSTRUCTION OBLIGATOIRE'));
+  const forceTools = job.type === 'plan_execution' || hasUpload;
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
     tools: [...CODE_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-    tool_choice: isPlanExecution ? { type: 'any' } : { type: 'auto' }
+    tool_choice: forceTools ? { type: 'any' } : { type: 'auto' }
   };
   const payload = JSON.stringify(apiPayload);
   const opts = { hostname:'api.anthropic.com', path:'/v1/messages', method:'POST', headers:{'Content-Type':'application/json','x-api-key':ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','anthropic-beta':'prompt-caching-2024-07-31,web-search-2025-03-05','Content-Length':Buffer.byteLength(payload)} };
