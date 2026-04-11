@@ -31,6 +31,8 @@ COMPOSANTS UI : Button, Card, Input, Dialog, Tabs, Carousel, Calendar, etc. depu
 
 CONTENU : Donnees de demo EN DUR (const data = [...]). fetch() UNIQUEMENT pour formulaires. Images: picsum.photos/seed/DESCRIPTIF/W/H.
 
+URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme source d'inspiration, TOUJOURS appeler fetch_website(url) pour analyser le design, la structure, la navigation et le contenu du site AVANT de generer le code. Ne jamais ignorer une URL fournie.
+
 ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - CHAQUE composant doit avoir "export default function NomComposant()"
 - CHAQUE import doit etre declare (import { Link } from 'react-router-dom', import { useState } from 'react', etc.)
@@ -448,6 +450,8 @@ STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 QUALITE : Composants < 150 lignes. export default function. TypeScript strict.
 Loading: <Skeleton>. Erreur: toast.error(). Succes: toast.success().
 Securite : bcrypt, JWT, prepared statements, validation inputs.
+
+URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme source d'inspiration, TOUJOURS appeler fetch_website(url) pour analyser le site AVANT de modifier le code.
 
 ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - CHAQUE composant : "export default function NomComposant()"
