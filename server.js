@@ -466,6 +466,11 @@ const DEFAULT_PACKAGE_JSON = JSON.stringify({
     "react-resizable-panels": "2.1.7",
     "tailwindcss-animate": "1.0.7",
     "embla-carousel-react": "8.6.0",
+    "next-themes": "0.4.6",
+    "vaul": "1.1.2",
+    "react-hook-form": "7.54.2",
+    "@hookform/resolvers": "4.1.3",
+    zod: "3.24.4",
     express: "4.18.2",
     "better-sqlite3": "9.4.3",
     bcryptjs: "2.4.3",
@@ -4785,7 +4790,7 @@ function writeGeneratedFiles(projectDir, code, projectId) {
 
       // Fix imports of packages not in package.json — remove them to prevent Vite crash
       const INSTALLED_PACKAGES = new Set([
-        'react', 'react-dom', 'react-router-dom', 'lucide-react', 'class-variance-authority', 'clsx', 'tailwind-merge',
+        'react', 'react-dom', 'react-router-dom', 'lucide-react', 'class-variance-authority', 'clsx', 'tailwind-merge', 'next-themes', 'vaul', 'react-hook-form', '@hookform/resolvers', 'zod',
         'sonner', 'cmdk', 'date-fns', 'recharts', 'embla-carousel-react', 'react-day-picker',
         'input-otp', 'react-resizable-panels', 'tailwindcss-animate',
         '@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs',
