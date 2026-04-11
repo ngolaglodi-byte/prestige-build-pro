@@ -2587,7 +2587,7 @@ async function autoCompile() {
   const loading = document.getElementById('preview-loading');
   // Detect if preview is already loaded (check both subdomain and legacy /run/ URLs)
   const previewAlreadyLoaded = frame.src && (
-    frame.src.includes('p' + currentProject.id + '.preview.') ||
+    frame.src.includes('p' + currentProject.id + '-preview.') ||
     frame.src.includes('/run/' + currentProject.id)
   );
 
@@ -2842,7 +2842,7 @@ function loadDockerPreview(url) {
 
   // Use subdomain preview if available (FAST PATH — bypasses Node.js proxy overhead).
   // Falls back to /run/{id}/ path if subdomain is not configured.
-  const subdomainUrl = `https://p${currentProject.id}.preview.prestige-build.dev/`;
+  const subdomainUrl = `https://p${currentProject.id}-preview.prestige-build.dev/`;
   const legacyUrl = url || `/run/${currentProject.id}/`;
 
   // Try subdomain first — if it fails (DNS not configured, etc.), fall back to legacy
