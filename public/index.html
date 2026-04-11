@@ -1912,12 +1912,31 @@ function renderPlanMarkdown(md) {
 
 async function sendPlanMessage(message) {
   const input = document.getElementById('chat-input');
-  const msg = (typeof message === 'string' ? message : input.value).trim();
-  if (!msg) return;
+  let msg = (typeof message === 'string' ? message : input.value).trim();
+  if (!msg && !pendingUpload) return;
   if (!currentProject) {
     addChatMessage('assistant', 'Sélectionnez un projet avant de planifier.');
     return;
   }
+
+  // If a file is pending, upload it and include in the plan request
+  if (pendingUpload) {
+    const uploadPath = await uploadFileToProject(pendingUpload);
+    if (uploadPath) {
+      const relativePath = uploadPath.startsWith('/') ? uploadPath.substring(1) : uploadPath;
+      msg = `[Fichier uploadé : ${relativePath} (${(pendingUpload.size / 1024).toFixed(0)} KB) — inclure ce fichier dans le plan]\n\n` + (msg || `Intègre le fichier ${relativePath} dans le site.`);
+      if (pendingUpload.contentType.startsWith('image/')) {
+        const imgDiv = document.createElement('div');
+        imgDiv.className = 'chat-message user';
+        imgDiv.innerHTML = `<img src="${pendingUpload.preview}" alt="${escapeHtml(pendingUpload.filename)}" style="max-width:200px;max-height:150px;border-radius:var(--radius-sm);"/>`;
+        document.getElementById('chat-messages').appendChild(imgDiv);
+      }
+    }
+    cancelUpload();
+  }
+
+  if (!msg) return;
+
   // If a job is already running, queue this plan request instead
   if (currentJobId !== null) {
     if (typeof message !== 'string') input.value = '';
@@ -1925,7 +1944,7 @@ async function sendPlanMessage(message) {
     return;
   }
   if (typeof message !== 'string') input.value = '';
-  addChatMessage('user', msg);
+  addChatMessage('user', msg.includes('[Fichier uploadé') ? msg.split('\n\n').pop() || msg : msg);
   currentJobCancelled = false;
   // chat-plan-btn disabled (no concurrent plans). chat-send-btn becomes Stop once jobId is set.
   document.getElementById('chat-plan-btn').disabled = true;
