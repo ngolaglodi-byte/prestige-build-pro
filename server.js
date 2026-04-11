@@ -61,10 +61,13 @@ const { encryptValue, decryptValue } = encryptionService;
 const { notifyProjectClients, getProjectCollaborators, addSSEClient, removeSSEClient } = sseService;
 const { classifyComplexity, trackTokenUsage, checkUserQuota } = tokenTrackingService;
 
-// ─── NEW FEATURE SERVICES ───
-const containerExecService = require('./src/services/container-exec')(ctx);
-const conversationMemoryService = require('./src/services/conversation-memory')(ctx);
-const agentModeService = require('./src/services/agent-mode')(ctx);
+// ─── NEW FEATURE SERVICES (fail-safe: server starts even if a service fails) ───
+let containerExecService = null;
+let conversationMemoryService = null;
+let agentModeService = null;
+try { containerExecService = require('./src/services/container-exec')(ctx); } catch(e) { console.warn('[Init] container-exec not loaded:', e.message); }
+try { conversationMemoryService = require('./src/services/conversation-memory')(ctx); } catch(e) { console.warn('[Init] conversation-memory not loaded:', e.message); }
+try { agentModeService = require('./src/services/agent-mode')(ctx); } catch(e) { console.warn('[Init] agent-mode not loaded:', e.message); }
 
 // Store services in ctx for cross-module access
 ctx.services.containerExec = containerExecService;
@@ -9032,18 +9035,39 @@ const server = http.createServer(async (req, res) => {
       }
     } else if (mode === 'agent') {
       // ─── AGENT MODE: autonomous plan/execute/validate/fix loop ───
-      activeGenerations++;
-      const agentProject = project || { id: project_id, title: '', project_type: '', brief: message };
-      agentModeService.runAgentLoop(jobId, user, agentProject, message, {
-        callClaudeAPI,
-        tools: CODE_TOOLS,
-        containerExec: containerExecService,
-        readProjectFiles: readProjectFilesRecursive,
-        formatProjectCode
-      }).finally(() => { activeGenerations--; });
+      if (!agentModeService) {
+        // Agent Mode not available — fall back to standard generation
+        console.warn('[Agent] Agent Mode service not available — falling back to standard generation');
+        activeGenerations++;
+        generateClaude(messages, jobId, brief);
+      } else {
+        activeGenerations++;
+        const agentProject = project || { id: project_id, title: '', project_type: '', brief: message };
+        try {
+          agentModeService.runAgentLoop(jobId, user, agentProject, message, {
+            callClaudeAPI,
+            tools: CODE_TOOLS,
+            containerExec: containerExecService,
+            readProjectFiles: readProjectFilesRecursive,
+            formatProjectCode
+          }).catch((err) => {
+            console.error(`[Agent] runAgentLoop error: ${err.message}`);
+            const job = generationJobs.get(jobId);
+            if (job && job.status !== 'done') {
+              job.status = 'error';
+              job.error = `Agent Mode error: ${err.message}`;
+            }
+          }).finally(() => { activeGenerations--; });
+        } catch(e) {
+          console.error(`[Agent] Sync error: ${e.message}`);
+          const job = generationJobs.get(jobId);
+          if (job) { job.status = 'error'; job.error = `Agent Mode error: ${e.message}`; }
+          activeGenerations--;
+        }
+      }
 
       // Auto-summarize conversation in background
-      if (project_id) {
+      if (project_id && conversationMemoryService) {
         conversationMemoryService.autoSummarizeIfNeeded(project_id).catch(() => {});
       }
     } else {

@@ -37,6 +37,7 @@ IMAGES (CRITIQUE) :
 - Par defaut (aucune preference exprimee) : picsum.photos/seed/DESCRIPTIF/W/H.
 - Quand l'utilisateur dit "pas de [type de personnes]" ou demande un contexte specifique (africain, congolais, asiatique, etc.) → RESPECTE cette demande, utilise search_images() ou web_search() pour trouver des images appropriees.
 - Si aucune image trouvee → utilise des images de scenes/objets/equipements au lieu de personnes.
+- REGLE ABSOLUE IMAGES DE PERSONNES : Quand le contexte est africain, congolais, ou tout pays non-occidental, les images de personnes DOIVENT representer des personnes de ce contexte. JAMAIS de photos de personnes blanches pour un site africain/congolais. Utilise search_images("african students", "congolese professionals", etc.) ou des images d'equipements/batiments si aucune image appropriee n'est trouvee. picsum.photos renvoie souvent des photos de personnes blanches — NE PAS l'utiliser pour des photos de personnes dans un contexte africain.
 
 URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme source d'inspiration, TOUJOURS appeler fetch_website(url) pour analyser le design, la structure, la navigation et le contenu du site AVANT de generer le code. Ne jamais ignorer une URL fournie.
 
