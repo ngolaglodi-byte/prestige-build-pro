@@ -830,11 +830,17 @@ let queueCounter = 0;
 // ═══════════════════════════════════════════════════════════════════════════
 // API HELPER
 // ═══════════════════════════════════════════════════════════════════════════
-async function api(url, method = 'GET', body = null) {
+async function api(url, method = 'GET', body = null, _retryCount = 0) {
   const opts = { method, headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   let r;
   try { r = await fetch(url, opts); } catch (netErr) {
+    // Network error: retry once after 2s (transient blip)
+    if (_retryCount < 1) {
+      console.log('[api] network error, retrying in 2s...', url);
+      await new Promise(res => setTimeout(res, 2000));
+      return api(url, method, body, _retryCount + 1);
+    }
     throw new Error('Connexion au serveur impossible. Vérifiez votre réseau.');
   }
   if (r.status === 401) {
@@ -843,6 +849,12 @@ async function api(url, method = 'GET', body = null) {
     document.getElementById('dashboard-view').classList.remove('active');
     document.getElementById('workspace-view').classList.remove('active');
     throw new Error('Session expirée. Veuillez vous reconnecter.');
+  }
+  // Server errors (500/502/503): retry once after 3s (server may be restarting)
+  if (r.status >= 500 && _retryCount < 1) {
+    console.log('[api] server ' + r.status + ', retrying in 3s...', url);
+    await new Promise(res => setTimeout(res, 3000));
+    return api(url, method, body, _retryCount + 1);
   }
   if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || 'Erreur serveur (' + r.status + ')'); }
   return r.json();
