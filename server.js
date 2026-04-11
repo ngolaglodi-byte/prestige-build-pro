@@ -5872,8 +5872,32 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
 
         job.status = 'done';
       } else if (job.status === 'running') {
-        job.status = 'error';
-        job.error = 'La génération n\'a produit aucun résultat. Réessayez.';
+        // Before giving up, check if files were written to disk during streaming.
+        // The streaming handler writes files in REAL-TIME (line ~5395). Even if the
+        // stream ended messily (timeout, network blip, incomplete tool block), the
+        // files may already be on disk and the preview working.
+        let recovered = false;
+        if (job.project_id) {
+          try {
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+            const diskFiles = readProjectFilesRecursive(projDir);
+            const diskCode = formatProjectCode(diskFiles);
+            if (diskCode && diskCode.length > 500) {
+              job.code = diskCode;
+              job.status = 'done';
+              recovered = true;
+              db.prepare("UPDATE projects SET generated_code=?,build_status='done',status='ready',updated_at=datetime('now') WHERE id=?")
+                .run(diskCode, job.project_id);
+              console.log(`[Stream] No complete tool blocks at end, but ${Object.keys(diskFiles).length} files found on disk — recovered as done`);
+            }
+          } catch (e) {
+            console.warn(`[Stream] Disk recovery failed: ${e.message}`);
+          }
+        }
+        if (!recovered) {
+          job.status = 'error';
+          job.error = 'La génération n\'a produit aucun résultat. Réessayez.';
+        }
       }
     });
   }, (e) => {
