@@ -538,6 +538,32 @@ test('buildPlanContext is exported and callable', () => {
   assert.ok(Array.isArray(ctx) && ctx.length >= 1);
 });
 
+// ─── PACKAGE.JSON SYNC CHECK (prevents Vite crash from missing deps) ───
+// This test catches the EXACT bug that kept causing blank screens:
+// template/package.json has a dep that DEFAULT_PACKAGE_JSON doesn't.
+test('DEFAULT_PACKAGE_JSON has ALL deps from template/package.json (anti-Vite-crash)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const tplPath = path.join(__dirname, '..', 'templates', 'react', 'package.json');
+  if (!fs.existsSync(tplPath)) { console.log('  (skipped — template not found)'); return; }
+  const tpl = JSON.parse(fs.readFileSync(tplPath, 'utf8'));
+  const tplDeps = { ...tpl.dependencies, ...tpl.devDependencies };
+
+  const src = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  const m = src.match(/const DEFAULT_PACKAGE_JSON = JSON\.stringify\((\{[\s\S]*?\})\s*,\s*null/);
+  assert.ok(m, 'DEFAULT_PACKAGE_JSON not found in server.js');
+  const defaultPkg = eval('(' + m[1] + ')');
+  const defaultDeps = { ...defaultPkg.dependencies, ...defaultPkg.devDependencies };
+
+  const missing = [];
+  for (const dep of Object.keys(tplDeps)) {
+    if (!defaultDeps[dep]) missing.push(dep);
+  }
+  assert.strictEqual(missing.length, 0,
+    `DEFAULT_PACKAGE_JSON is missing ${missing.length} deps from template: ${missing.join(', ')}. ` +
+    `Each missing dep = potential Vite crash = blank screen in production.`);
+});
+
 test('SECTOR_PROFILES contains the 12 base sectors', () => {
   // Note: 28 sector PALETTES exist in server.js (color palettes), but only 12 sector
   // PROFILES exist in src/ai.js (full prompt + components + tables + pages).
