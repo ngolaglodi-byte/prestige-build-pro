@@ -10368,9 +10368,14 @@ export default defineConfig({
         const containerName = getContainerName(id);
         const isRunning = await isContainerRunningAsync(id);
         if (isRunning) {
-          execSync(`docker exec ${containerName} sh -c 'npx vite build --mode production 2>&1'`, { timeout: 120000, encoding: 'utf8' });
+          const distDir = path.join(projectDir, 'dist');
+          // Build production dist/ inside container, then copy to host
+          // (container filesystem may differ from bind mount for new dirs)
+          execSync(`docker exec ${containerName} ./node_modules/.bin/vite build`, { timeout: 120000, encoding: 'utf8' });
+          if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
+          execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           builtDist = true;
-          console.log(`[PublishUpdate] Vite build succeeded for project ${id}`);
+          console.log(`[PublishUpdate] Vite build + docker cp succeeded for project ${id}`);
         }
       } catch (e) {
         console.warn(`[PublishUpdate] Vite build failed (will use preview files): ${e.message}`);
