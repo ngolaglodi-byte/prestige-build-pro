@@ -5624,61 +5624,88 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
       }
 
       // ── VITE BUILD CHECK: the DEFINITIVE validation (like Lovable) ──
-      // Run a REAL vite build inside the container. If it fails, we get the EXACT
-      // error from Vite's parser (file, line, column, error message) and ask Claude
-      // to fix it. This catches EVERYTHING: syntax errors, missing imports, broken
-      // JSX, type errors — regardless of whether we have a regex for it.
+      // Run a REAL vite build. If it fails, ESCALATE the fix strategy until it works.
+      // Lovable doesn't show errors to users — it keeps fixing until the code compiles.
       //
-      // This replaces the pattern of adding back-test regexes one by one.
-      // Vite IS the validator. If Vite says OK → the code compiles → preview works.
+      // Escalation strategy:
+      //   Attempt 1: "Fix this error" (surgical edit)
+      //   Attempt 2: "Fix with full file context" (more context to Claude)
+      //   Attempt 3: "Rewrite the broken file completely" (fresh start on that file)
+      //   Attempt 4: "Rewrite simpler, remove the problematic pattern" (simplify)
+      //   Attempt 5: "Generate a minimal working version" (nuclear option)
       if (job.project_id) {
         const containerName = getContainerName(job.project_id);
-        const buildMaxRetries = 3;
+        const buildMaxRetries = 5;
+        let lastError = '';
 
         for (let buildAttempt = 1; buildAttempt <= buildMaxRetries; buildAttempt++) {
           try {
             const isRunning = await isContainerRunningAsync(job.project_id);
-            if (!isRunning) break; // can't build if container is down
+            if (!isRunning) break;
 
             job.progressMessage = buildAttempt === 1
               ? 'Vérification du build...'
-              : `Correction automatique (tentative ${buildAttempt}/${buildMaxRetries})...`;
+              : `Correction automatique (${buildAttempt}/${buildMaxRetries})...`;
 
-            // Run vite build — if it succeeds, the code is valid
             execSync(
               `docker exec ${containerName} npx vite build --mode development 2>&1`,
               { timeout: 60000, encoding: 'utf8' }
             );
-            console.log(`[BuildCheck] vite build OK for project ${job.project_id}`);
-            break; // ✅ Build succeeded — code is valid
+            console.log(`[BuildCheck] vite build OK for project ${job.project_id} (attempt ${buildAttempt})`);
+            break; // ✅ Build succeeded
 
           } catch (buildErr) {
-            // ❌ Build failed — extract the EXACT error
             const errorOutput = (buildErr.stdout || '') + (buildErr.stderr || buildErr.message || '');
-            // Extract the most useful part (Vite error lines, not the full stack)
             const errorLines = errorOutput.split('\n')
               .filter(l => l.includes('error') || l.includes('Error') || l.includes('✘') ||
                            l.includes('Could not resolve') || l.includes('Unexpected') ||
                            l.includes('is not defined') || l.includes('does not exist') ||
+                           l.includes('Failed to resolve') || l.includes('SyntaxError') ||
                            /\.(tsx|ts|jsx|js):\d+/.test(l))
               .slice(0, 10)
               .join('\n');
-            const shortError = errorLines || errorOutput.substring(0, 500);
+            lastError = errorLines || errorOutput.substring(0, 800);
 
-            console.log(`[BuildCheck] vite build FAILED (attempt ${buildAttempt}/${buildMaxRetries}): ${shortError.substring(0, 200)}`);
+            // Extract the broken file name from the error
+            const brokenFile = lastError.match(/\/app\/([^\s:]+\.(tsx|ts|jsx|js))/)?.[1] || '';
+
+            console.log(`[BuildCheck] FAILED attempt ${buildAttempt}/${buildMaxRetries}: ${lastError.substring(0, 200)}`);
 
             if (buildAttempt >= buildMaxRetries) {
-              // Give up — log the error, let the user see the result anyway
-              console.warn(`[BuildCheck] Failed after ${buildMaxRetries} attempts. Proceeding with broken code.`);
-              log('warn', 'build', 'vite build failed after max retries', {
-                jobId, projectId: job.project_id, error: shortError.substring(0, 500)
+              // Last resort: log but DON'T give up silently. The code should at least
+              // be in a state where the previous attempts improved it.
+              log('warn', 'build', 'vite build: max retries reached', {
+                jobId, projectId: job.project_id, error: lastError.substring(0, 500)
               });
               break;
             }
 
-            // Ask Claude to fix the EXACT error
+            // ── ESCALATING FIX STRATEGY ──
+            let fixPrompt;
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+
+            if (buildAttempt === 1) {
+              // Attempt 1: surgical fix
+              fixPrompt = `Le build Vite a échoué. Erreur exacte :\n\n${lastError}\n\nCorrige avec edit_file. Ne touche que le fichier cassé.`;
+
+            } else if (buildAttempt === 2) {
+              // Attempt 2: fix with full file context
+              let fileContent = '';
+              if (brokenFile) {
+                try { fileContent = fs.readFileSync(path.join(projDir, brokenFile), 'utf8'); } catch(_) {}
+              }
+              fixPrompt = `Le build Vite échoue ENCORE. Erreur :\n\n${lastError}\n\n${brokenFile ? `Contenu actuel de ${brokenFile} :\n\`\`\`\n${fileContent.substring(0, 3000)}\n\`\`\`\n\n` : ''}Réécris le fichier cassé EN ENTIER avec write_file. Assure-toi que tous les imports sont corrects et complets.`;
+
+            } else if (buildAttempt === 3) {
+              // Attempt 3: rewrite simpler
+              fixPrompt = `Le build Vite échoue après 2 tentatives de correction. Erreur :\n\n${lastError}\n\n${brokenFile ? `Le fichier ${brokenFile} est fondamentalement cassé.` : ''} RÉÉCRIS-LE COMPLÈTEMENT avec write_file. Version SIMPLIFIÉE : moins d'imports, moins de composants complexes. Utilise UNIQUEMENT des composants basiques (div, button, h1, p). Pas de composants shadcn/ui complexes dans ce fichier.`;
+
+            } else {
+              // Attempt 4: nuclear — minimal working version
+              fixPrompt = `URGENT : le build échoue depuis 3 tentatives. Erreur :\n\n${lastError}\n\n${brokenFile ? `Réécris ${brokenFile}` : 'Réécris le fichier cassé'} avec write_file. Version MINIMALE qui compile :\n- export default function NomComposant() { return <div>Contenu</div>; }\n- Importe UNIQUEMENT React si nécessaire\n- AUCUN import complexe\n- Le but est que ça COMPILE, on améliorera après.`;
+            }
+
             try {
-              const fixPrompt = `Le code que tu as généré ne compile PAS. Voici l'erreur exacte de Vite build :\n\n${shortError}\n\nCorrige le(s) fichier(s) concerné(s) avec edit_file ou write_file. Ne touche que ce qui est cassé.`;
               const fixSystemBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige les erreurs.' }];
               const fixCode = await callClaudeAPI(
                 fixSystemBlocks,
@@ -5688,12 +5715,11 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
                 { useTools: true }
               );
               if (fixCode) {
-                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 writeGeneratedFiles(projDir, fixCode, job.project_id);
-                console.log(`[BuildCheck] Claude fix applied, retrying build...`);
+                console.log(`[BuildCheck] Fix applied (strategy ${buildAttempt}), retrying build...`);
               }
             } catch (fixErr) {
-              console.warn(`[BuildCheck] Claude fix failed: ${fixErr.message}`);
+              console.warn(`[BuildCheck] Fix attempt ${buildAttempt} failed: ${fixErr.message}`);
             }
           }
         }
