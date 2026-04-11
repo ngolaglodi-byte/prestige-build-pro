@@ -656,11 +656,7 @@ button.card { padding: 0; }
           </div>
           <div class="preview-container"><div class="preview-frame-wrapper" id="preview-frame-wrapper"><div class="preview-loading" id="preview-loading"><div class="preview-loading-animation"><div class="preview-pulse-ring"></div><div class="preview-pulse-ring delay-1"></div><div class="preview-pulse-ring delay-2"></div><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><span class="preview-loading-text">Préparation de votre espace...</span><span class="preview-loading-sub" id="preview-sub"></span></div><iframe id="preview-frame" class="preview-frame" style="display:none;" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe></div></div>
         </div>
-        <aside class="workspace-code" id="code-panel">
-          <div class="code-header"><span class="code-title">Code généré</span><button class="btn btn-ghost btn-icon" onclick="toggleCodePanel()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
-          <pre class="code-editor" id="code-editor"></pre>
-          <div class="code-footer"><button class="btn btn-primary" id="compile-btn" style="width:100%;" onclick="compileProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Compiler</button></div>
-        </aside>
+        <!-- Code editor panel removed: Fichiers tab in sidebar replaces it (like Lovable) -->
       </div>
       <div class="error-console" id="error-console"><div class="error-console-header"><span class="error-console-title">Console d'erreurs</span><button class="btn btn-ghost btn-icon" onclick="closeErrorConsole()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div><div class="error-console-content" id="error-console-content"></div></div>
     </div>
@@ -1217,9 +1213,7 @@ async function openWorkspace(id) {
   connectProjectSSE(id);
   if (currentProject.generated_code) {
     generatedCode = currentProject.generated_code;
-    // Performance: don't dump 100-500KB of raw code into the DOM — causes typing lag.
-// Show a summary instead. Full code is in the `generatedCode` variable for export.
-document.getElementById('code-editor').textContent = generatedCode.length > 5000 ? generatedCode.substring(0, 5000) + '\n\n... (' + Math.round(generatedCode.length / 1024) + ' KB total — code complet disponible via export)' : generatedCode;
+    updateFileTree(generatedCode);
   }
 
   // Preview: Docker container proxy (like Lovable's fly.io VMs)
@@ -1286,7 +1280,7 @@ function resetPreviewUI() {
   document.getElementById('preview-status').className = 'preview-status';
   document.getElementById('preview-status').innerHTML = '<span>Prêt</span>';
   document.getElementById('chat-messages').innerHTML = '';
-  document.getElementById('code-editor').textContent = '';
+  document.getElementById('files-tree').innerHTML = '<p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Les fichiers générés apparaîtront ici.</p>';
   document.getElementById('error-console').classList.remove('active');
 }
 
@@ -1801,9 +1795,7 @@ async function sendChatMessage(message) {
 
       if (job.status === 'done') {
         generatedCode = job.code;
-        // Performance: don't dump 100-500KB of raw code into the DOM — causes typing lag.
-// Show a summary instead. Full code is in the `generatedCode` variable for export.
-document.getElementById('code-editor').textContent = generatedCode.length > 5000 ? generatedCode.substring(0, 5000) + '\n\n... (' + Math.round(generatedCode.length / 1024) + ' KB total — code complet disponible via export)' : generatedCode;
+        updateFileTree(generatedCode);
         _liveFilesDiv = null; // Stop SSE file updates in chat
 
         // Count files that were shown live
@@ -2091,8 +2083,7 @@ async function approvePlan(planId, container, actionsEl) {
           currentProject.build_status = 'done';
         }
         generatedCode = job.code;
-        const editor = document.getElementById('code-editor');
-        if (editor) editor.textContent = generatedCode;
+        updateFileTree(generatedCode);
         await autoCompile();
         attachFeedbackButtons(container, job_id);
         break;
@@ -2174,9 +2165,7 @@ async function generateFromImage(prompt) {
 
       if (job.status === 'done') {
         generatedCode = job.code;
-        // Performance: don't dump 100-500KB of raw code into the DOM — causes typing lag.
-// Show a summary instead. Full code is in the `generatedCode` variable for export.
-document.getElementById('code-editor').textContent = generatedCode.length > 5000 ? generatedCode.substring(0, 5000) + '\n\n... (' + Math.round(generatedCode.length / 1024) + ' KB total — code complet disponible via export)' : generatedCode;
+        updateFileTree(generatedCode);
         assistantDiv.textContent = job.chat_message || 'Design reproduit avec succès !';
         if (job.credentials) {
           projectCredentials = job.credentials;
@@ -2502,9 +2491,7 @@ async function sendChatMessageWithSkip(message, existingContainer) {
       }
       if (job.status === 'done') {
         generatedCode = job.code;
-        // Performance: don't dump 100-500KB of raw code into the DOM — causes typing lag.
-// Show a summary instead. Full code is in the `generatedCode` variable for export.
-document.getElementById('code-editor').textContent = generatedCode.length > 5000 ? generatedCode.substring(0, 5000) + '\n\n... (' + Math.round(generatedCode.length / 1024) + ' KB total — code complet disponible via export)' : generatedCode;
+        updateFileTree(generatedCode);
         _liveFilesDiv = null;
         const fileCount = existingContainer.querySelectorAll('[data-file]').length;
         if (job.chat_message) {
@@ -2759,7 +2746,91 @@ async function restartProject() {
 // ═══════════════════════════════════════════════════════════════════════════
 // CODE PANEL
 // ═══════════════════════════════════════════════════════════════════════════
-function toggleCodePanel() { document.getElementById('code-panel').classList.toggle('open'); }
+function toggleCodePanel() { /* removed — code panel no longer exists */ }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FILE TREE — shows generated files in the sidebar (replaces code-editor)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Parse generatedCode (### markers) and build a clickable file tree
+function updateFileTree(code) {
+  const tree = document.getElementById('files-tree');
+  if (!tree) return;
+  if (!code || code.length < 10) {
+    tree.innerHTML = '<p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Les fichiers générés apparaîtront ici.</p>';
+    return;
+  }
+
+  // Parse ### filename markers
+  const files = [];
+  const sections = code.split(/^### /m);
+  for (const section of sections) {
+    if (!section.trim()) continue;
+    const newlineIdx = section.indexOf('\n');
+    if (newlineIdx < 0) continue;
+    const filename = section.substring(0, newlineIdx).trim();
+    const content = section.substring(newlineIdx + 1);
+    if (filename && content) {
+      files.push({ name: filename, size: content.length });
+    }
+  }
+
+  if (files.length === 0) {
+    tree.innerHTML = '<p style="padding:var(--space-md);color:var(--text-muted);font-size:0.875rem;">Aucun fichier détecté.</p>';
+    return;
+  }
+
+  // Group by directory
+  const dirs = {};
+  for (const f of files) {
+    const parts = f.name.split('/');
+    const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '.';
+    if (!dirs[dir]) dirs[dir] = [];
+    dirs[dir].push({ name: parts[parts.length - 1], fullPath: f.name, size: f.size });
+  }
+
+  // Render
+  let html = `<div style="padding:var(--space-sm) var(--space-md);font-size:0.75rem;color:var(--text-muted);border-bottom:var(--border-default);margin-bottom:var(--space-sm);">${files.length} fichier${files.length > 1 ? 's' : ''} — ${Math.round(code.length / 1024)} KB</div>`;
+  const sortedDirs = Object.keys(dirs).sort();
+  for (const dir of sortedDirs) {
+    if (dir !== '.') {
+      html += `<div style="padding:4px var(--space-md);font-size:0.78rem;color:var(--gold);font-weight:600;margin-top:8px;display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>${escapeHtml(dir)}/</div>`;
+    }
+    for (const f of dirs[dir].sort((a, b) => a.name.localeCompare(b.name))) {
+      const icon = f.name.endsWith('.tsx') || f.name.endsWith('.jsx') ? '⚛' : f.name.endsWith('.css') ? '🎨' : f.name.endsWith('.js') ? '⚙' : f.name.endsWith('.json') ? '📋' : f.name.endsWith('.html') ? '🌐' : '📄';
+      const sizeKB = (f.size / 1024).toFixed(1);
+      html += `<div class="file-item" title="${escapeHtml(f.fullPath)}"><span>${icon}</span><span style="flex:1;font-family:var(--font-mono);font-size:0.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(f.name)}</span><span style="font-size:0.7rem;color:var(--text-muted);">${sizeKB}KB</span></div>`;
+    }
+  }
+  tree.innerHTML = html;
+}
+
+// Add a single file during streaming (called from SSE file_written handler)
+function addFileToTree(filePath, size) {
+  const tree = document.getElementById('files-tree');
+  if (!tree) return;
+  // Remove the "no files" placeholder if present
+  const placeholder = tree.querySelector('p');
+  if (placeholder) placeholder.remove();
+
+  // Check if this file already exists in the tree
+  const existing = tree.querySelector(`[title="${filePath}"]`);
+  if (existing) {
+    // Update size
+    const sizeEl = existing.querySelector('span:last-child');
+    if (sizeEl) sizeEl.textContent = (size / 1024).toFixed(1) + 'KB';
+    return;
+  }
+
+  const icon = filePath.endsWith('.tsx') || filePath.endsWith('.jsx') ? '⚛' : filePath.endsWith('.css') ? '🎨' : filePath.endsWith('.js') ? '⚙' : filePath.endsWith('.json') ? '📋' : filePath.endsWith('.html') ? '🌐' : '📄';
+  const fileName = filePath.split('/').pop();
+  const sizeKB = (size / 1024).toFixed(1);
+  const div = document.createElement('div');
+  div.className = 'file-item';
+  div.title = filePath;
+  div.innerHTML = `<span>${icon}</span><span style="flex:1;font-family:var(--font-mono);font-size:0.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(fileName)}</span><span style="font-size:0.7rem;color:var(--text-muted);">${sizeKB}KB</span>`;
+  tree.appendChild(div);
+}
 
 // Auto-compile after code generation is complete
 async function autoCompile() {
@@ -3112,9 +3183,7 @@ async function restoreVersion(versionId) {
     await api('/api/projects/' + currentProject.id + '/versions/' + versionId + '/restore', 'POST');
     currentProject = await api('/api/projects/' + currentProject.id);
     generatedCode = currentProject.generated_code;
-    // Performance: don't dump 100-500KB of raw code into the DOM — causes typing lag.
-// Show a summary instead. Full code is in the `generatedCode` variable for export.
-document.getElementById('code-editor').textContent = generatedCode.length > 5000 ? generatedCode.substring(0, 5000) + '\n\n... (' + Math.round(generatedCode.length / 1024) + ' KB total — code complet disponible via export)' : generatedCode;
+    updateFileTree(generatedCode);
     // Reload preview: WC if available, Docker otherwise
     loadPreview();
     loadVersionHistory();
@@ -3327,13 +3396,8 @@ function connectProjectSSE(projectId) {
           _liveFilesDiv.appendChild(line);
           _liveFilesDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
         }
-        // Update code panel in real-time
-        const codeEditor = document.getElementById('code-editor');
-        if (codeEditor && data.content) {
-          codeEditor.textContent = (codeEditor.textContent || '').length > 50000
-            ? '### ' + data.path + '\n' + data.content.substring(0, 500) + '...\n'
-            : (codeEditor.textContent || '') + '\n### ' + data.path + '\n' + data.content.substring(0, 200) + '...\n';
-        }
+        // Update file tree in sidebar with newly written file
+        addFileToTree(data.path, (data.content || '').length);
       }
 
       if (data.type === 'file_edited' && data.path && _liveFilesDiv) {
