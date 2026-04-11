@@ -6427,21 +6427,29 @@ async function isContainerRunningAsync(projectId) {
 }
 
 // Stop and remove container (using dockerode)
+// STOP a container — NEVER remove it. Data persists in bind mounts.
+// Only removeContainerAsync (called by DELETE project) actually removes containers.
 async function stopContainerAsync(projectId) {
   if (!docker) return;
   const containerName = getContainerName(projectId);
   try {
     const container = docker.getContainer(containerName);
-    try {
-      await container.stop({ t: 10 });
-    } catch (e) {
-      // Container might not be running
-    }
-    try {
-      await container.remove({ force: true });
-    } catch (e) {
-      // Container might not exist
-    }
+    await container.stop({ t: 10 });
+    console.log(`[Container] Stopped ${containerName}`);
+  } catch (e) {
+    // Container might not be running or not exist — that's OK
+  }
+}
+
+// REMOVE a container permanently — only called when DELETING a project
+async function removeContainerAsync(projectId) {
+  if (!docker) return;
+  const containerName = getContainerName(projectId);
+  try {
+    const container = docker.getContainer(containerName);
+    try { await container.stop({ t: 5 }); } catch {}
+    await container.remove({ force: true });
+    console.log(`[Container] Removed ${containerName}`);
   } catch (e) {
     // Container doesn't exist
   }
@@ -10276,10 +10284,10 @@ export default defineConfig({
       try { fs.rmSync(previewDir, { recursive: true, force: true }); } catch(e) { console.warn('Preview cleanup error:', e.message); }
     }
     
-    // Clean up Docker container and image
+    // Clean up Docker container and image — ONLY on project DELETE
     if (isDockerAvailable()) {
       try {
-        await stopContainerAsync(id);
+        await removeContainerAsync(id);
         await removeContainerImageAsync(id);
       } catch(e) { console.warn('Docker cleanup error:', e.message); }
     }
