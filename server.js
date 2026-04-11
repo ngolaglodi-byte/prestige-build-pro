@@ -2198,7 +2198,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             // Continue conversation with tool results so Claude generates ALL files
             // Without this, Claude stops after the first batch of write_file calls
             const allToolCalls = r.content.filter(b => b.type === 'tool_use');
-            if (allToolCalls.length > 0 && (opts._depth || 0) < 8) {
+            // Agent loop depth: how many tool-call rounds Claude can do in one session.
+            // 8 was too low for complex tasks. 25 matches Claude Code's behavior:
+            // Claude can read files, modify, verify, re-modify, etc. autonomously.
+            if (allToolCalls.length > 0 && (opts._depth || 0) < 25) {
               (async () => {
                 try {
                   const toolResults = [];
