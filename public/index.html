@@ -1785,7 +1785,9 @@ async function sendChatMessage(message) {
         if (!pollRes.ok) throw new Error('Erreur serveur');
         job = await pollRes.json();
       } catch (pollErr) {
-        assistantDiv.textContent = 'Connexion interrompue, nouvelle tentative...';
+        // Silent retry — don't show technical network blips to the user (Lovable model).
+        // Only log to console for debugging. The user sees the loading spinner unchanged.
+        console.log('[poll] network blip, retrying silently...');
         continue;
       }
 
@@ -2153,7 +2155,9 @@ async function generateFromImage(prompt) {
         if (!pollRes.ok) throw new Error('Erreur serveur');
         job = await pollRes.json();
       } catch (pollErr) {
-        assistantDiv.textContent = 'Connexion interrompue, nouvelle tentative...';
+        // Silent retry — don't show technical network blips to the user (Lovable model).
+        // Only log to console for debugging. The user sees the loading spinner unchanged.
+        console.log('[poll] network blip, retrying silently...');
         continue;
       }
 
