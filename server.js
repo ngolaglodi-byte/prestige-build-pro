@@ -5324,104 +5324,116 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
         }
       }
 
-      // ── VITE BUILD CHECK: the DEFINITIVE validation (like Lovable) ──
-      // Run a REAL vite build. If it fails, ESCALATE the fix strategy until it works.
-      // Lovable doesn't show errors to users — it keeps fixing until the code compiles.
+      // ── DEV SERVER HEALTH CHECK (like Lovable — fast, not full build) ──
+      // Instead of running `vite build` (60s+ per attempt, up to 5 attempts = 300s),
+      // just check that the Vite dev server responds with valid HTML.
+      // The dev server is ALREADY running in the container via HMR.
+      // If it responds → code works. If not → read error from container logs → fix.
       //
-      // Escalation strategy:
-      //   Attempt 1: "Fix this error" (surgical edit)
-      //   Attempt 2: "Fix with full file context" (more context to Claude)
-      //   Attempt 3: "Rewrite the broken file completely" (fresh start on that file)
-      //   Attempt 4: "Rewrite simpler, remove the problematic pattern" (simplify)
-      //   Attempt 5: "Generate a minimal working version" (nuclear option)
+      // vite build is ONLY used at PUBLISH time (not after every generation).
+      // This matches Lovable: they use HMR/dev server check, not production build.
       if (job.project_id) {
         const containerName = getContainerName(job.project_id);
-        const buildMaxRetries = 5;
-        let lastError = '';
+        const healthMaxRetries = 3;
 
-        for (let buildAttempt = 1; buildAttempt <= buildMaxRetries; buildAttempt++) {
+        for (let healthAttempt = 1; healthAttempt <= healthMaxRetries; healthAttempt++) {
           try {
             const isRunning = await isContainerRunningAsync(job.project_id);
             if (!isRunning) break;
 
-            job.progressMessage = buildAttempt === 1
-              ? 'Vérification du build...'
-              : `Correction automatique (${buildAttempt}/${buildMaxRetries})...`;
+            job.progressMessage = healthAttempt === 1
+              ? 'Vérification du preview...'
+              : `Correction automatique (${healthAttempt}/${healthMaxRetries})...`;
 
-            execSync(
-              `docker exec ${containerName} npx vite build --mode development 2>&1`,
-              { timeout: 60000, encoding: 'utf8' }
-            );
-            console.log(`[BuildCheck] vite build OK for project ${job.project_id} (attempt ${buildAttempt})`);
-            break; // ✅ Build succeeded
+            // Wait briefly for Vite HMR to process the new files (500ms polling interval)
+            await new Promise(r => setTimeout(r, 2000));
 
-          } catch (buildErr) {
-            const errorOutput = (buildErr.stdout || '') + (buildErr.stderr || buildErr.message || '');
-            const errorLines = errorOutput.split('\n')
-              .filter(l => l.includes('error') || l.includes('Error') || l.includes('✘') ||
-                           l.includes('Could not resolve') || l.includes('Unexpected') ||
-                           l.includes('is not defined') || l.includes('does not exist') ||
-                           l.includes('Failed to resolve') || l.includes('SyntaxError') ||
-                           /\.(tsx|ts|jsx|js):\d+/.test(l))
-              .slice(0, 10)
-              .join('\n');
-            lastError = errorLines || errorOutput.substring(0, 800);
+            // Check 1: Vite dev server responds with HTML containing <div id="root">
+            const hostname = getContainerHostname(job.project_id);
+            const healthOk = await new Promise(resolve => {
+              const req = http.get(`http://${hostname}:5173/run/${job.project_id}/`, { timeout: 5000 }, (res) => {
+                let body = '';
+                res.on('data', c => body += c);
+                res.on('end', () => resolve(res.statusCode < 400 && body.includes('id="root"')));
+              });
+              req.on('error', () => resolve(false));
+              req.on('timeout', () => { req.destroy(); resolve(false); });
+            });
 
-            // Extract the broken file name from the error
-            const brokenFile = lastError.match(/\/app\/([^\s:]+\.(tsx|ts|jsx|js))/)?.[1] || '';
+            if (healthOk) {
+              // Check 2: read container logs for Vite errors (fast — no build needed)
+              let hasViteErrors = false;
+              let viteError = '';
+              try {
+                const logs = execSync(`docker logs --tail 30 ${containerName} 2>&1`, { timeout: 5000, encoding: 'utf8' });
+                const errorLines = logs.split('\n').filter(l =>
+                  (l.includes('[vite]') && (l.includes('error') || l.includes('Error'))) ||
+                  l.includes('Failed to resolve') || l.includes('SyntaxError') ||
+                  l.includes('does not provide an export')
+                );
+                if (errorLines.length > 0) {
+                  hasViteErrors = true;
+                  viteError = errorLines.slice(-3).join('\n');
+                }
+              } catch (_) {}
 
-            console.log(`[BuildCheck] FAILED attempt ${buildAttempt}/${buildMaxRetries}: ${lastError.substring(0, 200)}`);
+              if (!hasViteErrors) {
+                console.log(`[HealthCheck] Vite dev server OK for project ${job.project_id} (${healthAttempt})`);
+                break; // ✅ Preview works
+              }
+              // Has errors in logs but server responds → fix the error
+              console.log(`[HealthCheck] Vite responding but has errors: ${viteError.substring(0, 150)}`);
+            } else {
+              // Dev server not responding — read logs for the error
+              try {
+                const logs = execSync(`docker logs --tail 20 ${containerName} 2>&1`, { timeout: 5000, encoding: 'utf8' });
+                const errorLines = logs.split('\n').filter(l =>
+                  l.includes('error') || l.includes('Error') || l.includes('Failed') || l.includes('SyntaxError')
+                ).slice(-5);
+                viteError = errorLines.join('\n') || 'Vite dev server not responding';
+              } catch (_) {
+                viteError = 'Cannot read container logs';
+              }
+              console.log(`[HealthCheck] Vite NOT responding for project ${job.project_id}: ${viteError.substring(0, 150)}`);
+            }
 
-            if (buildAttempt >= buildMaxRetries) {
-              // Last resort: log but DON'T give up silently. The code should at least
-              // be in a state where the previous attempts improved it.
-              log('warn', 'build', 'vite build: max retries reached', {
-                jobId, projectId: job.project_id, error: lastError.substring(0, 500)
+            // If we're on the last attempt, don't try to fix — just log and proceed
+            if (healthAttempt >= healthMaxRetries) {
+              log('warn', 'health', 'dev server check failed after retries', {
+                jobId, projectId: job.project_id
               });
               break;
             }
 
-            // ── ESCALATING FIX STRATEGY ──
-            let fixPrompt;
+            // Ask Claude to fix the error (same escalation as before but lighter)
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+            const brokenFile = (viteError || '').match(/\/app\/([^\s:]+\.(tsx|ts|jsx|js))/)?.[1] || '';
+            let fixPrompt;
 
-            if (buildAttempt === 1) {
-              // Attempt 1: surgical fix
-              fixPrompt = `Le build Vite a échoué. Erreur exacte :\n\n${lastError}\n\nCorrige avec edit_file. Ne touche que le fichier cassé.`;
-
-            } else if (buildAttempt === 2) {
-              // Attempt 2: fix with full file context
-              let fileContent = '';
-              if (brokenFile) {
-                try { fileContent = fs.readFileSync(path.join(projDir, brokenFile), 'utf8'); } catch(_) {}
-              }
-              fixPrompt = `Le build Vite échoue ENCORE. Erreur :\n\n${lastError}\n\n${brokenFile ? `Contenu actuel de ${brokenFile} :\n\`\`\`\n${fileContent.substring(0, 3000)}\n\`\`\`\n\n` : ''}Réécris le fichier cassé EN ENTIER avec write_file. Assure-toi que tous les imports sont corrects et complets.`;
-
-            } else if (buildAttempt === 3) {
-              // Attempt 3: rewrite simpler
-              fixPrompt = `Le build Vite échoue après 2 tentatives de correction. Erreur :\n\n${lastError}\n\n${brokenFile ? `Le fichier ${brokenFile} est fondamentalement cassé.` : ''} RÉÉCRIS-LE COMPLÈTEMENT avec write_file. Version SIMPLIFIÉE : moins d'imports, moins de composants complexes. Utilise UNIQUEMENT des composants basiques (div, button, h1, p). Pas de composants shadcn/ui complexes dans ce fichier.`;
-
+            if (healthAttempt === 1) {
+              fixPrompt = `Erreur Vite détectée :\n\n${viteError}\n\nCorrige avec edit_file.`;
             } else {
-              // Attempt 4: nuclear — minimal working version
-              fixPrompt = `URGENT : le build échoue depuis 3 tentatives. Erreur :\n\n${lastError}\n\n${brokenFile ? `Réécris ${brokenFile}` : 'Réécris le fichier cassé'} avec write_file. Version MINIMALE qui compile :\n- export default function NomComposant() { return <div>Contenu</div>; }\n- Importe UNIQUEMENT React si nécessaire\n- AUCUN import complexe\n- Le but est que ça COMPILE, on améliorera après.`;
+              fixPrompt = `Erreur Vite persiste :\n\n${viteError}\n\n${brokenFile ? `Réécris ${brokenFile} EN ENTIER avec write_file, version simplifiée.` : 'Corrige le fichier cassé avec write_file.'}`;
             }
 
             try {
-              const fixSystemBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige les erreurs.' }];
               const fixCode = await callClaudeAPI(
-                fixSystemBlocks,
+                [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Corrige.' }],
                 [{ role: 'user', content: fixPrompt }],
                 16000,
-                { userId: job.user_id, projectId: job.project_id, operation: 'build-fix', jobId },
+                { userId: job.user_id, projectId: job.project_id, operation: 'health-fix', jobId },
                 { useTools: true }
               );
               if (fixCode) {
                 writeGeneratedFiles(projDir, fixCode, job.project_id);
-                console.log(`[BuildCheck] Fix applied (strategy ${buildAttempt}), retrying build...`);
+                console.log(`[HealthCheck] Fix applied (attempt ${healthAttempt}), rechecking...`);
               }
             } catch (fixErr) {
-              console.warn(`[BuildCheck] Fix attempt ${buildAttempt} failed: ${fixErr.message}`);
+              console.warn(`[HealthCheck] Fix failed: ${fixErr.message}`);
             }
+          } catch (e) {
+            console.warn(`[HealthCheck] Check failed (non-fatal): ${e.message}`);
+            break;
           }
         }
       }
