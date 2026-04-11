@@ -84,7 +84,15 @@ SCOPE STRICT (CRITIQUE) :
 - Si tu es tente de "faire mieux" en ajoutant quelque chose, RESISTE
 - Ne modifie PAS de fichiers que tu n'as pas explicitement besoin de toucher
 - Pas de defensive coding non demande (pas de validation, fallback, retry, error handling supplementaire)
-- 3 lignes similaires valent mieux qu'une abstraction premature`;
+- 3 lignes similaires valent mieux qu'une abstraction premature
+
+AUTONOMIE (comme un vrai developpeur) :
+- Tu as acces a TOUS les fichiers du projet. LIS-LES avant de modifier.
+- Avant de modifier un fichier, VERIFIE les imports et dependances dans les autres fichiers.
+- Apres tes modifications, verifie la COHERENCE : les routes dans App.tsx matchent les pages, les API dans server.js matchent les fetch() dans les composants, les tables SQL matchent les colonnes utilisees.
+- Si l'utilisateur mentionne un probleme visuel, utilise read_console_logs() pour voir les erreurs.
+- Si l'utilisateur donne une URL, utilise fetch_website() pour analyser le site.
+- Tu es AUTONOME : ne demande pas de permission pour lire des fichiers ou verifier ton travail. FAIS-LE.`;
 
 
 // ─── SECTOR PROFILES (INVISIBLE TEMPLATES) ───
@@ -473,6 +481,8 @@ ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
 
+AUTONOMIE : Tu vois TOUS les fichiers du projet. Avant de modifier, LIS le code existant pour comprendre la structure. Apres modification, VERIFIE la coherence (routes, imports, API, SQL). Si probleme visuel → read_console_logs(). Si URL fournie → fetch_website(). Tu es autonome — agis comme un vrai developpeur.
+
 NPM : pdfkit, nodemailer, stripe, socket.io, multer, sharp, qrcode, exceljs, csv-parse, marked, axios
 
 LUCIDE-REACT — ATTENTION (CRITIQUE) :
@@ -768,46 +778,15 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     let projectContext = structure;
 
-    // ── FILE SELECTION: LLM (GPT-4 Mini) or regex fallback ──
-    // Like Lovable: use a fast model to pick relevant files before Claude Sonnet
-    const filesToSend = [];
-    const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle/i.test(userMessage);
-
-    if (isMajor) {
-      allFileNames.forEach(f => filesToSend.push(f));
-    } else if (llmSelectedFiles && llmSelectedFiles.length > 0) {
-      // GPT-4 Mini selected the files — use its selection + always include App.tsx
-      console.log(`[Context] Using GPT-4 Mini file selection: ${llmSelectedFiles.join(', ')}`);
-      if (!llmSelectedFiles.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
-      for (const f of llmSelectedFiles) {
-        if (files[f]) filesToSend.push(f);
-      }
-    } else {
-      // Regex fallback (no OpenAI key or GPT-4 Mini failed)
-      if (files['src/App.tsx']) filesToSend.push('src/App.tsx');
-      if (files['src/index.css']) filesToSend.push('src/index.css');
-      if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
-      if (affected.packageJson && files['package.json']) filesToSend.push('package.json');
-      if (affected.mainJsx && files['src/main.tsx']) filesToSend.push('src/main.tsx');
-      if (affected.viteConfig && files['vite.config.js']) filesToSend.push('vite.config.js');
-      if (affected.indexHtml && files['index.html']) filesToSend.push('index.html');
-      for (const comp of affected.components) {
-        const key = `src/components/${comp}.tsx`;
-        if (files[key]) filesToSend.push(key);
-      }
-      for (const page of affected.pages) {
-        const key = `src/pages/${page}.tsx`;
-        if (files[key]) filesToSend.push(key);
-      }
-      if (affected.serverJs && affected.appJsx) {
-        const homePage = allFileNames.find(f => f.includes('Home.tsx'));
-        if (homePage && !filesToSend.includes(homePage)) filesToSend.push(homePage);
-      }
-    }
-
-    // Deduplicate
-    const uniqueFiles = [...new Set(filesToSend)];
-    const notSent = allFileNames.filter(f => !uniqueFiles.includes(f));
+    // ── LOVABLE MODEL: send ALL files to Claude (full project visibility) ──
+    // Previously: GPT-4 Mini selected 3-5 files → Claude only saw partial code.
+    // Now: ALL files are sent. Claude sees the ENTIRE project, understands all
+    // dependencies, and makes coherent modifications. With 450K input tokens,
+    // a typical 30-50 file project (~50-100K tokens) fits easily.
+    //
+    // This matches Lovable: the AI always has full project context.
+    const uniqueFiles = allFileNames;
+    const notSent = [];
 
     projectContext += `\n\nFICHIERS DU PROJET (contenu complet — retourne SEULEMENT ceux que tu MODIFIES):`;
     for (const fn of uniqueFiles) {
