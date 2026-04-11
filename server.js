@@ -5976,18 +5976,32 @@ function serveBuilt(res, buildId, filePath) {
 const MIME_TYPES = {
   '.html': 'text/html',
   '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
   '.jsx': 'application/javascript',
+  '.ts': 'application/javascript',
+  '.tsx': 'application/javascript',
   '.css': 'text/css',
   '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf'
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.map': 'application/json',
+  '.xml': 'application/xml',
+  '.txt': 'text/plain',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav'
 };
 
 // Extract files from Claude's multi-file code output
@@ -10091,13 +10105,40 @@ export default defineConfig({
     json(res,200,response); return;
   }
   if (url.match(/^\/api\/projects\/\d+\/publish$/) && req.method==='POST') {
-    if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
+    if (user.role !== 'admin' && (() => { const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(parseInt(url.split('/')[3])); return !p || p.user_id !== user.id; })()) {
+      json(res, 403, { error: 'Accès refusé.' });
+      return;
+    }
     const id=parseInt(url.split('/')[3]);
     const p=db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     if (!p) { json(res,404,{error:'Projet non trouvé.'}); return; }
-    
+
+    // ── PRE-PUBLISH VALIDATION (enterprise) ──
+    // Prevent publishing empty/broken projects
+    if (!p.generated_code || p.generated_code.length < 500) {
+      json(res, 400, { error: 'Le projet n\'a pas encore de code généré. Générez le site d\'abord.' });
+      return;
+    }
+    if (p.build_status !== 'done' && p.status !== 'ready') {
+      json(res, 400, { error: 'Le projet n\'est pas encore prêt. Attendez la fin de la génération.' });
+      return;
+    }
+
     const body = await getBody(req);
-    const subdomain = body.subdomain || p.subdomain || p.title?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').substring(0, 30) || `project-${id}`;
+    let subdomain = body.subdomain || p.subdomain || p.title?.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').substring(0, 30) || `project-${id}`;
+
+    // ── SUBDOMAIN VALIDATION ──
+    // Guard against null, empty, reserved names, and duplicates
+    subdomain = subdomain.replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').substring(0, 40) || `project-${id}`;
+    const RESERVED_SUBDOMAINS = new Set(['admin', 'api', 'app', 'www', 'mail', 'ftp', 'preview', 'static', 'cdn', 'assets']);
+    if (RESERVED_SUBDOMAINS.has(subdomain)) {
+      subdomain = `${subdomain}-${id}`;
+    }
+    // Uniqueness check: if another project uses this subdomain, append ID
+    const existing = db.prepare('SELECT id FROM projects WHERE subdomain=? AND id!=? AND is_published=1').get(subdomain, id);
+    if (existing) {
+      subdomain = `${subdomain}-${id}`;
+    }
 
     // Copy project files to sites directory
     try {
@@ -10302,6 +10343,98 @@ export default defineConfig({
     return;
   }
   // ─── UNPUBLISH: Retirer un site publie ───
+  // ─── PUBLISH UPDATE — manual "Mettre à jour" button (like Lovable) ───
+  // Copies the latest project files to the published site directory + restarts
+  // the production container. Does NOT unpublish/re-publish (preserves subdomain/domain).
+  // User clicks this after making modifications to push changes to the live site.
+  if (url.match(/^\/api\/projects\/\d+\/publish-update$/) && req.method === 'POST') {
+    if (user.role !== 'admin' && (() => { const p = db.prepare('SELECT user_id FROM projects WHERE id=?').get(parseInt(url.split('/')[3])); return !p || p.user_id !== user.id; })()) {
+      json(res, 403, { error: 'Accès refusé.' });
+      return;
+    }
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p) { json(res, 404, { error: 'Projet non trouvé.' }); return; }
+    if (!p.is_published) { json(res, 400, { error: 'Ce projet n\'est pas publié. Publiez-le d\'abord.' }); return; }
+    if (!p.subdomain) { json(res, 400, { error: 'Subdomain manquant.' }); return; }
+
+    try {
+      const projectDir = path.join(DOCKER_PROJECTS_DIR, String(id));
+      const siteDir = path.join(SITES_DIR, p.subdomain.replace(/[^a-zA-Z0-9-]/g, ''));
+
+      // 1. Attempt fresh Vite build in running container
+      let builtDist = false;
+      try {
+        const containerName = getContainerName(id);
+        const isRunning = await isContainerRunningAsync(id);
+        if (isRunning) {
+          execSync(`docker exec ${containerName} sh -c 'npx vite build --mode production 2>&1'`, { timeout: 120000, encoding: 'utf8' });
+          builtDist = true;
+          console.log(`[PublishUpdate] Vite build succeeded for project ${id}`);
+        }
+      } catch (e) {
+        console.warn(`[PublishUpdate] Vite build failed (will use preview files): ${e.message}`);
+      }
+
+      // 2. Copy files to site directory (same logic as publish)
+      if (fs.existsSync(siteDir)) fs.rmSync(siteDir, { recursive: true, force: true });
+      fs.mkdirSync(siteDir, { recursive: true });
+
+      const distDir = path.join(projectDir, 'dist');
+      const previewDir = path.join(PREVIEWS_DIR, String(id));
+      let sourceDir = null;
+      if (builtDist && fs.existsSync(distDir) && fs.readdirSync(distDir).length > 0) {
+        sourceDir = distDir;
+      } else if (fs.existsSync(previewDir) && fs.readdirSync(previewDir).length > 0) {
+        sourceDir = previewDir;
+      }
+
+      if (sourceDir) {
+        const copyRecursive = (src, dest) => {
+          if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+          for (const child of fs.readdirSync(src, { withFileTypes: true })) {
+            const s = path.join(src, child.name);
+            const d = path.join(dest, child.name);
+            if (child.isDirectory()) copyRecursive(s, d);
+            else fs.copyFileSync(s, d);
+          }
+        };
+        copyRecursive(sourceDir, siteDir);
+      } else if (p.generated_code) {
+        // Fallback: write generated_code files
+        const files = ai ? ai.parseCodeFiles(p.generated_code) : {};
+        for (const [fn, content] of Object.entries(files)) {
+          const fp = path.join(siteDir, fn);
+          const dir = path.dirname(fp);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(fp, content);
+        }
+      }
+
+      // 3. Restart production container to pick up new code
+      try {
+        await restartContainerAsync(id);
+        console.log(`[PublishUpdate] Container restarted for project ${id}`);
+      } catch (e) {
+        console.warn(`[PublishUpdate] Container restart failed: ${e.message}`);
+      }
+
+      // 4. Update timestamp
+      db.prepare("UPDATE projects SET updated_at=datetime('now') WHERE id=?").run(id);
+
+      log('info', 'publish', 'site updated', { projectId: id, userId: user.id });
+      json(res, 200, {
+        ok: true,
+        message: `Site mis à jour sur https://${p.subdomain}.${PUBLISH_DOMAIN}`,
+        url: `https://${p.subdomain}.${PUBLISH_DOMAIN}`
+      });
+    } catch (e) {
+      log('error', 'publish', 'update failed', { projectId: id, error: e.message });
+      json(res, 500, { error: 'Erreur mise à jour: ' + e.message });
+    }
+    return;
+  }
+
   if (url.match(/^\/api\/projects\/\d+\/unpublish$/) && req.method==='POST') {
     if (user.role!=='admin') { json(res,403,{error:'Admin seulement.'}); return; }
     const id=parseInt(url.split('/')[3]);
@@ -10325,11 +10458,11 @@ export default defineConfig({
         console.log(`[Unpublish] Stopped container pbp-project-${id}`);
       } catch (e) { /* container might not exist */ }
 
-      // 3. Update DB — back to ready (not published)
-      db.prepare("UPDATE projects SET is_published=0, status='ready', updated_at=datetime('now') WHERE id=?").run(id);
+      // 3. Update DB — back to ready, clear domain to prevent stale routing
+      db.prepare("UPDATE projects SET is_published=0, status='ready', domain=NULL, updated_at=datetime('now') WHERE id=?").run(id);
       db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id, `Projet "${p.title}" retiré de la publication.`, 'info');
 
-      console.log(`[Unpublish] Project ${id} unpublished`);
+      console.log(`[Unpublish] Project ${id} unpublished (domain cleared)`);
       json(res, 200, { ok: true, message: `Le site ${p.subdomain}.${PUBLISH_DOMAIN} a été retiré.` });
     } catch (e) {
       json(res, 500, { error: 'Erreur: ' + e.message });

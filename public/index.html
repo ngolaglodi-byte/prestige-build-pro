@@ -565,6 +565,7 @@ button.card { padding: 0; }
           <button class="btn btn-ghost" id="ws-history-btn" onclick="openHistoryModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Historique</button>
           <button class="btn btn-ghost" id="ws-github-btn" onclick="exportToGithub()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>GitHub</button>
           <button class="btn btn-primary" id="ws-publish-btn" onclick="publishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>Publier</button>
+          <button class="btn btn-primary" id="ws-update-btn" style="display:none;" onclick="updatePublishedSite()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Mettre à jour</button>
           <button class="btn btn-secondary" id="ws-unpublish-btn" style="display:none;" onclick="unpublishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Retirer</button>
         </div>
       </div>
@@ -1270,8 +1271,9 @@ function updateWorkspaceUI() {
   document.getElementById('ws-domain-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   document.getElementById('ws-presentation-btn').style.display = isAdmin ? 'inline-flex' : 'none';
   const isPublished = currentProject.status === 'published' || currentProject.is_published;
-  document.getElementById('ws-publish-btn').style.display = (isAdmin && !isPublished) ? 'inline-flex' : 'none';
-  document.getElementById('ws-unpublish-btn').style.display = (isAdmin && isPublished) ? 'inline-flex' : 'none';
+  document.getElementById('ws-publish-btn').style.display = (!isPublished) ? 'inline-flex' : 'none';
+  document.getElementById('ws-update-btn').style.display = (isPublished) ? 'inline-flex' : 'none';
+  document.getElementById('ws-unpublish-btn').style.display = (isPublished) ? 'inline-flex' : 'none';
   document.getElementById('ws-restart-btn').style.display = currentProject.build_status === 'done' ? 'inline-flex' : 'none';
 }
 
@@ -3146,29 +3148,64 @@ function closePresentationMode() {
 // ═══════════════════════════════════════════════════════════════════════════
 // PUBLISH
 // ═══════════════════════════════════════════════════════════════════════════
+// PUBLISH / UPDATE / UNPUBLISH
+// ═══════════════════════════════════════════════════════════════════════════
 async function publishProject() {
-  if (!currentProject || currentUser.role !== 'admin') return;
-  if (!confirm('Publier ce projet?')) return;
+  if (!currentProject) return;
+  if (!confirm('Publier ce projet ? Le site sera accessible publiquement.')) return;
+
+  // Show loading state
+  const btn = document.getElementById('ws-publish-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Publication...'; }
+
   try {
     const r = await api('/api/projects/' + currentProject.id + '/publish', 'POST');
-    let msg = 'Publié sur: ' + r.url;
-    if (r.customDomainUrl) msg += '\nDomaine personnalisé: ' + r.customDomainUrl;
-    alert(msg);
     currentProject.status = 'published';
+    currentProject.is_published = 1;
     currentProject.subdomain = r.subdomain;
     updateWorkspaceUI();
-  } catch (e) { alert('Erreur: ' + e.message); }
+
+    // Show success with clickable link
+    const url = r.url || ('https://' + r.subdomain + '.prestige-build.dev');
+    addChatMessage('assistant', '✅ **Site publié !**\n\n🔗 ' + url + '\n\nCliquez "Mettre à jour" après chaque modification pour pousser les changements en production.');
+  } catch (e) {
+    alert('Erreur publication : ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>Publier'; }
+  }
+}
+
+// Manual update button (like Lovable) — pushes latest changes to the live site
+async function updatePublishedSite() {
+  if (!currentProject || !currentProject.is_published) return;
+  if (!confirm('Mettre à jour le site en production avec les dernières modifications ?')) return;
+
+  const btn = document.getElementById('ws-update-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Mise à jour...'; }
+
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/publish-update', 'POST');
+    addChatMessage('assistant', '✅ **Site mis à jour en production !**\n\n🔗 ' + (r.url || ''));
+  } catch (e) {
+    alert('Erreur mise à jour : ' + e.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Mettre à jour';
+    }
+  }
 }
 
 async function unpublishProject() {
-  if (!currentProject || currentUser.role !== 'admin') return;
-  if (!confirm('Retirer ce site de la publication? Le site ne sera plus accessible publiquement.')) return;
+  if (!currentProject) return;
+  if (!confirm('Retirer ce site de la publication ? Le site ne sera plus accessible publiquement.')) return;
   try {
     const r = await api('/api/projects/' + currentProject.id + '/unpublish', 'POST');
-    alert(r.message || 'Site retiré.');
     currentProject.status = 'ready';
     currentProject.is_published = 0;
+    currentProject.domain = null;
     updateWorkspaceUI();
+    addChatMessage('assistant', '⊘ Site retiré de la publication.');
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 
