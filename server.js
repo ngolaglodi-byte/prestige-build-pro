@@ -5221,10 +5221,17 @@ function generateClaude(messages, jobId, brief, options = {}) {
     return; 
   }
   
-  // Use CHAT prompt for modifications (existing code), SYSTEM prompt for new generation
-  const isModificationChat = messages.length > 2;
+  // Prompt selection: SYSTEM_PROMPT for NEW projects (full generation instructions),
+  // CHAT_SYSTEM_PROMPT for MODIFICATIONS (surgical edit instructions).
+  // Previously used messages.length > 2 as heuristic, but this was WRONG for plan
+  // approvals on new projects (messages include plan context → length > 2 → wrong prompt).
+  // Now uses the definitive check: does the project have generated code?
+  const isModification = job.project_id && (() => {
+    const p = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
+    return p?.generated_code && p.generated_code.length > 500;
+  })();
   const baseSystemPrompt = ai
-    ? (isModificationChat ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT))
+    ? (isModification ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : (ABSOLUTE_BROWSER_RULE + ai.SYSTEM_PROMPT))
     : (ABSOLUTE_BROWSER_RULE + 'Tu es un expert en développement professionnel. Génère du code complet et de qualité production.');
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   
