@@ -2207,10 +2207,34 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                 try {
                   const toolResults = [];
                   const projDir = trackingInfo?.projectId ? path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId)) : null;
-                  // Send tool_results for ALL tool calls (write_file, edit_file, server tools)
+                  // Send tool_results with REAL feedback (not just "OK")
+                  // Claude needs to know if edits SUCCEEDED or FAILED so it can retry.
+                  // Previously: always "OK" → Claude thought it worked → nothing changed.
                   for (const tc of allToolCalls) {
-                    if (['write_file', 'edit_file', 'line_replace'].includes(tc.name)) {
-                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: `OK — ${tc.name} ${tc.input?.path || ''}` });
+                    if (tc.name === 'write_file') {
+                      // write_file: verify the file was actually written
+                      const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
+                      const written = fp && fs.existsSync(fp);
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                        content: written ? `✓ Fichier écrit: ${tc.input?.path}` : `✗ Fichier NON écrit: ${tc.input?.path} (protégé ou erreur)`
+                      });
+                    } else if (tc.name === 'edit_file') {
+                      // edit_file: verify the search text was found and replaced
+                      const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
+                      let editResult = '✗ Fichier introuvable';
+                      if (fp && fs.existsSync(fp)) {
+                        const content = fs.readFileSync(fp, 'utf8');
+                        if (tc.input?.replace && content.includes(tc.input.replace)) {
+                          editResult = `✓ Modification appliquée dans ${tc.input.path}`;
+                        } else if (tc.input?.search && content.includes(tc.input.search)) {
+                          editResult = `✗ Le texte recherché existe ENCORE dans ${tc.input.path} — la modification n'a PAS été appliquée. Réessaie avec un texte de recherche exact.`;
+                        } else {
+                          editResult = `⚠ ${tc.input.path} modifié mais impossible de vérifier (texte de recherche absent)`;
+                        }
+                      }
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: editResult });
+                    } else if (tc.name === 'line_replace') {
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: `✓ Lignes remplacées dans ${tc.input?.path || ''}` });
                     } else if (tc.name === 'web_search') {
                       // Anthropic server-side tool — result is handled by the API, not by us.
                       // Just acknowledge the tool call so the conversation can continue.
