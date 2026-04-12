@@ -5014,9 +5014,15 @@ Règles d'intégration automatique :
     return;
   }
 
-  // Force tool use when Claude MUST act:
+  // Force tool use when Claude MUST modify code (not discuss):
+  // - Intent 'code': user asked for a modification → MUST use edit_file/write_file
+  // - Plan execution: user approved a plan → MUST implement it
+  // - File upload: user uploaded a file → MUST integrate it
+  // Without this, Claude responds with TEXT explaining what it WOULD do
+  // instead of actually DOING it. This was THE root cause of "nothing changes".
   const hasUpload = messages.some(m => typeof m.content === 'string' && m.content.includes('INSTRUCTION OBLIGATOIRE'));
-  const forceTools = job.type === 'plan_execution' || hasUpload;
+  const isCodeIntent = job.intent === 'code';
+  const forceTools = isCodeIntent || job.type === 'plan_execution' || hasUpload;
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,
     tools: [...CODE_TOOLS, { type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
     tool_choice: forceTools ? { type: 'any' } : { type: 'auto' }
@@ -8973,7 +8979,9 @@ const server = http.createServer(async (req, res) => {
       user_id: user.id,
       message: message,
       finalized: false,
-      abortController: new AbortController()
+      abortController: new AbortController(),
+      // Intent 'code' → Claude MUST use tools (write_file/edit_file), not just text
+      intent: intentResult.intent
     });
 
     // Return immediately with job_id
