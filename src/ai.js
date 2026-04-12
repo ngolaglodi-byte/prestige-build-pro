@@ -49,6 +49,7 @@ ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - TOUJOURS ajouter un loading state (Skeleton ou spinner) pendant les fetch
 - Si un composant recoit des donnees qui peuvent etre null/undefined, verifier AVANT d'appeler .map(), .length, etc.
 - CHAQUE page avec fetch() doit gerer 3 etats : loading, error, data
+- JAMAIS utiliser un mot reserve JavaScript comme nom de variable : public, private, class, import, export, default, return, switch, case, new, delete, void, typeof, static, yield, await, package, interface, protected, implements, enum, let, const, var. Exemple INTERDIT : data.map((public, i) => ...) → utiliser publicItem, cible, item, etc.
 
 BACKEND (server.js) : CommonJS (require). Port 3000, 0.0.0.0. Express + SQLite + JWT. Fin: // CREDENTIALS: email=admin@x.com password=xxx
 
@@ -85,6 +86,16 @@ SCOPE STRICT (CRITIQUE) :
 - Ne modifie PAS de fichiers que tu n'as pas explicitement besoin de toucher
 - Pas de defensive coding non demande (pas de validation, fallback, retry, error handling supplementaire)
 - 3 lignes similaires valent mieux qu'une abstraction premature
+
+PRESERVATION DU DESIGN (CRITIQUE) :
+- Quand on te demande de CORRIGER une erreur ou MODIFIER une chose precise, tu ne touches QUE cette chose
+- JAMAIS changer le layout, les couleurs, la typographie, les espacements, les images ou la structure des pages NON concernees par la demande
+- Si on te dit "corrige le formulaire de contact" → tu modifies UNIQUEMENT le formulaire, tu ne touches PAS le header, le hero, le footer, ou les autres sections
+- Pour les corrections : utilise edit_file (search/replace) — PAS write_file. edit_file ne touche que la partie ciblee
+- Si tu DOIS utiliser write_file sur un fichier existant, utilise "// ... keep existing code" pour CHAQUE section que tu ne modifies pas
+- INTERDIT de reecrire un composant entier pour une petite correction — edit_file avec le texte exact a changer
+- Avant de modifier un fichier, IDENTIFIE la partie EXACTE a changer. Ne reecris pas le reste.
+- Si la demande est "change X" et tu vois que Y pourrait aussi etre ameliore → NE TOUCHE PAS Y
 
 AUTONOMIE (comme un vrai developpeur) :
 - Tu as acces a TOUS les fichiers du projet. LIS-LES avant de modifier.
@@ -479,6 +490,7 @@ ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - JAMAIS de require() dans .tsx (ESM only, CommonJS = server.js only)
 - Verifier null/undefined AVANT .map(), .length, .filter() sur des donnees fetch
 - 3 etats par page avec fetch : loading (Skeleton), error (toast), data (render)
+- JAMAIS de mot reserve JavaScript comme nom de variable (public, private, class, default, return, new, delete, static, etc.). Exemple INTERDIT : .map((public, i) => ...) → utiliser publicItem, item, etc.
 
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
 
@@ -497,7 +509,16 @@ SCOPE STRICT (CRITIQUE) :
 - Si tu es tente de "faire mieux", RESISTE
 - Ne modifie PAS de fichiers non concernes par la demande
 - Une demande de "supprimer X" = SUPPRIMER X seulement, ne pas refactorer le reste
-- Pas de defensive coding non demande, pas d'abstraction prematuree`;
+- Pas de defensive coding non demande, pas d'abstraction prematuree
+
+PRESERVATION DU DESIGN (CRITIQUE) :
+- Quand on te demande de CORRIGER une erreur ou MODIFIER une chose precise, tu ne touches QUE cette chose
+- JAMAIS changer le layout, les couleurs, la typographie, les espacements, les images ou la structure des autres sections
+- "Corrige le bouton" = tu modifies LE BOUTON. Tu ne touches PAS le header, hero, footer, sidebar, ou quoi que ce soit d'autre.
+- UTILISE edit_file pour les corrections — PAS write_file. edit_file cible uniquement la partie a changer.
+- Si tu DOIS utiliser write_file, tu DOIS mettre "// ... keep existing code" pour CHAQUE section non modifiee
+- INTERDIT de reecrire un composant/page entier pour corriger 5 lignes
+- Si la demande est "change X" et tu vois que Y pourrait aussi etre ameliore → NE TOUCHE PAS Y`;
 
 // ─── SECTOR SUGGESTIONS ───
 const SECTOR_SUGGESTIONS = {
@@ -1275,6 +1296,67 @@ function runBackTests(files) {
     }
   }
 
+  // ─── RESERVED WORD AS VARIABLE NAME (ERROR — Babel crash → blank screen) ───
+  // Claude sometimes uses JS reserved words as parameter names in .map() callbacks
+  // (e.g., `publicCibles.map((public, index) =>` where "public" is a reserved word).
+  // Babel parser crashes instantly → blank iframe with "Unexpected reserved word" error.
+  const JS_RESERVED_WORDS = new Set([
+    'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete', 'do',
+    'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof', 'new',
+    'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var', 'void',
+    'while', 'with', 'class', 'const', 'enum', 'export', 'extends', 'import',
+    'super', 'implements', 'interface', 'let', 'package', 'private', 'protected',
+    'public', 'static', 'yield', 'await', 'async'
+  ]);
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Check .map((reservedWord, ...) => and .map((reservedWord) =>
+    const mapParams = content.matchAll(/\.map\s*\(\s*\(([^)]+)\)\s*=>/g);
+    for (const match of mapParams) {
+      const params = match[1].split(',').map(p => p.trim().split(':')[0].trim());
+      for (const param of params) {
+        if (JS_RESERVED_WORDS.has(param)) {
+          issues.push({
+            file: fn,
+            issue: 'RESERVED_WORD_VARIABLE',
+            message: `"${param}" est un mot réservé JavaScript utilisé comme variable dans .map(). Renommer en "${param}Item" ou "${param}Data".`
+          });
+        }
+      }
+    }
+    // Also check arrow functions: (reserved) => and destructuring
+    const arrowParams = content.matchAll(/(?:const|let|var)\s+(\w+)\s*=/g);
+    // Skip — too many false positives for const. Focus on .map() and .forEach() callbacks
+    const forEachParams = content.matchAll(/\.forEach\s*\(\s*\(([^)]+)\)\s*=>/g);
+    for (const match of forEachParams) {
+      const params = match[1].split(',').map(p => p.trim().split(':')[0].trim());
+      for (const param of params) {
+        if (JS_RESERVED_WORDS.has(param)) {
+          issues.push({
+            file: fn,
+            issue: 'RESERVED_WORD_VARIABLE',
+            message: `"${param}" est un mot réservé JavaScript utilisé comme variable dans .forEach(). Renommer en "${param}Item" ou "${param}Data".`
+          });
+        }
+      }
+    }
+    // Check .filter(), .find(), .reduce(), .some(), .every() too
+    const iteratorParams = content.matchAll(/\.(filter|find|reduce|some|every)\s*\(\s*\(([^)]+)\)\s*=>/g);
+    for (const match of iteratorParams) {
+      const params = match[2].split(',').map(p => p.trim().split(':')[0].trim());
+      for (const param of params) {
+        if (JS_RESERVED_WORDS.has(param)) {
+          issues.push({
+            file: fn,
+            issue: 'RESERVED_WORD_VARIABLE',
+            message: `"${param}" est un mot réservé JavaScript utilisé comme variable dans .${match[1]}(). Renommer en "${param}Item" ou "${param}Data".`
+          });
+        }
+      }
+    }
+  }
+
   // ─── UNSAFE DATA ACCESS (ERROR — .map()/.length on undefined → crash → blank) ───
   // When Claude fetches data and immediately calls .map() without checking if data exists,
   // a null/undefined response crashes the component → blank screen.
@@ -1477,7 +1559,7 @@ function buildAutoFixPrompt(issues) {
   for (const [file, msgs] of Object.entries(grouped)) {
     prompt += `### ${file}\n${msgs.map(m => `- ${m}`).join('\n')}\n\n`;
   }
-  prompt += `Utilise edit_file pour les petites corrections, write_file pour les réécritures.
+  prompt += `UTILISE edit_file pour corriger — PAS write_file. Ne touche QUE les lignes problematiques. PRESERVE le design, layout, et structure existants INTACTS.
 RAPPEL : server.js = CommonJS (require). Couleurs = classes Tailwind semantiques (bg-primary, text-muted-foreground). Contenu pages = EN DUR (pas de fetch pour l'affichage).`;
   return prompt;
 }

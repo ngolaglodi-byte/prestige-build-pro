@@ -1231,7 +1231,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 const CODE_TOOLS = [
   {
     name: 'write_file',
-    description: 'Create or overwrite a file. For modifications, use "// ... keep existing code" to skip unchanged sections (>5 lines). The server will merge with the existing file. Example:\nimport React from "react";\n// ... keep existing code\nexport default function App() {\n  return <div>NEW CONTENT</div>;\n}\nThis saves tokens — only send the changed parts.',
+    description: 'Create a NEW file or do a MAJOR rewrite. ATTENTION: Pour modifier un fichier existant, PREFERE edit_file — il preserve tout le reste du fichier. Si tu DOIS utiliser write_file sur un fichier existant, tu DOIS utiliser "// ... keep existing code" pour CHAQUE section inchangee (>5 lines). Le serveur fusionnera avec le fichier existant. INTERDIT de reecrire un fichier entier pour une petite modification — utilise edit_file a la place.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1243,7 +1243,7 @@ const CODE_TOOLS = [
   },
   {
     name: 'edit_file',
-    description: 'Search and replace text in a file. For small changes (color, text, name). The search is fuzzy — whitespace differences are tolerated.',
+    description: 'OUTIL PREFERE pour les modifications. Search/replace dans un fichier — ne touche QUE la partie ciblee, le reste du fichier est preserve intact. Pour corrections, changements de texte, couleurs, styles, etc. La recherche tolere les differences d\'espaces.',
     input_schema: {
       type: 'object',
       properties: {
@@ -4795,6 +4795,47 @@ async function runRuntimeHealthCheck(projectId, opts = {}) {
 
 // Helper: fetch over the docker network. Used by runRuntimeHealthCheck.
 // The Prestige server joins the pbp-projects network, so it can resolve containers by DNS.
+// ─── SMART ERROR DIAGNOSIS — translates raw Vite errors into precise fix instructions ───
+// Without this, Claude receives "SyntaxError: Unexpected reserved word" and doesn't understand
+// that the VARIABLE NAME is the problem. With diagnosis, Claude gets "rename the parameter
+// 'public' to 'publicItem' in .map() on line 199" — a precise, actionable instruction.
+function diagnoseViteError(errorText, brokenFile, attempt) {
+  const file = brokenFile || errorText.match(/\/app\/(src\/[^\s:]+)/)?.[1] || '';
+  const lineMatch = errorText.match(/:(\d+):\d+/);
+  const line = lineMatch ? lineMatch[1] : null;
+  const loc = file ? `dans ${file}${line ? ` (ligne ${line})` : ''}` : '';
+
+  // Reserved word as variable name
+  const reservedMatch = errorText.match(/Unexpected reserved word '(\w+)'/);
+  if (reservedMatch) {
+    const word = reservedMatch[1];
+    return `ERREUR ${loc} : "${word}" est un MOT RESERVE JavaScript utilise comme nom de variable. Ouvre ${file || 'le fichier'} avec view_file, trouve le .map(), .forEach() ou callback qui utilise "${word}" comme parametre, et RENOMME-LE en "${word}Item" partout dans cette callback avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // Unexpected token (syntax error)
+  if (errorText.includes('Unexpected token')) {
+    return `ERREUR DE SYNTAXE ${loc} : token inattendu. Ouvre ${file || 'le fichier'} avec view_file, lis la ligne ${line || 'indiquee'} et les lignes autour. Identifie l'erreur exacte (parenthese, accolade, JSX mal ferme) et corrige UNIQUEMENT cette ligne avec edit_file.${attempt > 1 ? ' ATTENTION: ta correction precedente n\'a pas fonctionne. Relis le fichier ENTIER avec view_file avant de corriger.' : ''}`;
+  }
+
+  // Module/export not found
+  const moduleMatch = errorText.match(/(?:Cannot find module|Failed to resolve|does not provide an export named) ['"]?([^'";\s]+)/);
+  if (moduleMatch) {
+    return `ERREUR D'IMPORT ${loc} : "${moduleMatch[1]}" n'existe pas ou n'est pas exporte. Ouvre ${file || 'le fichier'} avec view_file, verifie l'import et corrige avec edit_file.${attempt > 1 ? ' Si le module n\'existe pas, SUPPRIME l\'import et remplace par une alternative.' : ''}`;
+  }
+
+  // ReferenceError: X is not defined
+  const refMatch = errorText.match(/(\w+) is not defined/);
+  if (refMatch) {
+    return `ERREUR ${loc} : "${refMatch[1]}" est utilise mais pas importe. Ouvre ${file || 'le fichier'} avec view_file, ajoute l'import manquant avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // Fallback — still better than raw error
+  if (attempt > 1) {
+    return `ERREUR Vite PERSISTE (tentative ${attempt}) :\n\n${errorText}\n\n${file ? `Relis ${file} EN ENTIER avec view_file. ` : ''}La correction precedente N'A PAS fonctionne. Analyse le fichier ligne par ligne, identifie la cause REELLE de l'erreur, et corrige avec edit_file. NE CHANGE QUE le probleme, PRESERVE tout le reste.`;
+  }
+  return `ERREUR Vite ${loc} :\n\n${errorText}\n\n${file ? `Ouvre ${file} avec view_file, ` : ''}identifie la cause exacte et corrige avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+}
+
 function fetchContainerHttp(host, port, path, timeoutMs) {
   return new Promise((resolve, reject) => {
     const req = http.request({
@@ -5423,8 +5464,11 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
                 const errorLines = logs.split('\n').filter(l =>
                   (l.includes('[vite]') && (l.includes('error') || l.includes('Error'))) ||
                   l.includes('Failed to resolve') || l.includes('SyntaxError') ||
-                  l.includes('does not provide an export')
-                );
+                  l.includes('does not provide an export') ||
+                  l.includes('Unexpected reserved word') || l.includes('Unexpected token') ||
+                  l.includes('plugin:vite:') || l.includes('ReferenceError') ||
+                  l.includes('is not defined')
+                ).filter(l => !l.includes('ECONNREFUSED') && !l.includes('health'));
                 if (errorLines.length > 0) {
                   hasViteErrors = true;
                   viteError = errorLines.slice(-3).join('\n');
@@ -5464,11 +5508,8 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
             const brokenFile = (viteError || '').match(/\/app\/([^\s:]+\.(tsx|ts|jsx|js))/)?.[1] || '';
             let fixPrompt;
 
-            if (healthAttempt === 1) {
-              fixPrompt = `Erreur Vite détectée :\n\n${viteError}\n\nCorrige avec edit_file.`;
-            } else {
-              fixPrompt = `Erreur Vite persiste :\n\n${viteError}\n\n${brokenFile ? `Réécris ${brokenFile} EN ENTIER avec write_file, version simplifiée.` : 'Corrige le fichier cassé avec write_file.'}`;
-            }
+            // Diagnose the error and build a PRECISE fix instruction
+            fixPrompt = diagnoseViteError(viteError, brokenFile, healthAttempt);
 
             try {
               const fixCode = await callClaudeAPI(
@@ -7650,16 +7691,17 @@ ${clientLogContext}
 CODE COMPLET DU PROJET:
 ${originalCode}
 
-CORRIGE l'erreur. Utilise les outils disponibles (write_file, edit_file, run_command, web_search).
-- Utilise run_command pour vérifier ta correction (node --check, npm run build)
-- Utilise web_search si tu as besoin de documentation
+DIAGNOSTIC: ${diagnoseViteError(errorLogs, errorFileHints.filter(Boolean)[0] || '', 1)}
+
+CORRIGE UNIQUEMENT l'erreur identifiee. NE CHANGE PAS le design, layout, couleurs, ou structure des autres parties du code.
 
 RÈGLES:
 1. Format ### pour chaque fichier (### package.json, ### server.js, ### src/App.tsx, etc.)
 2. JAMAIS de backticks markdown autour du code
-3. Retourne SEULEMENT les fichiers que tu modifies
+3. Retourne SEULEMENT les fichiers que tu modifies — PAS les fichiers non concernes
 4. server.js: Port 3000, route /health, express.static(path.join(__dirname,'dist'))
 5. Composants React: export default function, imports corrects, hooks valides
+6. JAMAIS de mots reserves JS (public, private, class, default, etc.) comme noms de variables
 
 Retourne UNIQUEMENT le code corrigé, sans explications.`;
 

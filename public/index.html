@@ -2823,7 +2823,12 @@ async function checkForViteErrors() {
       l.includes('Cannot find module') ||
       l.includes('Unterminated') ||
       l.includes('SyntaxError') ||
-      l.includes('TypeError')
+      l.includes('TypeError') ||
+      l.includes('Unexpected reserved word') ||
+      l.includes('Unexpected token') ||
+      l.includes('plugin:vite:') ||
+      l.includes('ReferenceError') ||
+      l.includes('is not defined')
     ).filter(l =>
       !l.includes('ECONNREFUSED') && !l.includes('health')
     );
@@ -2857,12 +2862,50 @@ function dismissError() {
   if (banner) banner.style.display = 'none';
 }
 
+function diagnoseError(errorText) {
+  // Extract file path from error
+  const fileMatch = errorText.match(/\/app\/(src\/[^\s:]+)/);
+  const file = fileMatch ? fileMatch[1] : null;
+  // Extract line number
+  const lineMatch = errorText.match(/:(\d+):\d+/);
+  const line = lineMatch ? lineMatch[1] : null;
+
+  // ── Reserved word as variable ──
+  const reservedMatch = errorText.match(/Unexpected reserved word '(\w+)'/);
+  if (reservedMatch) {
+    const word = reservedMatch[1];
+    return `ERREUR CRITIQUE dans ${file || 'un fichier'} (ligne ${line || '?'}) : le mot "${word}" est un MOT RESERVE JavaScript et ne peut PAS etre utilise comme nom de variable. Ouvre ${file || 'le fichier'} avec view_file, trouve le .map() ou .forEach() ou callback qui utilise "(${word}," ou "(${word})" comme parametre, et renomme-le en "${word}Item" ou "${word}Data" avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── Unexpected token ──
+  if (errorText.includes('Unexpected token')) {
+    return `ERREUR DE SYNTAXE dans ${file || 'un fichier'} (ligne ${line || '?'}) : token inattendu. Ouvre ${file || 'le fichier'} avec view_file, lis la ligne ${line || 'indiquee'} et les lignes autour, identifie l'erreur de syntaxe exacte (parenthese manquante, accolade, point-virgule, JSX mal ferme), et corrige UNIQUEMENT cette ligne avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── Module not found / Failed to resolve ──
+  const moduleMatch = errorText.match(/(?:Cannot find module|Failed to resolve|does not provide an export named) ['"]?([^'";\s]+)/);
+  if (moduleMatch) {
+    return `ERREUR D'IMPORT dans ${file || 'un fichier'} : "${moduleMatch[1]}" n'existe pas ou n'est pas exporte. Ouvre ${file || 'le fichier'} avec view_file, verifie l'import et corrige le chemin ou le nom de l'export avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── ReferenceError: X is not defined ──
+  const refMatch = errorText.match(/(\w+) is not defined/);
+  if (refMatch) {
+    return `ERREUR dans ${file || 'un fichier'} : "${refMatch[1]}" est utilise mais pas importe. Ouvre ${file || 'le fichier'} avec view_file, ajoute l'import manquant en haut du fichier avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── Generic fallback with file context ──
+  if (file) {
+    return `ERREUR dans ${file} (ligne ${line || '?'}) :\n${errorText}\n\nOuvre ${file} avec view_file, lis les lignes autour de l'erreur, identifie la cause EXACTE, et corrige UNIQUEMENT le probleme avec edit_file. NE CHANGE RIEN D'AUTRE dans le fichier. PRESERVE le design existant.`;
+  }
+  return `ERREUR Vite :\n${errorText}\n\nUtilise read_console_logs() pour identifier le fichier, puis view_file pour le lire, et edit_file pour corriger UNIQUEMENT le probleme. NE CHANGE RIEN D'AUTRE.`;
+}
+
 async function tryToFix() {
   if (!currentProject || !lastDetectedError) return;
   dismissError();
-  // Send the error to the chat as a fix request
-  const fixMessage = 'Corrige cette erreur Vite dans le projet :\n\n' + lastDetectedError + '\n\nAnalyse le fichier concerne et corrige le probleme.';
-  // Inject into chat input and send
+  // Diagnose the error and send a PRECISE fix instruction
+  const fixMessage = diagnoseError(lastDetectedError);
   document.getElementById('chat-input').value = fixMessage;
   sendChatMessage(fixMessage);
   lastDetectedError = null;

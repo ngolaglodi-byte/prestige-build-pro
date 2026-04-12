@@ -417,7 +417,10 @@ function parseViteLogs(logs) {
     /\bERR_[A-Z_]+/,
     /Cannot find module/,
     /Module not found/,
-    /Unexpected token/
+    /Unexpected token/,
+    /Unexpected reserved word/,
+    /plugin:vite:/,
+    /is not defined/
   ];
   for (const line of lines) {
     if (errorPatterns.some(re => re.test(line))) {
