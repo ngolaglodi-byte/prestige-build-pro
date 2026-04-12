@@ -9051,8 +9051,8 @@ const server = http.createServer(async (req, res) => {
   // ── API PROXY FOR IFRAME PREVIEW ──
   // When the iframe is on /run/{id}/, fetch('/api/...') goes to app.prestige-build.dev/api/...
   // We detect this via the Referer header (/run/{id}/) and proxy to the right container.
-  if (url.startsWith('/api/') && !url.startsWith('/api/auth') && !url.startsWith('/api/login') && !url.startsWith('/api/projects') && !url.startsWith('/api/generate') && !url.startsWith('/api/plan') && !url.startsWith('/api/admin') && !url.startsWith('/api/feedback') && !url.startsWith('/api/users') && !url.startsWith('/api/workspaces') && !url.startsWith('/api/track') && !url.startsWith('/api/jobs') && !url.startsWith('/api/compile') && !url.startsWith('/api/hot-reload') && !url.startsWith('/api/template') && !url.startsWith('/api/tls') && !url.startsWith('/api/logout') && !url.startsWith('/api/docs') && !url.startsWith('/api/usage')) {
-    // Check Referer to find the project ID
+  // Check Referer FIRST — if it comes from an iframe preview, proxy ALL /api/ to the project container
+  if (url.startsWith('/api/')) {
     const referer = req.headers.referer || '';
     const refMatch = referer.match(/\/run\/(\d+)/);
     if (refMatch) {
