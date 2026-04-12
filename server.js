@@ -2352,7 +2352,21 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                         } else if (searchGone && !replacePresent) {
                           editResult = `⚠ ${tc.input.path} — le texte recherché a été supprimé mais le remplacement n'est pas trouvé tel quel (possible reformatage). Vérifie avec view_file.`;
                         } else if (!searchGone && tc.input?.search) {
-                          editResult = `✗ ECHEC dans ${tc.input.path} — le texte recherché existe ENCORE. L'edit n'a PAS fonctionné. Utilise view_file pour lire le fichier, puis retente avec le texte EXACT copié du fichier.`;
+                          // Include nearby lines so AI can retry with exact text
+                          let hint = '';
+                          try {
+                            const lines = content.split('\n');
+                            const searchFirst = tc.input.search.split('\n')[0].trim();
+                            const matchIdx = lines.findIndex(l => l.includes(searchFirst) || l.trim() === searchFirst);
+                            if (matchIdx >= 0) {
+                              const start = Math.max(0, matchIdx - 2);
+                              const end = Math.min(lines.length, matchIdx + 5);
+                              hint = '\n\nLignes ' + (start+1) + '-' + end + ' du fichier:\n' + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
+                            } else {
+                              hint = '\n\nLe texte "' + searchFirst.substring(0,60) + '..." n\'existe pas dans le fichier. Utilise write_file avec "// ... keep existing code" pour ajouter le nouveau code sans tout reecrire.';
+                            }
+                          } catch {}
+                          editResult = `✗ ECHEC dans ${tc.input.path} — le texte recherché ne correspond pas exactement.` + hint;
                         } else {
                           editResult = `⚠ ${tc.input.path} modifié mais impossible de vérifier. Utilise view_file pour confirmer.`;
                         }
@@ -5518,12 +5532,29 @@ Règles d'intégration automatique :
             console.log(`[Stream] ${editResult.failed} edit(s) failed — retrying with write_file`);
             try {
               const retryFiles = [...new Set(editResult.failedEdits.map(e => e.path))];
-              const retryPrompt = `Les modifications suivantes ont échoué (le texte recherché ne correspond pas exactement).
-Réécris les fichiers COMPLETS avec write_file pour appliquer les changements:
+              // Include actual file content around the failed edit location
+              const retryDetails = editResult.failedEdits.map(e => {
+                let hint = '';
+                try {
+                  const fp = path.join(projDir, e.path);
+                  if (fs.existsSync(fp)) {
+                    const lines = fs.readFileSync(fp, 'utf8').split('\n');
+                    const searchFirst = (e.search || '').split('\n')[0].trim();
+                    const idx = lines.findIndex(l => l.includes(searchFirst));
+                    if (idx >= 0) {
+                      const s = Math.max(0, idx - 3);
+                      const end = Math.min(lines.length, idx + 8);
+                      hint = '\nLignes ' + (s+1) + '-' + end + ':\n' + lines.slice(s, end).map((l,i) => (s+i+1) + '| ' + l).join('\n');
+                    }
+                  }
+                } catch {}
+                return `Fichier: ${e.path}\nA ajouter: ${e.replace.substring(0, 200)}...${hint}`;
+              }).join('\n\n');
+              const retryPrompt = `Les edit_file suivants ont echoue. Utilise write_file avec "// ... keep existing code" pour inserer le nouveau code au bon endroit SANS reecrire tout le fichier.
 
-${editResult.failedEdits.map(e => `Fichier: ${e.path}\nRecherche: ${e.search.substring(0, 100)}...\nRemplacer par: ${e.replace.substring(0, 100)}...`).join('\n\n')}
+${retryDetails}
 
-Utilise write_file pour réécrire chaque fichier en ENTIER avec les modifications appliquées.`;
+IMPORTANT : dans write_file, ecris SEULEMENT les parties modifiees. Utilise "// ... keep existing code" pour garder le reste intact.`;
               const sysBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Réécris les fichiers.' }];
               const existingProject = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
               const ctxMsgs = ai ? ai.buildConversationContext(
