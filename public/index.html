@@ -2923,6 +2923,38 @@ async function checkForViteErrors() {
       }
     } catch(e) { /* cross-origin iframe — can't access, that's OK */ }
 
+    // ── CHECK 5: iframe error messages (component-level errors like "Impossible de charger") ──
+    try {
+      var iframe2 = document.getElementById('preview-frame');
+      if (iframe2 && iframe2.style.display !== 'none' && iframe2.contentDocument) {
+        var bodyText = iframe2.contentDocument.body ? iframe2.contentDocument.body.innerText : '';
+        var errorPatterns = [
+          /[Ii]mpossible de charger/,
+          /[Ee]rreur de chargement/,
+          /[Ee]rreur lors du chargement/,
+          /[Ff]ailed to (load|fetch)/,
+          /[Ee]rreur serveur/,
+          /[Ss]erver error/,
+          /[Cc]onnexion (impossible|échouée|refusée)/,
+          /[Nn]etwork error/,
+          /[Ee]rreur réseau/,
+          /[Dd]onnées indisponibles/,
+          /[Cc]hargement échoué/
+        ];
+        for (var p = 0; p < errorPatterns.length; p++) {
+          var match = bodyText.match(errorPatterns[p]);
+          if (match) {
+            var errorMsg = '[Preview] ' + match[0];
+            // Only report if different from last detected
+            if (!errorLines.some(function(e) { return e.includes('[Preview]'); })) {
+              errorLines.push(errorMsg);
+            }
+            break;
+          }
+        }
+      }
+    } catch(e) { /* cross-origin */ }
+
     if (errorLines.length > 0) {
       var latestError = errorLines[errorLines.length - 1].trim();
       if (latestError !== lastDetectedError) {
@@ -2974,6 +3006,18 @@ function diagnoseError(errorText) {
   // ── Browser network error (fetch failed) ──
   if (errorText.includes('[Browser]') && (errorText.includes('404') || errorText.includes('500') || errorText.includes('fetch') || errorText.includes('network'))) {
     return `ERREUR RÉSEAU dans le navigateur : une requête fetch() a échoué. Vérifie dans server.js que la route API existe et fonctionne. Utilise view_file sur server.js pour lire les routes, puis edit_file pour ajouter la route manquante ou corriger la route existante.`;
+  }
+
+  // ── Preview shows "Impossible de charger" / "Erreur de chargement" ──
+  if (errorText.includes('[Preview]') || errorText.includes('Impossible de charger') || errorText.includes('Erreur de chargement') || errorText.includes('Chargement échoué')) {
+    return `Le preview affiche un message d'erreur de chargement de données. CAUSE : une page fait fetch('/api/...') mais la route n'existe PAS dans server.js, OU le serveur Express a crashé.
+
+ÉTAPES :
+1. Lis server.js avec view_file — cherche les routes app.get('/api/...')
+2. Identifie quelle route MANQUE (compare avec les fetch() dans les pages)
+3. Ajoute la route manquante avec edit_file dans server.js : app.get('/api/xxx', (req, res) => { ... }) + CREATE TABLE + INSERT données de demo
+4. OU remplace le fetch() dans la page par des données en dur (const data = [...])
+NE CHANGE RIEN D'AUTRE dans le design.`;
   }
 
   // ── Reserved word as variable ──
