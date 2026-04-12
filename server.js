@@ -2340,10 +2340,19 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                         content: written ? `✓ Fichier écrit: ${tc.input?.path}` : `✗ Fichier NON écrit: ${tc.input?.path} (protégé ou erreur)`
                       });
                     } else if (tc.name === 'edit_file') {
-                      // edit_file: verify the search text was found and replaced
+                      // edit_file: APPLY the edit on disk, then verify
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
                       let editResult = '✗ Fichier introuvable';
                       if (fp && fs.existsSync(fp)) {
+                        // Apply the edit using applyToolEdits (fuzzy matching)
+                        try {
+                          const editApply = applyToolEdits(projDir, [tc.input]);
+                          if (editApply.applied > 0) {
+                            console.log(`[callClaudeAPI] edit_file applied: ${tc.input.path}`);
+                          }
+                        } catch (editErr) {
+                          console.warn(`[callClaudeAPI] edit_file error: ${editErr.message}`);
+                        }
                         const content = fs.readFileSync(fp, 'utf8');
                         const searchGone = tc.input?.search && !content.includes(tc.input.search);
                         const replacePresent = tc.input?.replace && content.includes(tc.input.replace);
