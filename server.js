@@ -9914,7 +9914,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Build generation message that injects the validated plan as the source of truth
-    const genMessage = `INSTRUCTION OBLIGATOIRE : Utilise write_file et edit_file pour modifier CHAQUE fichier listé ci-dessous. NE RÉPONDS PAS en texte. UTILISE LES OUTILS MAINTENANT.\n\nPlan validé par l'utilisateur — implémente chaque étape avec les outils :\n\n${planRow.content}`;
+    const genMessage = `INSTRUCTION OBLIGATOIRE : Implémente ce plan MAINTENANT avec les outils.
+
+WORKFLOW STRICT :
+1. Pour CHAQUE fichier à modifier → view_file d'abord pour lire le contenu actuel
+2. Puis edit_file avec le texte EXACT copié du fichier (pas inventé)
+3. Pour les nouveaux fichiers → write_file directement
+4. NE RÉPONDS PAS en texte — UTILISE LES OUTILS
+
+Plan validé par l'utilisateur :\n\n${planRow.content}`;
 
     // Create generation job (mirrors /api/generate/start branch for code mode)
     const jobId = crypto.randomUUID();
