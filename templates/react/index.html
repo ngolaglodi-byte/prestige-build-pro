@@ -7,6 +7,42 @@
 </head>
 <body>
   <div id="root"></div>
+  <script>
+  // Capture runtime errors and send to parent (Prestige Build) for "Try to Fix"
+  (function() {
+    var errors = [];
+    window.onerror = function(msg, src, line, col, err) {
+      var e = {type:'preview-console', level:'error', message: msg + ' (' + (src||'').split('/').pop() + ':' + line + ')'};
+      errors.push(e);
+      try { window.parent.postMessage(e, '*'); } catch(x) {}
+    };
+    window.addEventListener('unhandledrejection', function(ev) {
+      var msg = ev.reason ? (ev.reason.message || String(ev.reason)) : 'Unhandled promise rejection';
+      var e = {type:'preview-console', level:'error', message: msg};
+      errors.push(e);
+      try { window.parent.postMessage(e, '*'); } catch(x) {}
+    });
+    // Capture fetch errors (API 500, network failures)
+    var origFetch = window.fetch;
+    window.fetch = function() {
+      return origFetch.apply(this, arguments).then(function(res) {
+        if (!res.ok && res.status >= 400) {
+          var url = arguments[0] && arguments[0].url ? arguments[0].url : String(arguments[0]);
+          var e = {type:'preview-console', level:'error', message: 'API Error: ' + res.status + ' ' + res.statusText + ' on ' + url.split('/').slice(-2).join('/')};
+          errors.push(e);
+          try { window.parent.postMessage(e, '*'); } catch(x) {}
+        }
+        return res;
+      }).catch(function(err) {
+        var url = arguments[0] && arguments[0].url ? arguments[0].url : String(arguments[0]);
+        var e = {type:'preview-console', level:'error', message: 'Network Error: ' + err.message + ' on ' + url};
+        errors.push(e);
+        try { window.parent.postMessage(e, '*'); } catch(x) {}
+        throw err;
+      });
+    };
+  })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

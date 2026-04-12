@@ -2717,21 +2717,52 @@ function toggleFullscreen() {
   if (wrapper.requestFullscreen) wrapper.requestFullscreen();
 }
 
+// ── RUNTIME ERROR CAPTURE — catches errors from iframe (API 500, React crash, etc.) ──
+// The template index.html injects a script that monkey-patches fetch() and window.onerror
+// to send errors back via postMessage. This is how Lovable captures runtime errors.
+var runtimeErrors = [];
+var runtimeErrorDebounce = null;
+
 window.addEventListener('message', (e) => {
-  if (e.data && e.data.type === 'preview-console' && e.data.level === 'error') {
-    const errorPanel = document.getElementById('error-console');
-    const content = document.getElementById('error-console-content');
+  if (!e.data || e.data.type !== 'preview-console' || e.data.level !== 'error') return;
+  const message = e.data.message || '';
+
+  // Ignore startup noise
+  if (message.includes('ECONNREFUSED') || message.includes('ERR_CONNECTION_REFUSED')) return;
+  // Ignore duplicate
+  if (runtimeErrors.some(err => err === message)) return;
+
+  runtimeErrors.push(message);
+
+  // Show in error console panel
+  const errorPanel = document.getElementById('error-console');
+  const content = document.getElementById('error-console-content');
+  if (errorPanel && content) {
     errorPanel.classList.add('active');
-    // Show user-friendly error messages
-    let message = e.data.message;
-    if (message.includes('fetch') || message.includes('network') || message.includes('Failed to load')) {
-      message = 'Le projet démarre, veuillez patienter...';
-      // Auto-retry after 3 seconds
-      setTimeout(() => refreshPreview(), 3000);
-    }
     content.innerHTML += '<div>' + escapeHtml(message) + '</div>';
   }
+
+  // Debounce: wait 2s to collect all errors, then show banner with ALL of them
+  clearTimeout(runtimeErrorDebounce);
+  runtimeErrorDebounce = setTimeout(() => {
+    if (runtimeErrors.length > 0) {
+      const summary = runtimeErrors.length === 1
+        ? runtimeErrors[0]
+        : runtimeErrors.length + ' erreurs detectees:\n' + runtimeErrors.slice(0, 5).join('\n');
+      lastDetectedError = summary;
+      showErrorBanner(summary);
+    }
+  }, 2000);
 });
+
+// Clear runtime errors when preview reloads successfully
+function clearRuntimeErrors() {
+  runtimeErrors = [];
+  const content = document.getElementById('error-console-content');
+  if (content) content.innerHTML = '';
+  const panel = document.getElementById('error-console');
+  if (panel) panel.classList.remove('active');
+}
 
 function closeErrorConsole() { document.getElementById('error-console').classList.remove('active'); document.getElementById('error-console-content').innerHTML = ''; }
 
@@ -2950,18 +2981,52 @@ function diagnoseError(errorText) {
     return `ERREUR CSS. Ouvre src/index.css avec view_file, trouve la syntaxe CSS invalide et corrige avec edit_file. Les couleurs doivent etre dans tailwind.config.js.`;
   }
 
+  // ── API Error (500, 404, etc.) from fetch capture ──
+  const apiMatch = errorText.match(/API Error: (\d+)\s+\w+\s+on\s+(.+)/);
+  if (apiMatch) {
+    const status = apiMatch[1];
+    const route = apiMatch[2];
+    return `ERREUR API ${status} sur la route /${route}. Ouvre server.js avec view_file, cherche la route "/${route}", lis le handler complet, et identifie pourquoi il retourne ${status}. Causes possibles: table SQL manquante (CREATE TABLE IF NOT EXISTS), colonne inconnue, syntaxe SQL invalide (double quotes au lieu de single quotes pour les valeurs string), ou donnees manquantes. Corrige avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── Network Error from fetch ──
+  if (errorText.includes('Network Error') || errorText.includes('Failed to fetch')) {
+    return `ERREUR RESEAU : le frontend n'arrive pas a joindre le backend (Express). Verifie que server.js a bien app.listen(PORT, '0.0.0.0') et que les routes API existent. Ouvre server.js avec view_file et verifie.`;
+  }
+
+  // ── Multiple errors grouped ──
+  if (errorText.includes('erreurs detectees')) {
+    return `PLUSIEURS ERREURS detectees dans le projet :\n${errorText}\n\nCommence par lire les logs avec read_console_logs(). Puis ouvre les fichiers concernes avec view_file et corrige chaque erreur une par une avec edit_file. PRIORITE : les erreurs API (500) d'abord, puis les erreurs de syntaxe.`;
+  }
+
   // ── Generic fallback with file context ──
   if (file) {
     return `ERREUR dans ${file} (ligne ${line || '?'}) :\n${errorText}\n\nOuvre ${file} avec view_file, lis les lignes autour de l'erreur, identifie la cause EXACTE, et corrige UNIQUEMENT le probleme avec edit_file. NE CHANGE RIEN D'AUTRE dans le fichier. PRESERVE le design existant.`;
   }
-  return `ERREUR Vite :\n${errorText}\n\nUtilise read_console_logs() pour identifier le fichier, puis view_file pour le lire, et edit_file pour corriger UNIQUEMENT le probleme. NE CHANGE RIEN D'AUTRE.`;
+  return `ERREUR dans le projet :\n${errorText}\n\nUtilise read_console_logs() pour identifier le fichier concerne, puis view_file pour le lire, et edit_file pour corriger UNIQUEMENT le probleme. NE CHANGE RIEN D'AUTRE.`;
 }
 
 async function tryToFix() {
   if (!currentProject || !lastDetectedError) return;
   dismissError();
-  // Diagnose the error and send a PRECISE fix instruction
-  const fixMessage = diagnoseError(lastDetectedError);
+  clearRuntimeErrors();
+
+  // Collect extra context: Docker logs + all runtime errors
+  let context = '';
+  try {
+    const logs = await api('/api/projects/' + currentProject.id + '/logs');
+    if (logs.logs) {
+      // Extract only error lines from Docker logs
+      const errorLogs = logs.logs.split('\n').filter(l =>
+        l.includes('Error') || l.includes('error') || l.includes('SQLITE') ||
+        l.includes('TypeError') || l.includes('500') || l.includes('crash')
+      ).slice(-5).join('\n');
+      if (errorLogs) context = '\n\nLogs Docker (dernieres erreurs):\n' + errorLogs;
+    }
+  } catch {}
+
+  // Diagnose the error and send a PRECISE fix instruction with context
+  const fixMessage = diagnoseError(lastDetectedError) + context;
   document.getElementById('chat-input').value = fixMessage;
   sendChatMessage(fixMessage);
   lastDetectedError = null;
