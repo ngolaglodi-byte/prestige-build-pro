@@ -29,12 +29,12 @@ IMPORTS : TOUJOURS @/ alias. @/components/ui/button (minuscule). JAMAIS ../ ou .
 
 COMPOSANTS UI : Button, Card, Input, Dialog, Tabs, Carousel, Calendar, etc. depuis @/components/ui/. JAMAIS de HTML brut quand un composant existe.
 
-CONTENU (CRITIQUE — fetch = ecran d'erreur) :
-- Toutes les donnees d'affichage DOIVENT etre EN DUR dans le composant : const data = [{ ... }, { ... }]
-- JAMAIS de fetch('/api/...') pour afficher des listes, des cartes, des actualites, des partenaires, des equipes, des temoignages, etc.
-- fetch() est AUTORISE UNIQUEMENT pour : formulaires (POST), login, actions utilisateur
-- RAISON : pendant le dev preview, SEUL Vite tourne. Il n'y a PAS de backend. Tout fetch() vers /api/ ECHOUE.
-- Si le brief mentionne des donnees (actualites, partenaires, centres, equipe, produits, services) → genere-les EN DUR dans le code
+CONTENU ET DONNEES :
+- Le backend (server.js) tourne sur port 3000 avec Express + SQLite. Vite proxy /api → localhost:3000.
+- Quand tu generes des pages qui affichent des donnees (actualites, produits, equipe, etc.) → tu DOIS aussi generer les routes API correspondantes dans server.js ET inserer des donnees de demo dans la table SQLite.
+- Chaque fetch('/api/...') dans le frontend DOIT avoir une route correspondante dans server.js. Sinon → erreur 404.
+- REGLE : si tu crees une page qui affiche des donnees → cree AUSSI la route GET + la table + les INSERT de demo dans server.js. JAMAIS de page frontend sans route backend.
+- Alternative simple : si le site n'a pas besoin de backend dynamique, utilise des donnees EN DUR (const data = [...]) dans le composant. C'est plus simple et ne peut pas echouer.
 
 IMAGES (CRITIQUE) :
 - Quand l'utilisateur demande des images specifiques (contexte culturel, personnes, lieu, style) → utilise search_images() pour trouver des images ADAPTEES au contexte. JAMAIS d'images generiques si l'utilisateur a precise ce qu'il veut.
@@ -479,12 +479,11 @@ STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 
 IMAGES : Quand l'utilisateur demande des images specifiques ou corrige des images → utilise search_images() pour trouver des images ADAPTEES. Quand l'utilisateur uploade une image → import from "@/assets/images/..." et UTILISE-LA. JAMAIS ignorer une demande de changement d'image.
 
-CONTENU (CRITIQUE — fetch = ecran d'erreur) :
-- Toutes les donnees d'affichage DOIVENT etre EN DUR : const data = [{ ... }, { ... }]
-- JAMAIS de fetch('/api/...') pour afficher des listes, cartes, actualites, partenaires, equipes, etc.
-- fetch() AUTORISE UNIQUEMENT pour : formulaires (POST), login, actions utilisateur
-- RAISON : pendant le dev preview, SEUL Vite tourne. Pas de backend. Tout fetch() vers /api/ ECHOUE.
-- Si une page affiche "Erreur de chargement" → le probleme est un fetch() inutile. Remplace par des donnees EN DUR.
+CONTENU ET DONNEES :
+- Le backend tourne sur port 3000 (Express + SQLite). Vite proxy /api → localhost:3000.
+- Chaque fetch('/api/...') dans le frontend DOIT avoir une route correspondante dans server.js.
+- Si "Erreur de chargement" → verifie que la route API existe dans server.js. Si elle n'existe pas → cree-la avec edit_file sur server.js, OU remplace le fetch par des donnees EN DUR.
+- Si tu crees une page avec fetch → cree aussi la route + table + donnees de demo dans server.js.
 
 QUALITE : Composants < 150 lignes. export default function. TypeScript strict.
 Erreur: toast.error(). Succes: toast.success().
@@ -1014,25 +1013,39 @@ function parseFileSelectionResponse(response) {
 function runBackTests(files) {
   const issues = [];
 
-  // Test 1: ALL pages must not fetch for display data (only forms/admin allowed)
-  // During dev preview, only Vite runs — there's NO backend. fetch('/api/...') WILL fail.
-  // Data must be hardcoded (const data = [...]) in ALL public-facing pages.
+  // Test 1: Every fetch('/api/...') in frontend must have a matching route in server.js
+  // The backend runs on port 3000, Vite proxies /api → localhost:3000.
+  // If a page fetches '/api/public/news' but server.js has no such route → 404 error.
+  const serverCode = files['server.js'] || '';
   for (const [fn, content] of Object.entries(files)) {
     if (!fn.endsWith('.tsx')) continue;
     if (fn.startsWith('src/components/ui/')) continue;
-    // Admin pages and login are allowed to fetch (they have a real backend in production)
-    if (fn.includes('/admin/') || fn.includes('Admin') || fn.includes('Login') || fn.includes('login')) continue;
-    if (!content.includes("fetch(") && !content.includes("fetch('") && !content.includes('fetch("') && !content.includes('fetch(`')) continue;
-    // Count fetch calls vs form submissions
-    const fetchCount = (content.match(/fetch\s*\(\s*[`'"]/g) || []).length;
-    const formCount = (content.match(/onSubmit|handleSubmit|method:\s*['"]POST|method:\s*['"]PUT|method:\s*['"]DELETE/g) || []).length;
-    // If there are more fetches than form submissions, it's fetching for DISPLAY
-    if (fetchCount > formCount) {
-      issues.push({
-        file: fn,
-        issue: 'FETCH_FOR_DISPLAY',
-        message: `${fetchCount} fetch() pour affichage de données — les données doivent être EN DUR (const data = [...]) pas de fetch. Pendant le dev preview, il n'y a PAS de backend. Remplace les fetch() par des constantes hardcodées.`
-      });
+    // Extract all API URLs from fetch() calls
+    const fetchUrls = content.match(/fetch\s*\(\s*[`'"]([^`'"]+)[`'"]/g) || [];
+    for (const f of fetchUrls) {
+      const url = f.match(/fetch\s*\(\s*[`'"]([^`'"]+)/)?.[1];
+      if (!url || !url.startsWith('/api/')) continue;
+      // Normalize: /api/public/news → /api/public/news (remove query params)
+      const cleanUrl = url.split('?')[0].replace(/\/\d+$/, '/:id').replace(/\$\{[^}]+\}/g, ':id');
+      // Check if server.js has a matching route
+      if (!serverCode) {
+        // No server.js at all → fetch will definitely fail
+        issues.push({
+          file: fn,
+          issue: 'FETCH_NO_ROUTE',
+          message: `fetch('${url}') mais server.js n'existe pas. Cree server.js avec la route, OU remplace par des donnees en dur (const data = [...]).`
+        });
+      } else if (!serverCode.includes(cleanUrl) && !serverCode.includes(url.split('?')[0])) {
+        // Fuzzy check: maybe the route uses a different pattern
+        const routePart = cleanUrl.replace('/api/', '').split('/')[0];
+        if (!serverCode.includes(`'/api/${routePart}`) && !serverCode.includes(`"/api/${routePart}`)) {
+          issues.push({
+            file: fn,
+            issue: 'FETCH_NO_ROUTE',
+            message: `fetch('${url}') n'a PAS de route correspondante dans server.js. Ajoute la route GET dans server.js avec les donnees, OU remplace par des donnees en dur (const data = [...]).`
+          });
+        }
+      }
     }
   }
 
