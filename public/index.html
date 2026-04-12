@@ -2794,6 +2794,7 @@ function stopLogsPolling() {
 // ═══════════════════════════════════════════════════════════════════════════
 var lastDetectedError = null;
 var errorCheckInterval = null;
+var lastFixTimestamp = 0; // tracks when we last sent a fix — ignore old logs after this
 
 function startErrorDetection() {
   if (errorCheckInterval) clearInterval(errorCheckInterval);
@@ -2809,8 +2810,13 @@ function stopErrorDetection() {
 
 async function checkForViteErrors() {
   if (!currentProject || !currentProject.id) return;
+  // After clicking "Corriger", wait 30s before re-checking — gives Vite time to recompile
+  if (lastFixTimestamp && (Date.now() - lastFixTimestamp < 30000)) return;
   try {
-    const r = await api('/api/projects/' + currentProject.id + '/logs');
+    // After a fix, only check logs from the last 60s to avoid stale errors re-triggering the banner
+    const sinceParam = lastFixTimestamp ? '&since=60' : '';
+    const logUrl = '/api/projects/' + currentProject.id + '/logs' + (sinceParam ? '?since=60' : '');
+    const r = await api(logUrl);
     if (!r.logs) return;
     // Parse Vite errors from logs
     const lines = r.logs.split('\n');
@@ -2909,6 +2915,8 @@ async function tryToFix() {
   document.getElementById('chat-input').value = fixMessage;
   sendChatMessage(fixMessage);
   lastDetectedError = null;
+  // Mark timestamp — ignore old docker logs for 30s after fix to let Vite recompile
+  lastFixTimestamp = Date.now();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

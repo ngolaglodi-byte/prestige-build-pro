@@ -6702,17 +6702,21 @@ async function removeContainerImageAsync(projectId) {
 }
 
 // Get container logs (using dockerode)
-async function getContainerLogsAsync(projectId, tailLines = 100) {
+async function getContainerLogsAsync(projectId, tailLines = 100, sinceSeconds = 0) {
   if (!docker) return 'Erreur: Docker non disponible.';
   const containerName = getContainerName(projectId);
   try {
     const container = docker.getContainer(containerName);
-    const logStream = await container.logs({
+    const opts = {
       stdout: true,
       stderr: true,
       tail: tailLines,
       follow: false
-    });
+    };
+    if (sinceSeconds > 0) {
+      opts.since = Math.floor(Date.now() / 1000) - sinceSeconds;
+    }
+    const logStream = await container.logs(opts);
     // Docker logs stream includes 8-byte header per frame, need to demux
     if (Buffer.isBuffer(logStream)) {
       return demuxDockerLogs(logStream);
@@ -10847,7 +10851,9 @@ export default defineConfig({
       return;
     }
     
-    const rawLogs = await getContainerLogsAsync(id, 100);
+    // Support ?since=60 to only get logs from the last N seconds (avoids stale error detection)
+    const sinceParam = parseInt(new URL(req.url, 'http://localhost').searchParams.get('since') || '0');
+    const rawLogs = await getContainerLogsAsync(id, 100, sinceParam);
     const translatedLogs = translateLogsToFrench(rawLogs);
     const errorHistory = getErrorHistory(id);
     const running = await isContainerRunningAsync(id);
