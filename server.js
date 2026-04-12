@@ -5029,7 +5029,7 @@ Règles d'intégration automatique :
   console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, new: ${!!isNewProject}, job: ${jobId}`);
 
   job.status = 'running';
-  job.progressMessage = 'Prestige AI travaille sur votre demande...';
+  job.progressMessage = isNewProject ? '🧠 Analyse du brief et conception du site...' : '🧠 Analyse du code existant...';
 
   // Fast-fail: user aborted before we even started
   if (job.abortController && job.abortController.signal.aborted) {
@@ -5085,6 +5085,30 @@ Règles d'intégration automatique :
           if (d.type === 'content_block_start' && d.content_block?.type === 'tool_use') {
             currentToolId = d.content_block.id;
             currentToolName = d.content_block.name;
+            // Show user-friendly progress for each tool (like Claude Code shows its actions)
+            const toolLabels = {
+              'write_file': '📝 Écriture',
+              'edit_file': '✏️ Modification',
+              'line_replace': '✏️ Modification',
+              'view_file': '👁 Lecture',
+              'search_files': '🔍 Recherche dans le code',
+              'read_console_logs': '🐛 Analyse des erreurs',
+              'fetch_website': '🌐 Analyse du site',
+              'web_search': '🔍 Recherche web',
+              'search_images': '🖼 Recherche d\'images',
+              'generate_image': '🎨 Génération d\'image',
+              'add_dependency': '📦 Installation de package',
+              'remove_dependency': '📦 Suppression de package',
+              'delete_file': '🗑 Suppression',
+              'rename_file': '📁 Renommage',
+              'run_security_check': '🔒 Vérification sécurité',
+              'get_table_schema': '🗄 Lecture de la base de données',
+              'parse_document': '📄 Lecture du document',
+              'download_to_project': '⬇️ Téléchargement',
+              'enable_stripe': '💳 Configuration Stripe',
+              'generate_mermaid': '📊 Génération de diagramme'
+            };
+            job.progressMessage = toolLabels[currentToolName] || `🔧 ${currentToolName}`;
             currentToolJson = '';
             if (currentToolName === 'write_file') job.progressMessage = 'Écriture de fichier...';
             else if (currentToolName === 'edit_file') job.progressMessage = 'Modification de fichier...';
@@ -5102,9 +5126,8 @@ Règles d'intégration automatique :
               toolBlocks.push({ name: currentToolName, id: currentToolId, input });
 
               // REAL-TIME: Write file to container IMMEDIATELY as each tool call completes
-              // This makes the preview update progressively (like Lovable)
               if (currentToolName === 'write_file' && input.path && input.content && job.project_id) {
-                job.progressMessage = `${input.path}`;
+                job.progressMessage = `📝 Écriture de ${input.path}`;
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 let cleanContent = cleanGeneratedContent(input.content);
                 // Lovable-style ellipsis merge
@@ -5133,7 +5156,7 @@ Règles d'intégration automatique :
                   // bind mount — Vite HMR picks up changes automatically
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
-                job.progressMessage = `Modifie: ${input.path}`;
+                job.progressMessage = `✏️ Modification de ${input.path}`;
                 // ALWAYS send edit to WebContainer via SSE
                 notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
                 console.log(`[Stream] SSE edit: ${input.path}`);
@@ -5174,10 +5197,10 @@ Règles d'intégration automatique :
 
           // Web search progress
           if (d.type === 'content_block_start' && d.content_block?.type === 'server_tool_use') {
-            job.progressMessage = 'Recherche web en cours...';
+            job.progressMessage = '🌐 Recherche web en cours...';
           }
           if (d.type === 'content_block_start' && d.content_block?.type === 'text') {
-            job.progressMessage = 'Prestige AI rédige le code...';
+            job.progressMessage = '🧠 Réflexion et analyse...';
           }
           if (d.type === 'message_stop') {
             job._messageComplete = true;
