@@ -2841,52 +2841,90 @@ function stopErrorDetection() {
 
 async function checkForViteErrors() {
   if (!currentProject || !currentProject.id) return;
-  // After clicking "Corriger", wait 30s before re-checking — gives Vite time to recompile
+  // After clicking "Corriger", wait 30s before re-checking
   if (lastFixTimestamp && (Date.now() - lastFixTimestamp < 30000)) return;
   try {
-    // After a fix, only check logs from the last 60s to avoid stale errors re-triggering the banner
-    const sinceParam = lastFixTimestamp ? '&since=60' : '';
-    const logUrl = '/api/projects/' + currentProject.id + '/logs' + (sinceParam ? '?since=60' : '');
+    const sinceParam = lastFixTimestamp ? '?since=60' : '';
+    const logUrl = '/api/projects/' + currentProject.id + '/logs' + sinceParam;
     const r = await api(logUrl);
+
+    // ── CHECK 1: Container is down ──
+    if (r && r.running === false) {
+      if (lastDetectedError !== '__container_down__') {
+        lastDetectedError = '__container_down__';
+        showErrorBanner('Le conteneur Docker est arrêté. Cliquez Redémarrer ou Corriger.');
+      }
+      return;
+    }
+
     if (!r.logs) return;
-    // Parse Vite errors from logs
-    const lines = r.logs.split('\n');
-    const errorLines = lines.filter(l =>
-      (l.includes('[vite]') && (l.includes('error') || l.includes('Error'))) ||
-      l.includes('Pre-transform error') ||
-      l.includes('Internal server error') ||
-      l.includes('does not exist') ||
-      l.includes('Failed to resolve') ||
-      l.includes('Cannot find module') ||
-      l.includes('Unterminated') ||
-      l.includes('SyntaxError') ||
-      l.includes('TypeError') ||
-      l.includes('Unexpected reserved word') ||
-      l.includes('Unexpected token') ||
-      l.includes('plugin:vite:') ||
-      l.includes('ReferenceError') ||
-      l.includes('is not defined') ||
-      l.includes('SQLITE_ERROR') ||
-      l.includes('no such table') ||
-      l.includes('no such column') ||
-      l.includes('EADDRINUSE') ||
-      l.includes('UnhandledPromiseRejection') ||
-      l.includes('FATAL ERROR') ||
-      l.includes('Invalid hook call') ||
-      l.includes('Maximum update depth exceeded') ||
-      l.includes('Maximum call stack size exceeded') ||
-      l.includes('Invalid CSS') ||
-      l.includes('postcss') ||
-      l.includes('TS2') ||
-      l.includes('Invariant Violation') ||
-      l.includes('Unknown utility') ||
-      l.includes('404') ||
-      l.includes('CORS')
-    ).filter(l =>
-      !l.includes('ECONNREFUSED') && !l.includes('health') && !l.includes('HMR')
-    );
+
+    // ── CHECK 2: Docker logs (server-side errors: Vite, Express, SQLite) ──
+    var lines = r.logs.split('\n');
+    var errorLines = lines.filter(function(l) {
+      return (
+        (l.includes('[vite]') && (l.includes('error') || l.includes('Error'))) ||
+        l.includes('Pre-transform error') ||
+        l.includes('Internal server error') ||
+        l.includes('does not exist') ||
+        l.includes('Failed to resolve') ||
+        l.includes('Cannot find module') ||
+        l.includes('Unterminated') ||
+        l.includes('SyntaxError') ||
+        l.includes('TypeError') ||
+        l.includes('Unexpected reserved word') ||
+        l.includes('Unexpected token') ||
+        l.includes('plugin:vite:') ||
+        l.includes('ReferenceError') ||
+        l.includes('is not defined') ||
+        l.includes('SQLITE_ERROR') ||
+        l.includes('no such table') ||
+        l.includes('no such column') ||
+        l.includes('EADDRINUSE') ||
+        l.includes('UnhandledPromiseRejection') ||
+        l.includes('FATAL ERROR') ||
+        l.includes('Invalid hook call') ||
+        l.includes('Maximum update depth exceeded') ||
+        l.includes('Maximum call stack size exceeded') ||
+        l.includes('Invalid CSS') ||
+        l.includes('postcss') ||
+        l.includes('TS2') ||
+        l.includes('Invariant Violation') ||
+        l.includes('Unknown utility')
+      );
+    }).filter(function(l) {
+      return !l.includes('ECONNREFUSED') && !l.includes('health') && !l.includes('HMR');
+    });
+
+    // ── CHECK 3: Client-side logs (browser errors: React crash, fetch 404, runtime) ──
+    try {
+      var cr = await api('/api/projects/' + currentProject.id + '/client-logs');
+      if (cr && cr.logs && cr.logs.length > 0) {
+        var clientErrors = cr.logs.filter(function(log) {
+          return log.level === 'error' || log.level === 'network';
+        });
+        for (var i = 0; i < clientErrors.length; i++) {
+          var msg = clientErrors[i].message || '';
+          if (msg.length > 10 && !msg.includes('favicon')) {
+            errorLines.push('[Browser] ' + msg);
+          }
+        }
+      }
+    } catch(e) { /* client-logs endpoint may not exist yet */ }
+
+    // ── CHECK 4: iframe blank screen detection ──
+    try {
+      var iframe = document.getElementById('preview-frame');
+      if (iframe && iframe.style.display !== 'none' && iframe.contentDocument) {
+        var body = iframe.contentDocument.body;
+        if (body && body.innerHTML.length < 50 && !body.querySelector('#root > *')) {
+          errorLines.push('[Browser] Écran blanc détecté — le composant React ne se rend pas');
+        }
+      }
+    } catch(e) { /* cross-origin iframe — can't access, that's OK */ }
+
     if (errorLines.length > 0) {
-      const latestError = errorLines[errorLines.length - 1].trim();
+      var latestError = errorLines[errorLines.length - 1].trim();
       if (latestError !== lastDetectedError) {
         lastDetectedError = latestError;
         showErrorBanner(latestError);
@@ -2922,6 +2960,21 @@ function diagnoseError(errorText) {
   // Extract line number
   const lineMatch = errorText.match(/:(\d+):\d+/);
   const line = lineMatch ? lineMatch[1] : null;
+
+  // ── Container down ──
+  if (errorText.includes('conteneur Docker est arrêté') || errorText === '__container_down__') {
+    return `Le conteneur Docker du projet est arrêté. Utilise read_console_logs() pour voir les dernières erreurs, puis corrige le problème dans server.js ou les fichiers du projet. Le conteneur sera redémarré automatiquement.`;
+  }
+
+  // ── Blank screen ──
+  if (errorText.includes('Écran blanc') || errorText.includes('ne se rend pas')) {
+    return `ÉCRAN BLANC détecté — le composant React ne s'affiche pas. Utilise read_console_logs() pour voir l'erreur exacte dans la console du navigateur. Causes fréquentes : import manquant, hook en dehors d'un composant, erreur de syntaxe JSX, données null sans vérification. Lis les fichiers avec view_file et corrige avec edit_file.`;
+  }
+
+  // ── Browser network error (fetch failed) ──
+  if (errorText.includes('[Browser]') && (errorText.includes('404') || errorText.includes('500') || errorText.includes('fetch') || errorText.includes('network'))) {
+    return `ERREUR RÉSEAU dans le navigateur : une requête fetch() a échoué. Vérifie dans server.js que la route API existe et fonctionne. Utilise view_file sur server.js pour lire les routes, puis edit_file pour ajouter la route manquante ou corriger la route existante.`;
+  }
 
   // ── Reserved word as variable ──
   const reservedMatch = errorText.match(/Unexpected reserved word '(\w+)'/);
