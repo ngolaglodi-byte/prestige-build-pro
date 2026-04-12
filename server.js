@@ -5451,6 +5451,20 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
         }
       }
 
+      // ── DIRECT AUTO-FIX after EVERY modification (not just initial generation) ──
+      // Catches mechanical errors the AI introduced or failed to fix (reserved words, require in TSX, etc.)
+      if (job.project_id) {
+        const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+        const postFiles = readProjectFilesRecursive(projDir);
+        const fixCount = autoFixMechanicalErrors(projDir, postFiles);
+        if (fixCount > 0) {
+          // Re-read and update stored code after direct fixes
+          const fixedFiles = readProjectFilesRecursive(projDir);
+          job.code = formatProjectCode(fixedFiles);
+          console.log(`[Stream] Direct auto-fix applied ${fixCount} fix(es) after modification`);
+        }
+      }
+
       // ── AUTO-INSTALL: detect imports of packages not in node_modules → npm install ──
       // This is the DEFINITIVE fix for blank screens caused by missing packages.
       // Instead of maintaining a hardcoded list of deps, we scan what Claude actually
@@ -5648,6 +5662,9 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
               );
               if (fixCode) {
                 writeGeneratedFiles(projDir, fixCode, job.project_id);
+                // Direct auto-fix after AI correction (catches what AI missed)
+                const postFixFiles = readProjectFilesRecursive(projDir);
+                autoFixMechanicalErrors(projDir, postFixFiles);
                 console.log(`[HealthCheck] Fix applied (attempt ${healthAttempt}), rechecking...`);
               }
             } catch (fixErr) {
@@ -8009,8 +8026,22 @@ async function autoCorrectProject(projectId, onProgress) {
     });
     
     // Call Claude for correction
-    const correctedCode = await callClaudeForCorrection(project.generated_code, logs, errorType);
-    
+    let correctedCode = await callClaudeForCorrection(project.generated_code, logs, errorType);
+
+    // Direct auto-fix on corrected code (catches what AI missed — reserved words, etc.)
+    // Parse corrected code into files, fix, then re-serialize
+    const projDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+    if (fs.existsSync(projDir)) {
+      writeGeneratedFiles(projDir, correctedCode, projectId);
+      const postFixFiles = readProjectFilesRecursive(projDir);
+      const fixCount = autoFixMechanicalErrors(projDir, postFixFiles);
+      if (fixCount > 0) {
+        const fixedFiles = readProjectFilesRecursive(projDir);
+        correctedCode = formatProjectCode(fixedFiles);
+        console.log(`[AutoRecovery] Direct auto-fix applied ${fixCount} fix(es)`);
+      }
+    }
+
     // Update project with corrected code
     db.prepare("UPDATE projects SET generated_code=?, updated_at=datetime('now') WHERE id=?")
       .run(correctedCode, projectId);
