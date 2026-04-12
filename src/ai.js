@@ -29,7 +29,12 @@ IMPORTS : TOUJOURS @/ alias. @/components/ui/button (minuscule). JAMAIS ../ ou .
 
 COMPOSANTS UI : Button, Card, Input, Dialog, Tabs, Carousel, Calendar, etc. depuis @/components/ui/. JAMAIS de HTML brut quand un composant existe.
 
-CONTENU : Donnees de demo EN DUR (const data = [...]). fetch() UNIQUEMENT pour formulaires.
+CONTENU (CRITIQUE — fetch = ecran d'erreur) :
+- Toutes les donnees d'affichage DOIVENT etre EN DUR dans le composant : const data = [{ ... }, { ... }]
+- JAMAIS de fetch('/api/...') pour afficher des listes, des cartes, des actualites, des partenaires, des equipes, des temoignages, etc.
+- fetch() est AUTORISE UNIQUEMENT pour : formulaires (POST), login, actions utilisateur
+- RAISON : pendant le dev preview, SEUL Vite tourne. Il n'y a PAS de backend. Tout fetch() vers /api/ ECHOUE.
+- Si le brief mentionne des donnees (actualites, partenaires, centres, equipe, produits, services) → genere-les EN DUR dans le code
 
 IMAGES (CRITIQUE) :
 - Quand l'utilisateur demande des images specifiques (contexte culturel, personnes, lieu, style) → utilise search_images() pour trouver des images ADAPTEES au contexte. JAMAIS d'images generiques si l'utilisateur a precise ce qu'il veut.
@@ -44,11 +49,8 @@ URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme sou
 ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - CHAQUE composant doit avoir "export default function NomComposant()"
 - CHAQUE import doit etre declare (import { Link } from 'react-router-dom', import { useState } from 'react', etc.)
-- CHAQUE fetch() doit etre dans un try/catch avec toast.error() en cas d'echec. JAMAIS de fetch sans error handling.
 - JAMAIS de require() dans les fichiers .tsx/.jsx (c'est ESM, pas CommonJS)
-- TOUJOURS ajouter un loading state (Skeleton ou spinner) pendant les fetch
-- Si un composant recoit des donnees qui peuvent etre null/undefined, verifier AVANT d'appeler .map(), .length, etc.
-- CHAQUE page avec fetch() doit gerer 3 etats : loading, error, data
+- Si un formulaire utilise fetch() → try/catch avec toast.error()
 - JAMAIS utiliser un mot reserve JavaScript comme nom de variable : public, private, class, import, export, default, return, switch, case, new, delete, void, typeof, static, yield, await, package, interface, protected, implements, enum, let, const, var. Exemple INTERDIT : data.map((public, i) => ...) → utiliser publicItem, cible, item, etc.
 
 BACKEND (server.js) : CommonJS (require). Port 3000, 0.0.0.0. Express + SQLite + JWT. Fin: // CREDENTIALS: email=admin@x.com password=xxx
@@ -477,8 +479,15 @@ STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 
 IMAGES : Quand l'utilisateur demande des images specifiques ou corrige des images → utilise search_images() pour trouver des images ADAPTEES. Quand l'utilisateur uploade une image → import from "@/assets/images/..." et UTILISE-LA. JAMAIS ignorer une demande de changement d'image.
 
+CONTENU (CRITIQUE — fetch = ecran d'erreur) :
+- Toutes les donnees d'affichage DOIVENT etre EN DUR : const data = [{ ... }, { ... }]
+- JAMAIS de fetch('/api/...') pour afficher des listes, cartes, actualites, partenaires, equipes, etc.
+- fetch() AUTORISE UNIQUEMENT pour : formulaires (POST), login, actions utilisateur
+- RAISON : pendant le dev preview, SEUL Vite tourne. Pas de backend. Tout fetch() vers /api/ ECHOUE.
+- Si une page affiche "Erreur de chargement" → le probleme est un fetch() inutile. Remplace par des donnees EN DUR.
+
 QUALITE : Composants < 150 lignes. export default function. TypeScript strict.
-Loading: <Skeleton>. Erreur: toast.error(). Succes: toast.success().
+Erreur: toast.error(). Succes: toast.success().
 Securite : bcrypt, JWT, prepared statements, validation inputs.
 
 URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme source d'inspiration, TOUJOURS appeler fetch_website(url) pour analyser le site AVANT de modifier le code.
@@ -486,10 +495,8 @@ URL DE REFERENCE : Quand l'utilisateur mentionne une URL (https://...) comme sou
 ROBUSTESSE (CRITIQUE — sans ca, ecran blanc) :
 - CHAQUE composant : "export default function NomComposant()"
 - CHAQUE import DOIT etre declare en haut du fichier (Link, useState, useNavigate, etc.)
-- CHAQUE fetch() dans un try/catch avec toast.error(). JAMAIS de silent failure.
+- Si un formulaire utilise fetch() → try/catch avec toast.error()
 - JAMAIS de require() dans .tsx (ESM only, CommonJS = server.js only)
-- Verifier null/undefined AVANT .map(), .length, .filter() sur des donnees fetch
-- 3 etats par page avec fetch : loading (Skeleton), error (toast), data (render)
 - JAMAIS de mot reserve JavaScript comme nom de variable (public, private, class, default, return, new, delete, static, etc.). Exemple INTERDIT : .map((public, i) => ...) → utiliser publicItem, item, etc.
 
 DEBUGGING : read_console_logs() EN PREMIER → analyser → corriger avec edit_file.
@@ -975,13 +982,25 @@ function parseFileSelectionResponse(response) {
 function runBackTests(files) {
   const issues = [];
 
-  // Test 1: Home.tsx must not fetch for display data
-  const home = files['src/pages/Home.tsx'] || '';
-  if (home && home.includes("fetch('/api/") && !home.includes('onSubmit') && !home.includes('handleSubmit')) {
-    const fetchCount = (home.match(/fetch\(['"]\/api\//g) || []).length;
-    const formCount = (home.match(/onSubmit|handleSubmit/g) || []).length;
+  // Test 1: ALL pages must not fetch for display data (only forms/admin allowed)
+  // During dev preview, only Vite runs — there's NO backend. fetch('/api/...') WILL fail.
+  // Data must be hardcoded (const data = [...]) in ALL public-facing pages.
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Admin pages and login are allowed to fetch (they have a real backend in production)
+    if (fn.includes('/admin/') || fn.includes('Admin') || fn.includes('Login') || fn.includes('login')) continue;
+    if (!content.includes("fetch(") && !content.includes("fetch('") && !content.includes('fetch("') && !content.includes('fetch(`')) continue;
+    // Count fetch calls vs form submissions
+    const fetchCount = (content.match(/fetch\s*\(\s*[`'"]/g) || []).length;
+    const formCount = (content.match(/onSubmit|handleSubmit|method:\s*['"]POST|method:\s*['"]PUT|method:\s*['"]DELETE/g) || []).length;
+    // If there are more fetches than form submissions, it's fetching for DISPLAY
     if (fetchCount > formCount) {
-      issues.push({ file: 'src/pages/Home.tsx', issue: 'FETCH_FOR_DISPLAY', message: 'Home.tsx uses fetch() for display data — should be hardcoded constants' });
+      issues.push({
+        file: fn,
+        issue: 'FETCH_FOR_DISPLAY',
+        message: `${fetchCount} fetch() pour affichage de données — les données doivent être EN DUR (const data = [...]) pas de fetch. Pendant le dev preview, il n'y a PAS de backend. Remplace les fetch() par des constantes hardcodées.`
+      });
     }
   }
 
