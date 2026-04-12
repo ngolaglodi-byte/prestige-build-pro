@@ -75,15 +75,15 @@ const ERROR_TYPES = {
 
 // ─── API ERROR MESSAGES ───
 const API_ERROR_MESSAGES = {
-  400: 'Requête invalide. Le brief contient peut-être des caractères non supportés.',
-  401: 'Clé API Anthropic invalide ou expirée. Contactez l\'administrateur.',
-  402: 'Crédit API épuisé. Le compte Anthropic doit être rechargé. Contactez l\'administrateur.',
-  403: 'Accès API refusé. Vérifiez les permissions de la clé API.',
-  404: 'Modèle API non trouvé. Contactez l\'administrateur.',
-  413: 'Le brief est trop long. Réduisez la taille de votre demande.',
-  429: 'API surchargée. Réessai automatique en cours...',
-  500: 'Erreur interne du serveur Anthropic. Réessayez dans quelques minutes.',
-  529: 'Serveur Anthropic surchargé. Réessai automatique en cours...'
+  400: 'La demande n\'a pas pu être traitée. Essayez de reformuler votre brief.',
+  401: 'Le service IA n\'est pas correctement configuré. Contactez l\'administrateur.',
+  402: 'Le service IA est temporairement indisponible. Contactez l\'administrateur.',
+  403: 'Accès au service IA refusé. Contactez l\'administrateur.',
+  404: 'Service IA temporairement indisponible. Contactez l\'administrateur.',
+  413: 'Votre demande est trop longue. Réduisez la taille du brief.',
+  429: 'Le service est occupé. Réessai automatique en cours...',
+  500: 'Erreur temporaire du service. Réessayez dans quelques minutes.',
+  529: 'Le service est surchargé. Réessai automatique en cours...'
 };
 
 // ─── ABSOLUTE BROWSER RULE ───

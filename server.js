@@ -167,13 +167,13 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
           const apiMsg = apiError?.error?.message || '';
           // Credit/billing issues — show clear message
           if (apiMsg.includes('credit balance') || apiMsg.includes('billing')) {
-            friendlyMsg = 'Crédit API épuisé. Le compte Anthropic doit être rechargé. Contactez l\'administrateur.';
+            friendlyMsg = 'Le service IA est temporairement indisponible (crédit épuisé). Veuillez contacter l\'administrateur.';
             console.error('[API] ⚠️ BILLING ISSUE — Anthropic account needs funding');
-            if (job) job.progressMessage = '⚠️ Crédit API épuisé';
+            if (job) job.progressMessage = '⚠️ Service IA indisponible';
           }
           // Bad API key
           else if (status === 401) {
-            friendlyMsg = 'Clé API Anthropic invalide. Contactez l\'administrateur.';
+            friendlyMsg = 'Le service IA n\'est pas correctement configuré. Contactez l\'administrateur.';
             console.error('[API] ⚠️ INVALID API KEY');
           }
           // Model not found
@@ -908,7 +908,7 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
-    job.error = 'Clé API non configurée sur le serveur.';
+    job.error = 'Le service IA n\'est pas configuré. Contactez l\'administrateur.';
     return; 
   }
   
@@ -1097,7 +1097,7 @@ function generateClaudeCodeChat(projectId, message, jobId) {
   
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
-    job.error = 'Clé API non configurée sur le serveur.';
+    job.error = 'Le service IA n\'est pas configuré. Contactez l\'administrateur.';
     return; 
   }
   
@@ -2488,7 +2488,7 @@ function generateViaAPI(projectId, brief, jobId) {
 
   if (!ANTHROPIC_API_KEY) {
     job.status = 'error';
-    job.error = 'Clé API Anthropic non configurée (ANTHROPIC_API_KEY).';
+    job.error = 'Le service IA n\'est pas configuré. Contactez l\'administrateur.';
     return;
   }
 
@@ -4935,7 +4935,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
   // For non-project operations, fall back to API (kept for compatibility)
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
-    job.error = 'Clé API non configurée sur le serveur.';
+    job.error = 'Le service IA n\'est pas configuré. Contactez l\'administrateur.';
     return; 
   }
   
@@ -5638,7 +5638,7 @@ async function generateClaudeWithImage(imageBase64, mediaType, prompt, jobId) {
   
   if (!ANTHROPIC_API_KEY) { 
     job.status = 'error';
-    job.error = 'Clé API non configurée sur le serveur.';
+    job.error = 'Le service IA n\'est pas configuré. Contactez l\'administrateur.';
     return; 
   }
   
