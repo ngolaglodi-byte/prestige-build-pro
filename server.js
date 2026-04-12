@@ -736,68 +736,78 @@ function autoFixMechanicalErrors(projectDir, files) {
   for (const [fn, content] of Object.entries(files)) {
     if (!fn.endsWith('.tsx') && !fn.endsWith('.ts') && !fn.endsWith('.jsx')) continue;
     let fixed = content;
-    let fileFixed = false;
 
-    // Fix 1: Reserved words as callback parameters in .map(), .filter(), .forEach(), .find(), .some(), .every(), .reduce()
-    fixed = fixed.replace(/\.(map|filter|forEach|find|some|every|reduce)\s*\(\s*\(([^)]+)\)\s*=>/g, (match, method, params) => {
-      const parts = params.split(',').map(p => p.trim());
-      let changed = false;
-      const newParts = parts.map(p => {
-        const name = p.split(':')[0].trim();
-        if (JS_RESERVED.has(name)) {
-          changed = true;
-          // Replace "public" with "publicItem", "class" with "classItem", etc.
-          const replacement = name + 'Item';
-          return p.replace(name, replacement);
-        }
-        return p;
-      });
-      if (changed) {
-        // Also need to replace uses of the reserved word inside the callback body
-        return `.${method}((${newParts.join(', ')}) =>`;
-      }
-      return match;
-    });
-
-    // If callback params were fixed, also fix references in the callback body
-    // We do a second pass: find the full .map((reservedWord, index) => { ... }) and replace references
+    // ── Fix reserved words used as variable names ──
+    // Simple approach: find EVERY reserved word used as a standalone variable reference
+    // and rename it to reservedItem. No complex scope analysis needed.
     for (const reserved of JS_RESERVED) {
-      // Pattern: .map((reserved, ...) => ... ) — find and replace the variable references
-      const callbackRegex = new RegExp(
-        `\\.(map|filter|forEach|find|some|every|reduce)\\s*\\(\\s*\\(${reserved}(\\s*[:,)])`,
-        'g'
-      );
-      if (callbackRegex.test(content) && !callbackRegex.test(fixed)) {
-        // The parameter was already renamed in the previous step.
-        // Now rename all references to the reserved word that appear as variable access
-        // within the same scope (heuristic: between the => and the matching closing paren/brace)
-        const replacement = reserved + 'Item';
-        // Replace standalone word usage: reserved.property, reserved[x], {reserved}, etc.
-        // But NOT inside strings, imports, or other variable names
-        fixed = fixed.replace(new RegExp(`(?<![\\w.])${reserved}(?=\\s*\\.)`, 'g'), (m, offset) => {
-          // Only replace if we're inside a callback (heuristic: after .map( and before the callback end)
-          // Check if this occurrence is AFTER the .map( line
-          const before = fixed.substring(Math.max(0, offset - 200), offset);
-          if (before.includes(replacement + ',') || before.includes(replacement + ')')) {
-            return replacement;
+      // Skip if this word doesn't appear in the file at all
+      if (!fixed.includes(reserved)) continue;
+      // Skip common false positives: 'export default', 'import {', 'return (', etc.
+      // We ONLY want to fix cases where the reserved word is used as a VARIABLE NAME
+      // i.e., in callback params: .map((public, i) => public.name)
+
+      // Step 1: Check if this reserved word is used as a callback parameter
+      // Pattern: (reserved, or (reserved) in a callback context
+      const paramPattern = new RegExp(`\\(${reserved}\\s*[,):]`, 'g');
+      // We need to verify it's in a callback, not a function declaration or other context
+      // Heuristic: preceded by => or followed by =>
+      const lines = fixed.split('\n');
+      let hasCallbackUsage = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Match: .map((public, index) => or .filter((public) => etc.
+        if (new RegExp(`\\.(map|filter|forEach|find|some|every|reduce|flatMap|sort)\\s*\\(\\s*\\(.*\\b${reserved}\\b`).test(line)) {
+          hasCallbackUsage = true;
+          break;
+        }
+        // Also match split across lines: .map(\n  (public, index) =>
+        if (paramPattern.test(line) && (line.includes('=>') || (i + 1 < lines.length && lines[i + 1].includes('=>')))) {
+          // Make sure it's not a false positive like 'export default function'
+          if (!line.trim().startsWith('export') && !line.trim().startsWith('import') && !line.trim().startsWith('return') && !line.trim().startsWith('function')) {
+            hasCallbackUsage = true;
+            break;
           }
-          return m;
-        });
-        // Also replace: {reserved.xxx} and key={reserved.xxx}
-        fixed = fixed.replace(new RegExp(`\\{${reserved}\\.`, 'g'), `{${replacement}.`);
-        fixed = fixed.replace(new RegExp(`\\{${reserved}\\}`, 'g'), `{${replacement}}`);
-        fixed = fixed.replace(new RegExp(`=${reserved}\\.`, 'g'), `=${replacement}.`);
-        fixed = fixed.replace(new RegExp(`\\(${reserved}\\.`, 'g'), `(${replacement}.`);
-        fixed = fixed.replace(new RegExp(`\\(${reserved},`, 'g'), `(${replacement},`);
-        fixed = fixed.replace(new RegExp(`\\(${reserved}\\)`, 'g'), `(${replacement})`);
-        // key={reserved.id} patterns
-        fixed = fixed.replace(new RegExp(`key=\\{${reserved}\\.`, 'g'), `key={${replacement}.`);
+        }
+        paramPattern.lastIndex = 0; // reset regex state
       }
+
+      if (!hasCallbackUsage) continue;
+
+      const replacement = reserved + 'Item';
+      console.log(`[AutoFix] Renaming reserved word "${reserved}" → "${replacement}" in ${fn}`);
+
+      // Step 2: Replace the parameter in callback signatures
+      // .map((public, index) => → .map((publicItem, index) =>
+      // .map((public) => → .map((publicItem) =>
+      fixed = fixed.replace(new RegExp(`(\\.(map|filter|forEach|find|some|every|reduce|flatMap|sort)\\s*\\()\\s*\\(([^)]*?)\\b${reserved}\\b([^)]*?)\\)\\s*=>`, 'g'),
+        (match, prefix, method, before, after) => {
+          return `${prefix}(${before}${replacement}${after}) =>`;
+        }
+      );
+
+      // Step 3: Replace ALL variable references in the file
+      // {public.name} → {publicItem.name}
+      fixed = fixed.replace(new RegExp(`\\{${reserved}\\.`, 'g'), `{${replacement}.`);
+      // {public} → {publicItem}
+      fixed = fixed.replace(new RegExp(`\\{${reserved}\\}`, 'g'), `{${replacement}}`);
+      // key={public.id} → key={publicItem.id}
+      fixed = fixed.replace(new RegExp(`=\\{${reserved}\\.`, 'g'), `={${replacement}.`);
+      // public.name (standalone, not part of publicCibles or other compound words)
+      fixed = fixed.replace(new RegExp(`(?<![\\w])${reserved}\\.(?!\\w*\\()`, 'g'), (m, offset) => {
+        // Don't replace if it's part of a longer word like "publicCibles."
+        const charBefore = offset > 0 ? fixed[offset - 1] : '';
+        if (/\w/.test(charBefore)) return m;
+        return `${replacement}.`;
+      });
+      // public?.name → publicItem?.name
+      fixed = fixed.replace(new RegExp(`(?<![\\w])${reserved}\\?\\.`, 'g'), `${replacement}?.`);
     }
 
-    // Fix 2: require() in TSX/JSX → convert to ESM import
-    fixed = fixed.replace(/(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g, (match, varName, module) => {
-      return `import ${varName} from '${module}'`;
+    // ── Fix require() in TSX/JSX → ESM import ──
+    fixed = fixed.replace(/(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g, (match, varName, mod) => {
+      return `import ${varName} from '${mod}'`;
     });
 
     if (fixed !== content) {
@@ -805,7 +815,7 @@ function autoFixMechanicalErrors(projectDir, files) {
       try {
         fs.writeFileSync(filePath, fixed, 'utf8');
         totalFixes++;
-        console.log(`[AutoFix] Direct fix applied to ${fn}`);
+        console.log(`[AutoFix] ✅ Fixed ${fn}`);
       } catch (e) {
         console.warn(`[AutoFix] Failed to write ${fn}: ${e.message}`);
       }
