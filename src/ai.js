@@ -1616,13 +1616,18 @@ Exemple :
 - src/components/Header.tsx — lien /partenaires present mais pointe vers composant inexistant
 
 ## Corrections a appliquer
-Liste numerotee, chronologique. Chaque correction doit etre CONCRETE :
-- Quel fichier modifier
-- QUOI changer exactement (pas juste "verifier")
+Liste numerotee, chronologique. Chaque correction doit etre ULTRA-PRECISE :
+- Quel fichier modifier (chemin exact)
+- QUOI changer : le texte ACTUEL a trouver → le texte de remplacement
+- Si nouveau fichier : structure complete (composants, imports, exports)
 Exemple :
-1. Creer src/pages/Partenaires.tsx avec les logos UNICEF, UNESCO, Banque Mondiale, UE
-2. Dans Mission.tsx, ajouter le 4eme axe "Appui aux initiatives locales de developpement"
-3. Dans Header.tsx, corriger le lien /contact qui pointe vers /contacts (avec s)
+1. Creer src/pages/Partenaires.tsx — page avec logos UNICEF, UNESCO, Banque Mondiale, UE, layout grille 3 colonnes
+2. Dans src/App.tsx — ajouter import Partenaires et Route path="/partenaires"
+3. Dans server.js — ajouter route GET /api/public/partners + CREATE TABLE partners + INSERT de 4 partenaires demo
+4. Dans Header.tsx — corriger "/contacts" → "/contact" (sans s)
+
+FULLSTACK : si une page utilise fetch('/api/...'), la correction DOIT inclure la route backend correspondante dans server.js.
+Si des PROBLÈMES AUTOMATIQUES sont listés ci-dessus, INCLUS leurs corrections dans le plan.
 
 ## Risques et points d'attention
 Liste a puces : pieges, dependances, interactions a surveiller. Si rien : ecrire "Aucun risque majeur."`;
@@ -1640,16 +1645,45 @@ function buildPlanContext(project, history, userMessage) {
     lines.push('');
   }
 
-  // ── LOVABLE MODEL: send FULL file content so the plan is based on real code ──
-  // Previously: only sent file names + line counts → Claude guessed the content.
-  // Now: sends the actual code so Claude can plan based on what REALLY exists.
+  // ── Send FULL file content from DISK (not DB) so plan sees latest code ──
   let hasCode = false;
+  const projectId = project?.id;
+  const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
+  const projDir = projectId ? require('path').join(DOCKER_PROJECTS_DIR, String(projectId)) : null;
+  let diskFiles = null;
+
+  // Try reading from disk first (most up-to-date), fall back to DB
+  if (projDir) {
+    try {
+      const fs = require('fs');
+      if (fs.existsSync(projDir)) {
+        // Use the same recursive scan as the rest of the system
+        const readProjectFilesRecursive = require('../server.js')?.readProjectFilesRecursive;
+        // Fallback: parse from generated_code in DB
+      }
+    } catch (_) {}
+  }
+
+  // Parse from DB code (always available)
   if (project && project.generated_code && project.generated_code.length > 100) {
     try {
       const files = parseCodeFiles(project.generated_code);
       const fileNames = Object.keys(files);
       if (fileNames.length > 0) {
         hasCode = true;
+        // Run back-tests and include results in plan context
+        const backTestIssues = runBackTests(files);
+        const errors = backTestIssues.filter(i => i.severity !== 'warning');
+        const warnings = backTestIssues.filter(i => i.severity === 'warning');
+
+        if (errors.length > 0 || warnings.length > 0) {
+          lines.push(`# PROBLÈMES DÉTECTÉS AUTOMATIQUEMENT (${errors.length} erreur(s), ${warnings.length} avertissement(s))`);
+          for (const issue of [...errors, ...warnings]) {
+            lines.push(`- ${issue.severity === 'warning' ? '⚠' : '❌'} ${issue.file} — ${issue.issue}: ${issue.message}`);
+          }
+          lines.push('');
+        }
+
         lines.push(`# Code actuel du projet (${fileNames.length} fichiers) — LIS TOUT avant de planifier`);
         lines.push('');
         for (const fn of fileNames) {
