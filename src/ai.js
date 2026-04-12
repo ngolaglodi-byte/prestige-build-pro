@@ -1501,6 +1501,83 @@ function runBackTests(files) {
     }
   }
 
+  // ─── useEffect WITHOUT DEPENDENCY ARRAY (ERROR — infinite re-render loop) ───
+  // useEffect(() => { setState(x) }) without [] re-runs every render → infinite loop → browser tab crash.
+  // Must have at least [] (run once) or [deps] (run on change).
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.jsx')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    // Match useEffect(() => { ... }) without second argument
+    // Pattern: useEffect( <callback> ) without comma after callback closing
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // useEffect(() => {  with no dependency array on same or nearby lines
+      if (/useEffect\s*\(\s*\(\s*\)\s*=>\s*\{/.test(line)) {
+        // Look for the closing of useEffect — should have , [...]) or , [dep])
+        // Check next 30 lines for the closing pattern
+        let found = false;
+        let depth = 0;
+        for (let j = i; j < Math.min(i + 30, lines.length); j++) {
+          for (const ch of lines[j]) {
+            if (ch === '{' || ch === '(') depth++;
+            if (ch === '}' || ch === ')') depth--;
+          }
+          // If we find }, [  or }, [] → has deps array
+          if (/\}\s*,\s*\[/.test(lines[j])) { found = true; break; }
+          if (depth <= 0) break;
+        }
+        if (!found) {
+          issues.push({
+            file: fn,
+            issue: 'USEEFFECT_NO_DEPS',
+            message: `useEffect() sans tableau de dépendances (ligne ${i + 1}) → boucle infinie. Ajoute [] pour exécuter une seule fois, ou [dep1, dep2] pour exécuter au changement.`
+          });
+        }
+      }
+    }
+  }
+
+  // ─── CIRCULAR IMPORTS (WARNING — bundle bloat, potential crash) ───
+  // If A imports B and B imports A → circular dependency.
+  // Vite handles some cases but it can cause undefined imports at runtime → blank screen.
+  const importGraph = {};
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts')) continue;
+    if (fn.startsWith('src/components/ui/')) continue;
+    const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
+    importGraph[fn] = imports.map(i => {
+      const p = i.match(/from\s+['"]@\/([^'"]+)['"]/)?.[1];
+      if (!p) return null;
+      const resolved = 'src/' + p + (p.endsWith('.tsx') || p.endsWith('.ts') ? '' : '.tsx');
+      return files[resolved] ? resolved : (files[resolved.replace('.tsx', '.ts')] ? resolved.replace('.tsx', '.ts') : null);
+    }).filter(Boolean);
+  }
+  // Detect cycles (simple DFS)
+  for (const startFile of Object.keys(importGraph)) {
+    const visited = new Set();
+    const stack = [startFile];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (visited.has(current)) {
+        if (current === startFile && visited.size > 1) {
+          issues.push({
+            file: startFile,
+            issue: 'CIRCULAR_IMPORT',
+            severity: 'warning',
+            message: `Import circulaire détecté — ${startFile} s'importe lui-même via une chaîne de dépendances. Peut causer des imports undefined au runtime.`
+          });
+          break;
+        }
+        continue;
+      }
+      visited.add(current);
+      for (const dep of (importGraph[current] || [])) {
+        stack.push(dep);
+      }
+    }
+  }
+
   return issues;
 }
 

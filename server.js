@@ -1341,7 +1341,15 @@ function generateClaudeCodeChat(projectId, message, jobId) {
 const CODE_TOOLS = [
   {
     name: 'write_file',
-    description: 'Create a NEW file or do a MAJOR rewrite. ATTENTION: Pour modifier un fichier existant, PREFERE edit_file — il preserve tout le reste du fichier. Si tu DOIS utiliser write_file sur un fichier existant, tu DOIS utiliser "// ... keep existing code" pour CHAQUE section inchangee (>5 lines). Le serveur fusionnera avec le fichier existant. INTERDIT de reecrire un fichier entier pour une petite modification — utilise edit_file a la place.',
+    description: `Cree un NOUVEAU fichier ou reecrit un fichier ENTIER. PREFERE edit_file pour les petits changements.
+Si tu modifies un fichier existant avec write_file, utilise le marqueur "// ... keep existing code" pour conserver les sections inchangees. Le serveur FUSIONNE automatiquement :
+EXEMPLE:
+  import React from 'react';
+  // ... keep existing code
+  export default function App() { return <div>NOUVEAU</div>; }
+→ Le serveur garde tout le code entre l'import et l'export, remplace seulement les parties que tu ecris.
+QUAND utiliser write_file: nouveau fichier, rewrite > 50% du contenu, fichier < 30 lignes.
+QUAND utiliser edit_file: correction, ajout import, changement texte/couleur, modification < 20 lignes.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -1353,7 +1361,10 @@ const CODE_TOOLS = [
   },
   {
     name: 'edit_file',
-    description: 'OUTIL PREFERE pour les modifications. Search/replace dans un fichier — ne touche QUE la partie ciblee, le reste du fichier est preserve intact. Pour corrections, changements de texte, couleurs, styles, etc. La recherche tolere les differences d\'espaces.',
+    description: `OUTIL PREFERE pour les modifications. Recherche un texte exact dans le fichier et le remplace. Le reste du fichier est preserve INTACT.
+La recherche tolere les differences d'espaces et d'indentation (fuzzy matching a 4 niveaux).
+ATTENTION: Si la recherche ECHOUE (le texte n'est pas trouve), tu recevras un message "✗ ECHEC". Dans ce cas, utilise view_file pour relire le fichier et retente avec le texte EXACT.
+JAMAIS inventer le texte de recherche — copie-le du fichier existant.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -1366,7 +1377,7 @@ const CODE_TOOLS = [
   },
   {
     name: 'line_replace',
-    description: 'Replace lines by line number range. Most precise edit tool — use when you know exactly which lines to change.',
+    description: 'Remplace des lignes par numero. ATTENTION: les numeros de ligne changent apres chaque modification. Utilise view_file AVANT pour obtenir les numeros corrects.',
     input_schema: {
       type: 'object',
       properties: {
@@ -5301,10 +5312,18 @@ Règles d'intégration automatique :
               const input = JSON.parse(currentToolJson);
               toolBlocks.push({ name: currentToolName, id: currentToolId, input });
 
+              // Track files modified during streaming for potential rollback
+              if (!job._streamBackups) job._streamBackups = {};
+
               // REAL-TIME: Write file to container IMMEDIATELY as each tool call completes
               if (currentToolName === 'write_file' && input.path && input.content && job.project_id) {
                 job.progressMessage = `📝 Écriture de ${input.path}`;
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                // Backup existing file for rollback if stream fails
+                const existingFile = path.join(projDir, input.path);
+                if (fs.existsSync(existingFile) && !job._streamBackups[input.path]) {
+                  job._streamBackups[input.path] = fs.readFileSync(existingFile, 'utf8');
+                }
                 let cleanContent = cleanGeneratedContent(input.content);
                 // Lovable-style ellipsis merge
                 if (cleanContent && cleanContent.includes('// ... keep existing code')) {
@@ -5341,6 +5360,8 @@ Règles d'intégration automatique :
                 const filePath = path.join(projDir, input.path);
                 if (fs.existsSync(filePath)) {
                   let content = fs.readFileSync(filePath, 'utf8');
+                  // Backup for rollback
+                  if (!job._streamBackups[input.path]) job._streamBackups[input.path] = content;
                   let matched = false;
                   // Level 1: Exact match
                   if (content.includes(input.search)) {
@@ -5404,6 +5425,16 @@ Règles d'intégration automatique :
             console.error('[Claude API] Stream error:', JSON.stringify(d.error));
             job.status = 'error';
             job.error = d.error?.message || 'Erreur API';
+            // Rollback files modified during this stream
+            if (job._streamBackups && job.project_id) {
+              const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+              for (const [fn, backup] of Object.entries(job._streamBackups)) {
+                try {
+                  fs.writeFileSync(path.join(projDir, fn), backup, 'utf8');
+                  console.log(`[Rollback] Restored ${fn}`);
+                } catch (_) {}
+              }
+            }
           }
         } catch(e) {
           if (data && data.length > 10) console.warn(`[Claude API] Malformed SSE: ${data.substring(0, 80)}`);
@@ -5730,6 +5761,19 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
         const apiRoutes = (serverJs.match(/app\.(get|post|put|delete)\(['"]([^'"]+)['"]/g) || []).map(r => r.match(/['"]([^'"]+)['"]/)?.[1]);
         const pages = fs.existsSync(path.join(projDir, 'src', 'pages')) ? fs.readdirSync(path.join(projDir, 'src', 'pages')) : [];
 
+        // Scan for fetch URLs without matching backend routes
+        const allProjectFiles = readProjectFilesRecursive(projDir);
+        const fetchUrls = [];
+        for (const [fn, content] of Object.entries(allProjectFiles)) {
+          if (!fn.endsWith('.tsx')) continue;
+          const matches = content.match(/fetch\s*\(\s*[`'"]([^`'"]+)/g) || [];
+          for (const m of matches) {
+            const url = m.match(/fetch\s*\(\s*[`'"]([^`'"]+)/)?.[1];
+            if (url && url.startsWith('/api/')) fetchUrls.push({ file: fn, url });
+          }
+        }
+        const unmatchedFetches = fetchUrls.filter(f => !serverJs.includes(f.url.split('?')[0]));
+
         const verifyPrompt = `L'utilisateur a demandé: "${userMsg}"
 
 L'IA a fait ces actions:
@@ -5739,13 +5783,17 @@ ${done}
 - Pages: ${pages.join(', ')}
 - Routes App.tsx: ${routes.join(', ')}
 - Tables SQLite: ${tables.join(', ')}
-- Routes API: ${apiRoutes.join(', ')}
+- Routes API: ${apiRoutes.join(', ')}${unmatchedFetches.length > 0 ? `\n- ATTENTION — fetch() sans route backend: ${unmatchedFetches.map(f => `${f.file} → ${f.url}`).join(', ')}` : ''}
 
-La demande est-elle COMPLÈTEMENT satisfaite? Liste UNIQUEMENT ce qui MANQUE.
-Format: une ligne par manque, commençant par le type d'action:
+La demande est-elle COMPLÈTEMENT satisfaite? Vérifie:
+1. Chaque page mentionnée dans le brief existe-t-elle?
+2. Chaque fetch('/api/...') dans le frontend a-t-il une route dans server.js?
+3. Les routes App.tsx correspondent-elles aux pages existantes?
+
+Liste UNIQUEMENT ce qui MANQUE. Format:
 - write_file src/pages/NomPage.tsx — description
-- edit_file server.js — ajouter CREATE TABLE xxx + route GET /api/xxx
-- edit_file src/App.tsx — ajouter import + Route path="/xxx"
+- edit_file server.js — ajouter route GET /api/xxx + table + données
+- edit_file src/App.tsx — ajouter import + Route
 
 Si TOUT est fait, réponds UNIQUEMENT: COMPLET`;
 
