@@ -717,6 +717,107 @@ Utilise ces commandes pour VALIDER ton travail avant d'écrire READY.
 // ─── REACT PROJECT FILE HELPERS ───
 
 // Read all valid project files recursively from a directory
+// ─── DIRECT AUTO-FIX: Fix mechanical code errors WITHOUT calling the AI ───
+// These are deterministic fixes (regex-based) that don't need AI intelligence.
+// Calling Claude to fix "public → publicItem" wastes tokens and often FAILS because
+// the file isn't in Claude's context. Direct fix = instant, free, 100% reliable.
+function autoFixMechanicalErrors(projectDir, files) {
+  const JS_RESERVED = new Set([
+    'break', 'case', 'catch', 'continue', 'debugger', 'default', 'delete', 'do',
+    'else', 'finally', 'for', 'function', 'if', 'in', 'instanceof', 'new',
+    'return', 'switch', 'this', 'throw', 'try', 'typeof', 'var', 'void',
+    'while', 'with', 'class', 'const', 'enum', 'export', 'extends', 'import',
+    'super', 'implements', 'interface', 'let', 'package', 'private', 'protected',
+    'public', 'static', 'yield', 'await', 'async'
+  ]);
+
+  let totalFixes = 0;
+
+  for (const [fn, content] of Object.entries(files)) {
+    if (!fn.endsWith('.tsx') && !fn.endsWith('.ts') && !fn.endsWith('.jsx')) continue;
+    let fixed = content;
+    let fileFixed = false;
+
+    // Fix 1: Reserved words as callback parameters in .map(), .filter(), .forEach(), .find(), .some(), .every(), .reduce()
+    fixed = fixed.replace(/\.(map|filter|forEach|find|some|every|reduce)\s*\(\s*\(([^)]+)\)\s*=>/g, (match, method, params) => {
+      const parts = params.split(',').map(p => p.trim());
+      let changed = false;
+      const newParts = parts.map(p => {
+        const name = p.split(':')[0].trim();
+        if (JS_RESERVED.has(name)) {
+          changed = true;
+          // Replace "public" with "publicItem", "class" with "classItem", etc.
+          const replacement = name + 'Item';
+          return p.replace(name, replacement);
+        }
+        return p;
+      });
+      if (changed) {
+        // Also need to replace uses of the reserved word inside the callback body
+        return `.${method}((${newParts.join(', ')}) =>`;
+      }
+      return match;
+    });
+
+    // If callback params were fixed, also fix references in the callback body
+    // We do a second pass: find the full .map((reservedWord, index) => { ... }) and replace references
+    for (const reserved of JS_RESERVED) {
+      // Pattern: .map((reserved, ...) => ... ) — find and replace the variable references
+      const callbackRegex = new RegExp(
+        `\\.(map|filter|forEach|find|some|every|reduce)\\s*\\(\\s*\\(${reserved}(\\s*[:,)])`,
+        'g'
+      );
+      if (callbackRegex.test(content) && !callbackRegex.test(fixed)) {
+        // The parameter was already renamed in the previous step.
+        // Now rename all references to the reserved word that appear as variable access
+        // within the same scope (heuristic: between the => and the matching closing paren/brace)
+        const replacement = reserved + 'Item';
+        // Replace standalone word usage: reserved.property, reserved[x], {reserved}, etc.
+        // But NOT inside strings, imports, or other variable names
+        fixed = fixed.replace(new RegExp(`(?<![\\w.])${reserved}(?=\\s*\\.)`, 'g'), (m, offset) => {
+          // Only replace if we're inside a callback (heuristic: after .map( and before the callback end)
+          // Check if this occurrence is AFTER the .map( line
+          const before = fixed.substring(Math.max(0, offset - 200), offset);
+          if (before.includes(replacement + ',') || before.includes(replacement + ')')) {
+            return replacement;
+          }
+          return m;
+        });
+        // Also replace: {reserved.xxx} and key={reserved.xxx}
+        fixed = fixed.replace(new RegExp(`\\{${reserved}\\.`, 'g'), `{${replacement}.`);
+        fixed = fixed.replace(new RegExp(`\\{${reserved}\\}`, 'g'), `{${replacement}}`);
+        fixed = fixed.replace(new RegExp(`=${reserved}\\.`, 'g'), `=${replacement}.`);
+        fixed = fixed.replace(new RegExp(`\\(${reserved}\\.`, 'g'), `(${replacement}.`);
+        fixed = fixed.replace(new RegExp(`\\(${reserved},`, 'g'), `(${replacement},`);
+        fixed = fixed.replace(new RegExp(`\\(${reserved}\\)`, 'g'), `(${replacement})`);
+        // key={reserved.id} patterns
+        fixed = fixed.replace(new RegExp(`key=\\{${reserved}\\.`, 'g'), `key={${replacement}.`);
+      }
+    }
+
+    // Fix 2: require() in TSX/JSX → convert to ESM import
+    fixed = fixed.replace(/(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g, (match, varName, module) => {
+      return `import ${varName} from '${module}'`;
+    });
+
+    if (fixed !== content) {
+      const filePath = path.join(projectDir, fn);
+      try {
+        fs.writeFileSync(filePath, fixed, 'utf8');
+        totalFixes++;
+        console.log(`[AutoFix] Direct fix applied to ${fn}`);
+      } catch (e) {
+        console.warn(`[AutoFix] Failed to write ${fn}: ${e.message}`);
+      }
+    }
+  }
+
+  if (totalFixes > 0) {
+    console.log(`[AutoFix] ${totalFixes} file(s) fixed directly (no AI needed)`);
+  }
+  return totalFixes;
+}
+
 function readProjectFilesRecursive(projectDir) {
   const files = {};
   const validNames = [
@@ -752,17 +853,28 @@ function readProjectFilesRecursive(projectDir) {
     }
   }
 
-  // Read src/components/, src/pages/, etc.
+  // Read src/components/, src/pages/, etc. — INCLUDING subdirectories (src/pages/public/, src/pages/admin/, etc.)
   for (const dir of validDirs) {
     const dirPath = path.join(projectDir, dir);
     if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
       const entries = fs.readdirSync(dirPath);
       for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry);
         if (entry.endsWith('.tsx') || entry.endsWith('.ts') || entry.endsWith('.jsx') || entry.endsWith('.js') || entry.endsWith('.css')) {
           const relativePath = `${dir}/${entry}`;
-          const fullPath = path.join(dirPath, entry);
           if (fs.statSync(fullPath).isFile()) {
             files[relativePath] = fs.readFileSync(fullPath, 'utf8');
+          }
+        } else if (fs.statSync(fullPath).isDirectory()) {
+          // Recurse ONE level into subdirectories (e.g., src/pages/public/, src/pages/admin/)
+          const subEntries = fs.readdirSync(fullPath);
+          for (const subEntry of subEntries) {
+            if (subEntry.endsWith('.tsx') || subEntry.endsWith('.ts') || subEntry.endsWith('.jsx') || subEntry.endsWith('.js') || subEntry.endsWith('.css')) {
+              const subPath = path.join(fullPath, subEntry);
+              if (fs.statSync(subPath).isFile()) {
+                files[`${dir}/${entry}/${subEntry}`] = fs.readFileSync(subPath, 'utf8');
+              }
+            }
           }
         }
       }
@@ -3080,7 +3192,15 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
   // Includes static back-test (regex) + lucide-react runtime validation via docker exec.
   if (ai && ai.runBackTests) {
     const testFiles = readProjectFilesRecursive(projectDir);
-    const backTestIssues = ai.runBackTests(testFiles);
+
+    // ── DIRECT AUTO-FIX: Fix mechanical errors WITHOUT calling the AI ──
+    // Reserved words as variable names, require() in TSX, etc. are simple find/replace.
+    // Calling the AI to fix these wastes tokens and often fails (AI doesn't have the file in context).
+    autoFixMechanicalErrors(projectDir, testFiles);
+
+    // Re-read files after direct fixes
+    const testFilesAfterFix = readProjectFilesRecursive(projectDir);
+    const backTestIssues = ai.runBackTests(testFilesAfterFix);
 
     // Augment with runtime lucide-react validation (queries the actual installed package
     // in the project's container — catches hallucinations the static blacklist misses)
@@ -5201,15 +5321,34 @@ Règles d'intégration automatique :
                 // ALWAYS send edit to WebContainer via SSE
                 notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
                 console.log(`[Stream] SSE edit: ${input.path}`);
-                // Apply edit to disk + container
+                // Apply edit to disk + container with FUZZY matching (same as applyToolEdits)
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 const filePath = path.join(projDir, input.path);
                 if (fs.existsSync(filePath)) {
                   let content = fs.readFileSync(filePath, 'utf8');
+                  let matched = false;
+                  // Level 1: Exact match
                   if (content.includes(input.search)) {
                     content = content.replace(input.search, input.replace || '');
+                    matched = true;
+                  }
+                  // Level 2: Whitespace-normalized match
+                  if (!matched) {
+                    const normSearch = input.search.replace(/\s+/g, '\\s+');
+                    try {
+                      const re = new RegExp(normSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\s\+/g, '\\s+'));
+                      const m = content.match(re);
+                      if (m) {
+                        content = content.replace(m[0], input.replace || '');
+                        matched = true;
+                        console.log(`[Stream] Fuzzy edit matched on ${input.path}`);
+                      }
+                    } catch (_) {}
+                  }
+                  if (matched) {
                     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
-                    // bind mount — Vite HMR picks up changes automatically
+                  } else {
+                    console.warn(`[Stream] Edit FAILED on ${input.path}: search text not found`);
                   }
                 }
               } else if (currentToolName === 'line_replace' && input.path && input.start_line && input.new_content && job.project_id) {
