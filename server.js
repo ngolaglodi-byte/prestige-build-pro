@@ -9048,6 +9048,35 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── API PROXY FOR IFRAME PREVIEW ──
+  // When the iframe is on /run/{id}/, fetch('/api/...') goes to app.prestige-build.dev/api/...
+  // We detect this via the Referer header (/run/{id}/) and proxy to the right container.
+  if (url.startsWith('/api/') && !url.startsWith('/api/auth') && !url.startsWith('/api/login') && !url.startsWith('/api/projects') && !url.startsWith('/api/generate') && !url.startsWith('/api/plan') && !url.startsWith('/api/admin') && !url.startsWith('/api/feedback') && !url.startsWith('/api/users') && !url.startsWith('/api/workspaces') && !url.startsWith('/api/track') && !url.startsWith('/api/jobs') && !url.startsWith('/api/compile') && !url.startsWith('/api/hot-reload') && !url.startsWith('/api/template') && !url.startsWith('/api/tls') && !url.startsWith('/api/logout') && !url.startsWith('/api/docs') && !url.startsWith('/api/usage')) {
+    // Check Referer to find the project ID
+    const referer = req.headers.referer || '';
+    const refMatch = referer.match(/\/run\/(\d+)/);
+    if (refMatch) {
+      const projectId = parseInt(refMatch[1]);
+      const containerHost = getContainerHostname(projectId);
+      containerLastAccess.set(projectId, Date.now());
+      const proxyReq = http.request({
+        hostname: containerHost, port: 3000, path: url, method: req.method,
+        headers: { ...req.headers, host: `${containerHost}:3000` }, timeout: 15000
+      }, (proxyRes) => {
+        const headers = { ...proxyRes.headers };
+        headers['access-control-allow-origin'] = '*';
+        headers['access-control-allow-methods'] = 'GET,POST,PUT,DELETE,OPTIONS';
+        headers['access-control-allow-headers'] = 'Content-Type,Authorization';
+        res.writeHead(proxyRes.statusCode, headers);
+        proxyRes.pipe(res);
+      });
+      proxyReq.on('error', () => { if (!res.headersSent) json(res, 503, { error: 'Backend projet indisponible.' }); });
+      if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(proxyReq);
+      else proxyReq.end();
+      return;
+    }
+  }
+
   // Static files
   if (req.method==='GET' && !url.startsWith('/api/')) {
     const fp = url==='/'?'/index.html':url;
