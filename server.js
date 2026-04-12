@@ -8518,9 +8518,12 @@ const proxyAutoFixedProjects = new Set();
 async function proxyToContainer(req, res, projectId, targetPath) {
   const containerHost = getContainerHostname(projectId);
 
-  // Route through Vite dev server (5173) for preview — Vite proxies /api/* to Express (3000)
-  // For published sites, the publish flow builds dist/ separately
-  const proxyPort = 5173;
+  // Route /uploads/ and /api/ directly to Express (3000) — Vite doesn't serve these.
+  // Strip /run/{id} prefix so Express receives /uploads/file.png instead of /run/13/uploads/file.png
+  const subPath = targetPath.replace(new RegExp(`^/run/${projectId}`), '');
+  const isExpressRoute = subPath.startsWith('/uploads') || subPath.startsWith('/api/') || subPath.startsWith('/health');
+  const proxyPort = isExpressRoute ? 3000 : 5173;
+  if (isExpressRoute) targetPath = subPath;
 
   // Proxy the request via Docker DNS
   // Strip headers that would confuse the container or break response processing
