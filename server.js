@@ -2334,12 +2334,16 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                       let editResult = '✗ Fichier introuvable';
                       if (fp && fs.existsSync(fp)) {
                         const content = fs.readFileSync(fp, 'utf8');
-                        if (tc.input?.replace && content.includes(tc.input.replace)) {
-                          editResult = `✓ Modification appliquée dans ${tc.input.path}`;
-                        } else if (tc.input?.search && content.includes(tc.input.search)) {
-                          editResult = `✗ Le texte recherché existe ENCORE dans ${tc.input.path} — la modification n'a PAS été appliquée. Réessaie avec un texte de recherche exact.`;
+                        const searchGone = tc.input?.search && !content.includes(tc.input.search);
+                        const replacePresent = tc.input?.replace && content.includes(tc.input.replace);
+                        if (searchGone && replacePresent) {
+                          editResult = `✓ Modification appliquée dans ${tc.input.path} — texte remplacé avec succès.`;
+                        } else if (searchGone && !replacePresent) {
+                          editResult = `⚠ ${tc.input.path} — le texte recherché a été supprimé mais le remplacement n'est pas trouvé tel quel (possible reformatage). Vérifie avec view_file.`;
+                        } else if (!searchGone && tc.input?.search) {
+                          editResult = `✗ ECHEC dans ${tc.input.path} — le texte recherché existe ENCORE. L'edit n'a PAS fonctionné. Utilise view_file pour lire le fichier, puis retente avec le texte EXACT copié du fichier.`;
                         } else {
-                          editResult = `⚠ ${tc.input.path} modifié mais impossible de vérifier (texte de recherche absent)`;
+                          editResult = `⚠ ${tc.input.path} modifié mais impossible de vérifier. Utilise view_file pour confirmer.`;
                         }
                       }
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: editResult });
@@ -5223,7 +5227,20 @@ Règles d'intégration automatique :
     let currentToolName = null;
     let currentToolJson = '';
 
+    // Streaming timeout: if no data for 3 minutes, abort (prevents infinite hangs)
+    let streamTimeout = null;
+    const resetStreamTimeout = () => {
+      if (streamTimeout) clearTimeout(streamTimeout);
+      streamTimeout = setTimeout(() => {
+        console.error(`[Stream] Timeout — no data for 3 minutes, aborting job ${jobId}`);
+        if (job.abortController) job.abortController.abort();
+        else { apiRes.destroy(); job.status = 'error'; job.error = 'Timeout: pas de réponse du service IA depuis 3 minutes.'; }
+      }, 180000);
+    };
+    resetStreamTimeout();
+
     apiRes.on('data', chunk => {
+      resetStreamTimeout(); // reset timeout on each data chunk
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
@@ -5402,6 +5419,7 @@ Règles d'intégration automatique :
       job.status = 'error'; job.error = e.message;
     });
     apiRes.on('end', async () => {
+      if (streamTimeout) clearTimeout(streamTimeout); // clean up timeout
       // If tool_use blocks were received, process them into code
       if (toolBlocks.length > 0) {
         console.log(`[Stream] Processing ${toolBlocks.length} tool calls`);
@@ -5646,11 +5664,13 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
               console.log(`[HealthCheck] Vite NOT responding for project ${job.project_id}: ${viteError.substring(0, 150)}`);
             }
 
-            // If we're on the last attempt, don't try to fix — just log and proceed
+            // If we're on the last attempt, don't try to fix — mark as warning
             if (healthAttempt >= healthMaxRetries) {
               log('warn', 'health', 'dev server check failed after retries', {
                 jobId, projectId: job.project_id
               });
+              job.healthCheckFailed = true;
+              job.healthError = viteError ? viteError.substring(0, 200) : 'Preview non fonctionnel';
               break;
             }
 
@@ -5830,6 +5850,11 @@ TOUS les fichiers en UNE SEULE réponse. Pas de fichier oublié.`;
         }
 
         job.status = 'done';
+        // If health check failed, notify the user via SSE so the error banner shows
+        if (job.healthCheckFailed && job.project_id) {
+          job.warning = job.healthError || 'Le preview a des erreurs — cliquez Corriger pour résoudre.';
+          notifyProjectClients(job.project_id, 'generation_warning', { message: job.warning });
+        }
       } else if (job.status === 'running') {
         // Before giving up, check if files were written to disk during streaming.
         // The streaming handler writes files in REAL-TIME (line ~5395). Even if the

@@ -474,7 +474,7 @@ Une feature = TOUS les fichiers en UNE reponse :
 - Page avec donnees → write_file page.tsx + edit_file server.js (route GET + INSERT demo)
 Oublier App.tsx = page inaccessible. Oublier server.js = "Erreur de chargement". Les DEUX sont des BUGS.
 
-STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
+STACK : React 19 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 - Imports : from '@/components/ui/button' (JAMAIS de chemin relatif)
 - Utils : cn() from '@/lib/utils', toast from 'sonner'
 - Composants UI obligatoires (Button, Card, Input, Dialog, Carousel, Calendar, etc.) — jamais de HTML brut
