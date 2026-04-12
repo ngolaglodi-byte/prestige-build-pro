@@ -2840,9 +2840,19 @@ async function checkForViteErrors() {
       l.includes('no such column') ||
       l.includes('EADDRINUSE') ||
       l.includes('UnhandledPromiseRejection') ||
-      l.includes('FATAL ERROR')
+      l.includes('FATAL ERROR') ||
+      l.includes('Invalid hook call') ||
+      l.includes('Maximum update depth exceeded') ||
+      l.includes('Maximum call stack size exceeded') ||
+      l.includes('Invalid CSS') ||
+      l.includes('postcss') ||
+      l.includes('TS2') ||
+      l.includes('Invariant Violation') ||
+      l.includes('Unknown utility') ||
+      l.includes('404') ||
+      l.includes('CORS')
     ).filter(l =>
-      !l.includes('ECONNREFUSED') && !l.includes('health')
+      !l.includes('ECONNREFUSED') && !l.includes('health') && !l.includes('HMR')
     );
     if (errorLines.length > 0) {
       const latestError = errorLines[errorLines.length - 1].trim();
@@ -2918,6 +2928,26 @@ function diagnoseError(errorText) {
   // ── Port conflict ──
   if (errorText.includes('EADDRINUSE')) {
     return `Le port est deja utilise. Redemarrez le conteneur avec le bouton Redemarrer.`;
+  }
+
+  // ── React hook error ──
+  if (errorText.includes('Invalid hook call')) {
+    return `ERREUR React : hook appele en dehors d'un composant. Ouvre ${file || 'le fichier'} avec view_file. Les hooks doivent etre au TOP LEVEL du composant, JAMAIS dans un if/for/callback. Corrige avec edit_file.`;
+  }
+
+  // ── Infinite render loop ──
+  if (errorText.includes('Maximum update depth exceeded')) {
+    return `ERREUR React : boucle de rendu infinie. Ouvre ${file || 'le fichier'} avec view_file. Cherche un setState appele sans tableau de dependances [] dans useEffect, ou appele directement dans le corps du composant. Corrige avec edit_file.`;
+  }
+
+  // ── Stack overflow ──
+  if (errorText.includes('Maximum call stack size exceeded')) {
+    return `ERREUR : stack overflow (recursion infinie). Ouvre ${file || 'le fichier'} avec view_file. Cherche une fonction ou un composant qui s'appelle lui-meme sans condition d'arret. Corrige avec edit_file.`;
+  }
+
+  // ── CSS error ──
+  if (errorText.includes('Invalid CSS') || errorText.includes('postcss')) {
+    return `ERREUR CSS. Ouvre src/index.css avec view_file, trouve la syntaxe CSS invalide et corrige avec edit_file. Les couleurs doivent etre dans tailwind.config.js.`;
   }
 
   // ── Generic fallback with file context ──

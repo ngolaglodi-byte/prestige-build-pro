@@ -412,6 +412,8 @@ function parseViteLogs(logs) {
     // ── Vite/build errors ──
     /\[vite\][^\n]*error/i,
     /\[vite\][^\n]*Failed to (resolve|compile|load)/i,
+    /Failed to resolve/i,
+    /does not provide an export/,
     /plugin:vite:/,
     /Unexpected token/,
     /Unexpected reserved word/,
@@ -436,6 +438,17 @@ function parseViteLogs(logs) {
     /FATAL ERROR/,
     /out of memory/i,
     /heap out of memory/i,
+    // ── React runtime errors ──
+    /Invalid hook call/,
+    /Maximum update depth exceeded/,
+    /Maximum call stack size exceeded/,
+    /Invariant Violation/,
+    // ── CSS/PostCSS/Tailwind errors ──
+    /Invalid CSS/,
+    /postcss/i,
+    /Unknown utility/,
+    // ── TypeScript errors ──
+    /TS\d{4}:/,
   ];
   for (const line of lines) {
     if (errorPatterns.some(re => re.test(line))) {

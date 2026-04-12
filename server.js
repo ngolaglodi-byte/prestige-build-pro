@@ -4985,6 +4985,26 @@ function diagnoseViteError(errorText, brokenFile, attempt) {
     return `ERREUR : promesse non geree (UnhandledPromiseRejection). Ouvre server.js avec view_file, trouve les operations async (fetch, db.prepare, etc.) qui n'ont pas de try/catch, et ajoute un bloc try/catch avec une reponse d'erreur JSON. Utilise edit_file.`;
   }
 
+  // React hook error
+  if (errorText.includes('Invalid hook call')) {
+    return `ERREUR React : hook appele en dehors d'un composant ou dans une condition. Ouvre ${file || 'le fichier concerne'} avec view_file. Les hooks (useState, useEffect, etc.) doivent etre au TOP LEVEL du composant, JAMAIS dans un if/for/callback. Corrige avec edit_file.`;
+  }
+
+  // Infinite render loop
+  if (errorText.includes('Maximum update depth exceeded')) {
+    return `ERREUR React : boucle de rendu infinie (Maximum update depth exceeded). Ouvre ${file || 'le fichier concerne'} avec view_file. Cherche un useState/setState appele dans le corps du composant ou dans un useEffect sans tableau de dependances []. Ajoute les deps ou deplace le setState dans un handler. Corrige avec edit_file.`;
+  }
+
+  // Stack overflow
+  if (errorText.includes('Maximum call stack size exceeded')) {
+    return `ERREUR : stack overflow (appel recursif infini). Ouvre ${file || 'le fichier concerne'} avec view_file. Cherche une fonction qui s'appelle elle-meme, ou un composant qui se rend lui-meme sans condition d'arret. Corrige avec edit_file.`;
+  }
+
+  // CSS/PostCSS error
+  if (errorText.includes('Invalid CSS') || errorText.includes('postcss')) {
+    return `ERREUR CSS ${loc}. Ouvre ${file || 'src/index.css'} avec view_file, trouve la syntaxe CSS invalide et corrige avec edit_file. Rappel: les couleurs doivent etre dans tailwind.config.js, pas dans index.css.`;
+  }
+
   // Fallback — still better than raw error
   if (attempt > 1) {
     return `ERREUR Vite PERSISTE (tentative ${attempt}) :\n\n${errorText}\n\n${file ? `Relis ${file} EN ENTIER avec view_file. ` : ''}La correction precedente N'A PAS fonctionne. Analyse le fichier ligne par ligne, identifie la cause REELLE de l'erreur, et corrige avec edit_file. NE CHANGE QUE le probleme, PRESERVE tout le reste.`;
