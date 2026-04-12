@@ -2198,10 +2198,11 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             // Continue conversation with tool results so Claude generates ALL files
             // Without this, Claude stops after the first batch of write_file calls
             const allToolCalls = r.content.filter(b => b.type === 'tool_use');
-            // Agent loop depth: how many tool-call rounds Claude can do in one session.
-            // 8 was too low for complex tasks. 25 matches Claude Code's behavior:
-            // Claude can read files, modify, verify, re-modify, etc. autonomously.
-            if (allToolCalls.length > 0 && (opts._depth || 0) < 25) {
+            // Agent loop depth: how many tool-call rounds Claude can do.
+            // Normal modifications: 10 rounds (sufficient for read → edit → verify)
+            // Plan execution / new projects: 20 rounds (complex multi-file changes)
+            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 20 : 10;
+            if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
                 try {
                   const toolResults = [];
@@ -5013,10 +5014,7 @@ Règles d'intégration automatique :
     return;
   }
 
-  // Force tool use (type: 'any') when Claude MUST act, not just talk:
-  // - Plan execution: user approved a plan → must implement it
-  // - File upload: user uploaded a file → must integrate it in the code
-  // - Otherwise: 'auto' (Claude decides if tools are needed)
+  // Force tool use when Claude MUST act:
   const hasUpload = messages.some(m => typeof m.content === 'string' && m.content.includes('INSTRUCTION OBLIGATOIRE'));
   const forceTools = job.type === 'plan_execution' || hasUpload;
   const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, stream: true, messages,

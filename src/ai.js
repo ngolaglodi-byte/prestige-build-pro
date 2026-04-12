@@ -778,15 +778,44 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     let projectContext = structure;
 
-    // ── LOVABLE MODEL: send ALL files to Claude (full project visibility) ──
-    // Previously: GPT-4 Mini selected 3-5 files → Claude only saw partial code.
-    // Now: ALL files are sent. Claude sees the ENTIRE project, understands all
-    // dependencies, and makes coherent modifications. With 450K input tokens,
-    // a typical 30-50 file project (~50-100K tokens) fits easily.
-    //
-    // This matches Lovable: the AI always has full project context.
-    const uniqueFiles = allFileNames;
-    const notSent = [];
+    // ── SMART FILE SELECTION (like Lovable) ──
+    // Lovable sends a file TREE (all names) + content of RELEVANT files only.
+    // For simple modifications: send affected files (fast, 30s response).
+    // Claude can always use view_file to read other files if needed.
+    const filesToSend = [];
+    const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle|plan validé|INSTRUCTION OBLIGATOIRE/i.test(userMessage);
+
+    if (isMajor || allFileNames.length <= 15) {
+      // Major changes or small projects: send EVERYTHING
+      allFileNames.forEach(f => filesToSend.push(f));
+    } else if (llmSelectedFiles && llmSelectedFiles.length > 0) {
+      // GPT-4 Mini selected relevant files
+      if (!llmSelectedFiles.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
+      for (const f of llmSelectedFiles) { if (files[f]) filesToSend.push(f); }
+    } else {
+      // Regex fallback: send core files + affected files
+      if (files['src/App.tsx']) filesToSend.push('src/App.tsx');
+      if (files['src/index.css']) filesToSend.push('src/index.css');
+      if (files['tailwind.config.js']) filesToSend.push('tailwind.config.js');
+      if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
+      for (const comp of affected.components) {
+        const key = `src/components/${comp}.tsx`;
+        if (files[key]) filesToSend.push(key);
+      }
+      for (const page of affected.pages) {
+        const key = `src/pages/${page}.tsx`;
+        if (files[key]) filesToSend.push(key);
+      }
+      // Also include any file whose name is mentioned in the message
+      const msgLower = userMessage.toLowerCase();
+      for (const fn of allFileNames) {
+        const baseName = fn.split('/').pop().replace('.tsx','').replace('.ts','').toLowerCase();
+        if (msgLower.includes(baseName) && !filesToSend.includes(fn)) filesToSend.push(fn);
+      }
+    }
+
+    const uniqueFiles = [...new Set(filesToSend)];
+    const notSent = allFileNames.filter(f => !uniqueFiles.includes(f));
 
     projectContext += `\n\nFICHIERS DU PROJET (contenu complet — retourne SEULEMENT ceux que tu MODIFIES):`;
     for (const fn of uniqueFiles) {
