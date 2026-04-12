@@ -823,9 +823,6 @@ function readProjectFilesRecursive(projectDir) {
   const validNames = [
     'package.json', 'vite.config.js', 'index.html', 'server.js',
   ];
-  const validDirs = ['src/components', 'src/components/ui', 'src/pages', 'src/styles', 'src/lib', 'src/hooks', 'src/context'];
-  const validSrcFiles = ['src/main.tsx', 'src/index.css', 'src/App.tsx'];
-
   // Read root-level files
   for (const name of validNames) {
     const p = path.join(projectDir, name);
@@ -845,40 +842,31 @@ function readProjectFilesRecursive(projectDir) {
     }
   }
 
-  // Read src/ files
-  for (const name of validSrcFiles) {
-    const p = path.join(projectDir, name);
-    if (fs.existsSync(p)) {
-      files[name] = fs.readFileSync(p, 'utf8');
-    }
-  }
-
-  // Read src/components/, src/pages/, etc. — INCLUDING subdirectories (src/pages/public/, src/pages/admin/, etc.)
-  for (const dir of validDirs) {
-    const dirPath = path.join(projectDir, dir);
-    if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
-      const entries = fs.readdirSync(dirPath);
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry);
-        if (entry.endsWith('.tsx') || entry.endsWith('.ts') || entry.endsWith('.jsx') || entry.endsWith('.js') || entry.endsWith('.css')) {
-          const relativePath = `${dir}/${entry}`;
-          if (fs.statSync(fullPath).isFile()) {
-            files[relativePath] = fs.readFileSync(fullPath, 'utf8');
-          }
-        } else if (fs.statSync(fullPath).isDirectory()) {
-          // Recurse ONE level into subdirectories (e.g., src/pages/public/, src/pages/admin/)
-          const subEntries = fs.readdirSync(fullPath);
-          for (const subEntry of subEntries) {
-            if (subEntry.endsWith('.tsx') || subEntry.endsWith('.ts') || subEntry.endsWith('.jsx') || subEntry.endsWith('.js') || subEntry.endsWith('.css')) {
-              const subPath = path.join(fullPath, subEntry);
-              if (fs.statSync(subPath).isFile()) {
-                files[`${dir}/${entry}/${subEntry}`] = fs.readFileSync(subPath, 'utf8');
-              }
+  // ── FULL RECURSIVE SCAN of src/ — no hardcoded list, no depth limit ──
+  // Reads ALL .tsx, .ts, .jsx, .js, .css files anywhere under src/
+  // This ensures the AI sees EVERY file, no matter how the project is organized.
+  const srcDir = path.join(projectDir, 'src');
+  if (fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
+    const validExts = new Set(['.tsx', '.ts', '.jsx', '.js', '.css']);
+    const scanDir = (dir, relativeBase) => {
+      try {
+        const entries = fs.readdirSync(dir);
+        for (const entry of entries) {
+          if (entry === 'node_modules' || entry === '.git' || entry === 'dist') continue;
+          const fullPath = path.join(dir, entry);
+          const relativePath = relativeBase ? `${relativeBase}/${entry}` : entry;
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.isFile() && validExts.has(path.extname(entry))) {
+              files[`src/${relativePath}`] = fs.readFileSync(fullPath, 'utf8');
+            } else if (stat.isDirectory()) {
+              scanDir(fullPath, relativePath);
             }
-          }
+          } catch (_) {} // skip unreadable entries
         }
-      }
-    }
+      } catch (_) {} // skip unreadable dirs
+    };
+    scanDir(srcDir, '');
   }
 
   return files;
