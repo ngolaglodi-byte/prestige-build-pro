@@ -409,18 +409,33 @@ function parseViteLogs(logs) {
   const lines = logs.split('\n');
   // Conservative regex: only true errors, not generic words
   const errorPatterns = [
+    // ── Vite/build errors ──
     /\[vite\][^\n]*error/i,
     /\[vite\][^\n]*Failed to (resolve|compile|load)/i,
+    /plugin:vite:/,
+    /Unexpected token/,
+    /Unexpected reserved word/,
+    // ── JavaScript runtime errors ──
     /SyntaxError:/,
     /TypeError:/,
     /ReferenceError:/,
-    /\bERR_[A-Z_]+/,
+    /RangeError:/,
+    /is not defined/,
     /Cannot find module/,
     /Module not found/,
-    /Unexpected token/,
-    /Unexpected reserved word/,
-    /plugin:vite:/,
-    /is not defined/
+    /\bERR_[A-Z_]+/,
+    // ── Express/backend errors ──
+    /SQLITE_ERROR/,
+    /no such table/,
+    /no such column/,
+    /EADDRINUSE/,
+    /EACCES/,
+    /UnhandledPromiseRejection/,
+    /unhandled.*rejection/i,
+    // ── Node.js fatal errors ──
+    /FATAL ERROR/,
+    /out of memory/i,
+    /heap out of memory/i,
   ];
   for (const line of lines) {
     if (errorPatterns.some(re => re.test(line))) {

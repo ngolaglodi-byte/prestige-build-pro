@@ -4962,6 +4962,29 @@ function diagnoseViteError(errorText, brokenFile, attempt) {
     return `ERREUR ${loc} : "${refMatch[1]}" est utilise mais pas importe. Ouvre ${file || 'le fichier'} avec view_file, ajoute l'import manquant avec edit_file. NE CHANGE RIEN D'AUTRE.`;
   }
 
+  // SQLite error: no such table / no such column
+  const tableMatch = errorText.match(/no such table:\s*(\w+)/);
+  if (tableMatch) {
+    return `ERREUR SQL dans server.js : la table "${tableMatch[1]}" n'existe pas. Ouvre server.js avec view_file, trouve les CREATE TABLE, et ajoute "CREATE TABLE IF NOT EXISTS ${tableMatch[1]} (...)" avec les colonnes necessaires. Ajoute aussi des INSERT de donnees de demo. Utilise edit_file.`;
+  }
+  const colMatch = errorText.match(/no such column:\s*(\w+)/);
+  if (colMatch) {
+    return `ERREUR SQL dans server.js : la colonne "${colMatch[1]}" n'existe pas dans la table. Ouvre server.js avec view_file, trouve le CREATE TABLE correspondant et ajoute la colonne "${colMatch[1]}" dans la definition. Utilise edit_file.`;
+  }
+  if (errorText.includes('SQLITE_ERROR')) {
+    return `ERREUR SQLite dans server.js. Ouvre server.js avec view_file, verifie les requetes SQL (SELECT, INSERT, UPDATE) et les CREATE TABLE. Corrige la syntaxe SQL ou la structure de table avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // Port already in use
+  if (errorText.includes('EADDRINUSE')) {
+    return `ERREUR : le port est deja utilise (EADDRINUSE). Dans server.js, verifie que le serveur utilise process.env.PORT || 3000. Ce n'est pas un bug de code — le conteneur doit etre redemarre.`;
+  }
+
+  // Unhandled promise rejection
+  if (errorText.includes('UnhandledPromiseRejection')) {
+    return `ERREUR : promesse non geree (UnhandledPromiseRejection). Ouvre server.js avec view_file, trouve les operations async (fetch, db.prepare, etc.) qui n'ont pas de try/catch, et ajoute un bloc try/catch avec une reponse d'erreur JSON. Utilise edit_file.`;
+  }
+
   // Fallback — still better than raw error
   if (attempt > 1) {
     return `ERREUR Vite PERSISTE (tentative ${attempt}) :\n\n${errorText}\n\n${file ? `Relis ${file} EN ENTIER avec view_file. ` : ''}La correction precedente N'A PAS fonctionne. Analyse le fichier ligne par ligne, identifie la cause REELLE de l'erreur, et corrige avec edit_file. NE CHANGE QUE le probleme, PRESERVE tout le reste.`;
@@ -5686,8 +5709,11 @@ Utilise write_file pour réécrire chaque fichier en ENTIER avec les modificatio
               try {
                 const logs = execSync(`docker logs --tail 20 ${containerName} 2>&1`, { timeout: 5000, encoding: 'utf8' });
                 const errorLines = logs.split('\n').filter(l =>
-                  l.includes('error') || l.includes('Error') || l.includes('Failed') || l.includes('SyntaxError')
-                ).slice(-5);
+                  l.includes('error') || l.includes('Error') || l.includes('Failed') ||
+                  l.includes('SyntaxError') || l.includes('SQLITE_ERROR') ||
+                  l.includes('no such table') || l.includes('EADDRINUSE') ||
+                  l.includes('UnhandledPromiseRejection') || l.includes('FATAL')
+                ).filter(l => !l.includes('ECONNREFUSED') && !l.includes('health')).slice(-5);
                 viteError = errorLines.join('\n') || 'Vite dev server not responding';
               } catch (_) {
                 viteError = 'Cannot read container logs';

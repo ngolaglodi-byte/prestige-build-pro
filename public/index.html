@@ -2834,7 +2834,13 @@ async function checkForViteErrors() {
       l.includes('Unexpected token') ||
       l.includes('plugin:vite:') ||
       l.includes('ReferenceError') ||
-      l.includes('is not defined')
+      l.includes('is not defined') ||
+      l.includes('SQLITE_ERROR') ||
+      l.includes('no such table') ||
+      l.includes('no such column') ||
+      l.includes('EADDRINUSE') ||
+      l.includes('UnhandledPromiseRejection') ||
+      l.includes('FATAL ERROR')
     ).filter(l =>
       !l.includes('ECONNREFUSED') && !l.includes('health')
     );
@@ -2898,6 +2904,20 @@ function diagnoseError(errorText) {
   const refMatch = errorText.match(/(\w+) is not defined/);
   if (refMatch) {
     return `ERREUR dans ${file || 'un fichier'} : "${refMatch[1]}" est utilise mais pas importe. Ouvre ${file || 'le fichier'} avec view_file, ajoute l'import manquant en haut du fichier avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── SQLite errors ──
+  var tableMatch = errorText.match(/no such table:\s*(\w+)/);
+  if (tableMatch) {
+    return `ERREUR SQL : la table "${tableMatch[1]}" n'existe pas dans server.js. Ouvre server.js avec view_file, ajoute CREATE TABLE IF NOT EXISTS ${tableMatch[1]} avec les colonnes necessaires et des donnees de demo. Utilise edit_file.`;
+  }
+  if (errorText.includes('SQLITE_ERROR') || errorText.includes('no such column')) {
+    return `ERREUR SQL dans server.js. Ouvre server.js avec view_file, verifie que les tables et colonnes existent dans les CREATE TABLE. Corrige avec edit_file. NE CHANGE RIEN D'AUTRE.`;
+  }
+
+  // ── Port conflict ──
+  if (errorText.includes('EADDRINUSE')) {
+    return `Le port est deja utilise. Redemarrez le conteneur avec le bouton Redemarrer.`;
   }
 
   // ── Generic fallback with file context ──
