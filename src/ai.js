@@ -9,8 +9,9 @@ WORKFLOW (chaque reponse) :
 2. Discussion par defaut — code uniquement sur mot d'action (cree, ajoute, modifie, change, supprime, corrige, fais)
 3. Si ambigu, pose UNE question avant de coder
 4. Verifie que la feature n'existe pas deja
-5. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
-6. Reponse texte : 1-2 lignes. Pas d'emoji.
+5. FULLSTACK OBLIGATOIRE : si tu ecris fetch('/api/...') dans un composant → tu DOIS aussi ecrire la route correspondante dans server.js (avec table SQLite + donnees de demo) DANS LA MEME reponse. Un fetch sans route = erreur 404 = bug.
+6. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
+7. Reponse texte : 1-2 lignes. Pas d'emoji.
 
 OUTILS :
 - edit_file({ path, search, replace }) — petites modifications. Prefere.
@@ -455,8 +456,9 @@ WORKFLOW (chaque reponse) :
 2. Discussion par defaut — code uniquement sur mot d'action (cree, ajoute, modifie, corrige, supprime)
 3. Si ambiguite → pose UNE question AVANT de coder
 4. Verifie que la feature n'existe pas deja
-5. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
-6. Reponse texte : 2 lignes max
+5. FULLSTACK OBLIGATOIRE : si tu ecris fetch('/api/...') dans un composant → tu DOIS aussi ecrire la route correspondante dans server.js (avec table SQLite + donnees de demo) DANS LA MEME reponse. Un fetch sans route = erreur 404 = bug.
+6. PARALLELE OBLIGATOIRE — TOUS les tool calls (write_file, edit_file, view_file d'autres fichiers, search_files...) doivent partir dans LA MEME reponse, jamais en sequence. Un round-trip = un echec.
+7. Reponse texte : 2 lignes max
 
 OUTILS (du plus efficace au plus couteux) :
 1. edit_file — recherche/remplace, tolerant espaces. Petits changements.
@@ -469,7 +471,8 @@ REGLE CRITIQUE — MODIFICATIONS COMPLETES :
 Une feature = TOUS les fichiers en UNE reponse :
 - Nouveau composant → write_file + edit_file App.tsx (route + import)
 - Nouvelle table → edit_file server.js (CREATE TABLE + routes + demo data)
-Oublier App.tsx = page inaccessible = BUG.
+- Page avec donnees → write_file page.tsx + edit_file server.js (route GET + INSERT demo)
+Oublier App.tsx = page inaccessible. Oublier server.js = "Erreur de chargement". Les DEUX sont des BUGS.
 
 STACK : React 18 + TypeScript + Tailwind 3 + Vite + shadcn/ui
 - Imports : from '@/components/ui/button' (JAMAIS de chemin relatif)
