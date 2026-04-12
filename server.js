@@ -5161,7 +5161,66 @@ function generateClaude(messages, jobId, brief, options = {}) {
     const isModification = hasGeneratedCode && existingProject.status === 'ready';
 
     if (isModification) {
-      console.log(`[generateClaude] Modification for project ${job.project_id} — streaming API`);
+      // Use NON-STREAMING callClaudeAPI for modifications (like Lovable).
+      // Streaming loses tool calls at the end of the stream ("No complete tool blocks").
+      // Non-streaming receives the full response → tool calls are never lost.
+      console.log(`[generateClaude] Modification for project ${job.project_id} — non-streaming API (reliable tool calls)`);
+      (async () => {
+        try {
+          job.status = 'running';
+          job.progressMessage = 'Modification en cours...';
+
+          const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
+          const sectorProfile = ai ? ai.detectSectorProfile(effectiveBrief) : null;
+          const basePrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Expert React.';
+          const systemBlocks = [{ type: 'text', text: basePrompt, cache_control: { type: 'ephemeral' } }];
+          if (sectorProfile) systemBlocks.push({ type: 'text', text: sectorProfile });
+
+          // Build messages with project context
+          const project = db.prepare('SELECT * FROM projects WHERE id=?').get(job.project_id);
+          const history = db.prepare('SELECT role, content FROM project_messages WHERE project_id=? ORDER BY id DESC LIMIT 10').all(job.project_id);
+          const projectKeys = db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(job.project_id);
+          let projectMemory = null;
+          try { const row = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(job.project_id); if (row?.content) projectMemory = row.content; } catch {}
+
+          const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
+
+          const maxTok = 32000;
+          const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
+
+          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
+
+          if (result && job.project_id) {
+            const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+            writeGeneratedFiles(projDir, result, job.project_id);
+
+            // Re-read files and update DB
+            const finalFiles = readProjectFilesRecursive(projDir);
+            const finalCode = formatProjectCode(finalFiles);
+            db.prepare("UPDATE projects SET generated_code=?,build_status='done',build_url=?,status='ready',updated_at=datetime('now') WHERE id=?")
+              .run(finalCode, `/run/${job.project_id}/`, job.project_id);
+            job.code = finalCode;
+
+            // Extract credentials
+            const creds = extractCredentials(finalCode);
+            if (creds) job.credentials = creds;
+          }
+
+          job.status = 'done';
+          job.progressMessage = 'Modifications appliquées';
+          console.log(`[generateClaude] Modification done for project ${job.project_id}`);
+        } catch (e) {
+          if (e.name === 'AbortError' || e.message?.includes('abort')) {
+            job.status = 'cancelled';
+            job.progressMessage = 'Annulé';
+          } else {
+            console.error(`[generateClaude] Modification error: ${e.message}`);
+            job.status = 'error';
+            job.error = e.message;
+          }
+        }
+      })();
+      return;
     } else {
       // NEW project: pre-apply sector palette + write canonical files BEFORE streaming
       console.log(`[generateClaude] New generation for project ${job.project_id} — single streaming call (Lovable model)`);
