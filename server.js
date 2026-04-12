@@ -1730,7 +1730,7 @@ function executeServerTool(toolName, toolInput) {
   }
 
   if (toolName === 'delete_file' && toolInput.path && toolInput._projectDir) {
-    if (PROTECTED_FILES.has(toolInput.path) || toolInput.path.startsWith('src/components/ui/') || toolInput.path.startsWith('src/lib/') || toolInput.path.startsWith('src/hooks/')) {
+    if (PROTECTED_FILES.has(toolInput.path) || toolInput.path.startsWith('src/components/ui/') || toolInput.path === 'src/lib/utils.ts') {
       return Promise.resolve(`Impossible de supprimer un fichier système: ${toolInput.path}`);
     }
     const fp = path.join(toolInput._projectDir, toolInput.path);
