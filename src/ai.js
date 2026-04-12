@@ -835,11 +835,43 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
         const key = `src/pages/${page}.tsx`;
         if (files[key]) filesToSend.push(key);
       }
-      // Also include any file whose name is mentioned in the message
+      // Also include any file whose name or topic is mentioned in the message
       const msgLower = userMessage.toLowerCase();
       for (const fn of allFileNames) {
         const baseName = fn.split('/').pop().replace('.tsx','').replace('.ts','').toLowerCase();
         if (msgLower.includes(baseName) && !filesToSend.includes(fn)) filesToSend.push(fn);
+      }
+      // If message mentions an error with a file path, include that file
+      const errorFileMatch = userMessage.match(/src\/[^\s:]+\.(tsx|ts|jsx)/g);
+      if (errorFileMatch) {
+        for (const ef of errorFileMatch) {
+          if (files[ef] && !filesToSend.includes(ef)) filesToSend.push(ef);
+        }
+      }
+      // If message mentions a concept, search ALL files for related content
+      // This catches "corrige les actualités" → finds src/pages/public/Actualites.tsx
+      const conceptKeywords = msgLower.match(/actualit|partenaire|centre|contact|equipe|service|produit|propos|mission|blog|galerie|t[ée]moignage|formation|public.?cible|accueil|erreur|charg/g);
+      if (conceptKeywords) {
+        for (const fn of allFileNames) {
+          if (filesToSend.includes(fn)) continue;
+          const fnLower = fn.toLowerCase();
+          for (const kw of conceptKeywords) {
+            if (fnLower.includes(kw.substring(0, 5))) { // match first 5 chars of keyword
+              filesToSend.push(fn);
+              break;
+            }
+          }
+        }
+      }
+      // If the message mentions "erreur" or "chargement" or "corrige", include ALL pages
+      // that use fetch() — they're likely the problem
+      if (/erreur|chargement|corrige|fix|bug|problème|ne.*fonctionne|ne.*marche|ne.*charge/i.test(userMessage)) {
+        for (const fn of allFileNames) {
+          if (filesToSend.includes(fn)) continue;
+          if (fn.startsWith('src/pages/') && files[fn] && files[fn].includes('fetch(')) {
+            filesToSend.push(fn);
+          }
+        }
       }
     }
 
