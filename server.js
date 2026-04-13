@@ -2285,7 +2285,7 @@ function applyToolEdits(projectDir, edits) {
 // opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
 // opts.rawResponse: if true, return the full API response object instead of text
 // opts.model: override the default model (Sonnet 4). Used for cheap routing (Haiku).
-function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo = null, opts = {}) {
+function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo = null, opts = {}) {
   return new Promise((resolve, reject) => {
     // Model routing: opts.model overrides the default. Used by classifyIntent (Haiku 4.5)
     // and reserved for future cheap-task routing (file selection, verify pass, etc.).
@@ -3272,8 +3272,8 @@ Chaque composant : export default function, responsive, lucide-react.`;
 
   // Launch BOTH in parallel — they don't depend on each other
   const [pagesResult, compsResult] = await Promise.allSettled([
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 64000, { ...tracking, operation: 'generate' }, { useTools: true }),
-    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 32000, { ...tracking, operation: 'generate' }, { useTools: true })
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: pagesPrompt }], 32000, { ...tracking, operation: 'generate' }, { useTools: true }),
+    callClaudeAPI(systemBlocks, [{ role: 'user', content: compsPrompt }], 24000, { ...tracking, operation: 'generate' }, { useTools: true })
   ]);
 
   // Merge pages result
@@ -5356,19 +5356,11 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
-          // ── STEP 1: Detect complexity → Opus for complex, Sonnet for simple ──
-          const isComplex = /syst[eè]me complet|multi.?fichier|architecture|backend.*frontend|fullstack|dashboard complet|admin.*panel|authentification.*complet|base de donn[eé]es.*complet|refonte|redesign|erp|crm|saas|e.?commerce|plan valid[eé]|INSTRUCTION OBLIGATOIRE|stripe|paiement|payment|multi.?r[oô]le|multi.?page|site.*complet|application.*compl[eè]te/i.test(effectiveBrief);
-          const useOpusFirst = isComplex;
-          const startModel = useOpusFirst ? 'claude-opus-4-20250514' : undefined;
-          const maxTok = useOpusFirst ? 64000 : 32000;
+          // ── STEP 1: Sonnet for everything (like Lovable) — 24K standard ──
+          const maxTok = 24000;
           const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
 
-          if (useOpusFirst) {
-            console.log(`[AgentMode] Complex task → starting with Opus for project ${job.project_id}`);
-            job.progressMessage = 'Analyse avancée (Opus)...';
-          }
-
-          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId, ...(startModel ? { model: startModel } : {}) });
+          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
 
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
@@ -5454,24 +5446,24 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
             // ── STEP 4: If STILL broken → ESCALATE to Opus (expensive, powerful) ──
             if (!projectOK) {
-              console.log(`[AgentMode] Sonnet failed to fix — ESCALATING to Opus for project ${job.project_id}`);
-              job.progressMessage = 'Analyse avancée (Opus)...';
+              // Second retry with more context (still Sonnet — no Opus needed)
+              console.log(`[AgentMode] Sonnet retry #2 with full context for project ${job.project_id}`);
+              job.progressMessage = '🔧 Dernière correction...';
               try {
                 const allFiles = readProjectFilesRecursive(projDir);
                 const allCode = formatProjectCode(allFiles);
-                // Send EVERYTHING to Opus: full code + error diagnostic + user request
-                const opusMessages = [
-                  { role: 'user', content: `PROJET COMPLET:\n${allCode.substring(0, 30000)}\n\nERREURS:\n${diagnostic}\n\nDEMANDE ORIGINALE: ${effectiveBrief}\n\nLe développeur précédent a essayé mais a laissé des erreurs. Corrige TOUT et vérifie que le projet fonctionne.` },
+                const retryMessages = [
+                  { role: 'user', content: `ERREURS RESTANTES:\n${diagnostic}\n\nFICHIERS DU PROJET:\n${allCode.substring(0, 20000)}\n\nCorrige les erreurs restantes.` },
                 ];
-                const opusResult = await callClaudeAPI(systemBlocks, opusMessages, 32000,
-                  { ...tracking, operation: 'escalate-opus' },
-                  { useTools: true, jobId, model: 'claude-opus-4-20250514' });
-                if (opusResult) {
-                  writeGeneratedFiles(projDir, opusResult, job.project_id);
-                  console.log(`[AgentMode] Opus fix applied for project ${job.project_id}`);
+                const retryResult = await callClaudeAPI(systemBlocks, retryMessages, 24000,
+                  { ...tracking, operation: 'auto-fix-retry' },
+                  { useTools: true, jobId });
+                if (retryResult) {
+                  writeGeneratedFiles(projDir, retryResult, job.project_id);
+                  console.log(`[AgentMode] Retry fix applied for project ${job.project_id}`);
                 }
-              } catch (opusErr) {
-                console.warn(`[AgentMode] Opus escalation failed: ${opusErr.message}`);
+              } catch (retryErr) {
+                console.warn(`[AgentMode] Retry failed: ${retryErr.message}`);
               }
             } else {
               console.log(`[AgentMode] Project ${job.project_id} verified OK`);
@@ -5595,9 +5587,9 @@ Règles d'intégration automatique :
     const p = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
     return !p?.generated_code || p.generated_code.length < 500;
   })();
-  let maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 32000;
-  // New projects: minimum 64k to ensure full site generation with all tools
-  if (isNewProject && maxTokens < 64000) maxTokens = 64000;
+  let maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 24000;
+  // New projects: 32K for full site generation
+  if (isNewProject && maxTokens < 32000) maxTokens = 32000;
   const model = 'claude-sonnet-4-20250514';
   console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, new: ${!!isNewProject}, job: ${jobId}`);
 
