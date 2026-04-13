@@ -2346,12 +2346,14 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                 try {
                   const toolResults = [];
                   const projDir = trackingInfo?.projectId ? path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId)) : null;
+                  // Get the job to update progressMessage in real-time
+                  const activeJob = opts.jobId ? generationJobs.get(opts.jobId) : null;
+                  const updateProgress = (msg) => { if (activeJob) activeJob.progressMessage = msg; };
+
                   // Send tool_results with REAL feedback (not just "OK")
-                  // Claude needs to know if edits SUCCEEDED or FAILED so it can retry.
-                  // Previously: always "OK" → Claude thought it worked → nothing changed.
                   for (const tc of allToolCalls) {
                     if (tc.name === 'write_file') {
-                      // write_file: ACTUALLY WRITE the file to disk (was missing before!)
+                      updateProgress(`📝 Écriture de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
                       let written = false;
                       if (fp && tc.input?.content && isValidProjectFile(tc.input.path)) {
@@ -2381,7 +2383,7 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                         content: written ? `✓ Fichier écrit: ${tc.input?.path}` : `✗ Fichier NON écrit: ${tc.input?.path} (protégé ou erreur)`
                       });
                     } else if (tc.name === 'edit_file') {
-                      // edit_file: APPLY the edit on disk, then verify
+                      updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
                       let editResult = '✗ Fichier introuvable';
                       if (fp && fs.existsSync(fp)) {
@@ -2428,13 +2430,29 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                       }
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: editResult });
                     } else if (tc.name === 'line_replace') {
+                      updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: `✓ Lignes remplacées dans ${tc.input?.path || ''}` });
                     } else if (tc.name === 'web_search') {
-                      // Anthropic server-side tool — result is handled by the API, not by us.
-                      // Just acknowledge the tool call so the conversation can continue.
+                      updateProgress('🌐 Recherche web...');
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: 'OK — web search completed' });
                     } else {
-                      // Our server-side tools: execute and return result
+                      // Our server-side tools: show progress per tool type
+                      const toolProgressLabels = {
+                        'view_file': `📖 Lecture de ${tc.input?.path || 'fichier'}...`,
+                        'search_files': `🔍 Recherche dans le code...`,
+                        'run_command': `⚡ Exécution: ${(tc.input?.command || '').substring(0, 40)}...`,
+                        'verify_project': '🔍 Vérification du projet...',
+                        'add_dependency': `📦 Installation de ${tc.input?.package_name || 'package'}...`,
+                        'remove_dependency': `📦 Désinstallation de ${tc.input?.package_name || 'package'}...`,
+                        'delete_file': `🗑️ Suppression de ${tc.input?.path || 'fichier'}...`,
+                        'rename_file': `📁 Renommage de ${tc.input?.old_path || 'fichier'}...`,
+                        'read_console_logs': '📋 Lecture des logs...',
+                        'fetch_website': `🌐 Analyse de ${(tc.input?.url || '').substring(0, 30)}...`,
+                        'generate_image': `🎨 Génération d'image...`,
+                        'search_images': `🖼️ Recherche d'images...`,
+                      };
+                      updateProgress(toolProgressLabels[tc.name] || `🔧 ${tc.name}...`);
+
                       const input = { ...tc.input };
                       if (projDir) input._projectDir = projDir;
                       if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
@@ -5340,7 +5358,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
             // ── STEP 3: If errors → Sonnet tries to fix (free retry, same model) ──
             if (!projectOK) {
               console.log(`[AgentMode] Errors after Sonnet — auto-fixing with Sonnet for project ${job.project_id}`);
-              job.progressMessage = 'Correction en cours...';
+              job.progressMessage = '🔧 Correction automatique des erreurs...';
               try {
                 const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8').substring(0, 10000) : '';
                 const fixMessages = [
@@ -5401,7 +5419,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
           }
 
           job.status = 'done';
-          job.progressMessage = 'Modifications appliquées';
+          job.progressMessage = '✅ Modifications appliquées';
           console.log(`[generateClaude] Modification done for project ${job.project_id}`);
         } catch (e) {
           if (e.name === 'AbortError' || e.message?.includes('abort')) {
