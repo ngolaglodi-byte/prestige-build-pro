@@ -4604,7 +4604,8 @@ function mergeFullFiles(existingCode, newCode) {
 // Valid file paths for React + Vite projects (multi-file)
 // Files the AI is NOT allowed to write (canonical — server controls these)
 const PROTECTED_FILES = new Set([
-  'package.json', 'vite.config.js', 'tsconfig.json', 'index.html', 'src/main.tsx'
+  'package.json', 'vite.config.js', 'tsconfig.json', 'index.html', 'src/main.tsx',
+  'server.js', 'src/App.tsx', 'tailwind.config.js', 'src/index.css'
 ]);
 
 const VALID_FILE_PATTERNS = [
