@@ -5443,6 +5443,7 @@ Règles d'intégration automatique :
     let buffer = '';
     // Track tool_use blocks accumulated during streaming
     const toolBlocks = []; // { name, id, input_json }
+    const MAX_STREAM_TOOL_CALLS = 50; // Safety limit — prevent infinite tool loops in streaming
     let currentToolId = null;
     let currentToolName = null;
     let currentToolJson = '';
@@ -5517,6 +5518,11 @@ Règles d'intégration automatique :
 
           // Tool use end — parse, store, and IMMEDIATELY write to container (like Lovable)
           if (d.type === 'content_block_stop' && currentToolId) {
+            if (toolBlocks.length >= MAX_STREAM_TOOL_CALLS) {
+              console.warn(`[Stream] Tool call limit (${MAX_STREAM_TOOL_CALLS}) reached for project ${job.project_id} — stopping`);
+              currentToolId = null; currentToolName = null; currentToolJson = '';
+              return;
+            }
             try {
               const input = JSON.parse(currentToolJson);
               toolBlocks.push({ name: currentToolName, id: currentToolId, input });
@@ -5747,6 +5753,40 @@ IMPORTANT : dans write_file, ecris SEULEMENT les parties modifiees. Utilise "// 
           const fixedFiles = readProjectFilesRecursive(projDir);
           job.code = formatProjectCode(fixedFiles);
           console.log(`[Stream] Direct auto-fix applied ${fixCount} fix(es) after modification`);
+        }
+      }
+
+      // ── POST-STREAM DOCKER VERIFICATION (Agent Mode) ──
+      // After streaming writes files, check container health.
+      // If server.js has syntax errors → auto-fix with callClaudeAPI (non-streaming).
+      if (job.project_id && containerExecService) {
+        try {
+          const isRunning = await isContainerRunningAsync(job.project_id);
+          if (isRunning) {
+            const syntaxCheck = await containerExecService.execInContainer(job.project_id, 'node --check server.cjs 2>&1', { timeout: 10000 }).catch(() => null);
+            if (syntaxCheck && syntaxCheck.exitCode !== 0) {
+              const errMsg = (syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 500);
+              console.log(`[Stream] Post-stream syntax error in project ${job.project_id}: ${errMsg.substring(0, 100)}`);
+              // Auto-fix: send error to Claude for correction
+              try {
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+                const fixPrompt = `ERREUR CRITIQUE: server.js a une erreur de syntaxe:\n${errMsg}\n\nVoici le fichier server.js complet:\n${serverContent.substring(0, 8000)}\n\nCorrige l'erreur de syntaxe avec edit_file ou write_file.`;
+                const fixBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Fix syntax.' }];
+                const fixResult = await callClaudeAPI(fixBlocks, [{ role: 'user', content: fixPrompt }], 16000,
+                  { userId: job.user_id, projectId: job.project_id, operation: 'auto-fix-syntax' },
+                  { useTools: true });
+                if (fixResult) {
+                  writeGeneratedFiles(projDir, fixResult, job.project_id);
+                  console.log(`[Stream] Auto-fixed syntax error in project ${job.project_id}`);
+                }
+              } catch (fixErr) {
+                console.warn(`[Stream] Auto-fix failed: ${fixErr.message}`);
+              }
+            }
+          }
+        } catch (verifyErr) {
+          // Don't break the flow
         }
       }
 
