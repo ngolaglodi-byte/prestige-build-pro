@@ -5408,7 +5408,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
   if (job.project_id) {
     const existingProject = db.prepare('SELECT generated_code, status FROM projects WHERE id=?').get(job.project_id);
     const hasGeneratedCode = existingProject?.generated_code && existingProject.generated_code.length > 500;
-    const isModification = hasGeneratedCode && existingProject.status === 'ready';
+    const isModification = hasGeneratedCode; // ANY project with code = modification (never streaming)
 
     if (isModification) {
       // Use NON-STREAMING callClaudeAPI for modifications (like Lovable).
