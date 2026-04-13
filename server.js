@@ -2265,7 +2265,7 @@ function applyToolEdits(projectDir, edits) {
 // opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
 // opts.rawResponse: if true, return the full API response object instead of text
 // opts.model: override the default model (Sonnet 4). Used for cheap routing (Haiku).
-function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo = null, opts = {}) {
+function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo = null, opts = {}) {
   return new Promise((resolve, reject) => {
     // Model routing: opts.model overrides the default. Used by classifyIntent (Haiku 4.5)
     // and reserved for future cheap-task routing (file selection, verify pass, etc.).
@@ -2338,9 +2338,9 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             // Without this, Claude stops after the first batch of write_file calls
             const allToolCalls = r.content.filter(b => b.type === 'tool_use');
             // Agent loop depth: how many tool-call rounds Claude can do.
-            // Normal modifications: 25 rounds (read → plan → edit multiple files → verify → fix)
-            // Plan execution / new projects: 50 rounds (complex multi-file architectural changes)
-            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 50 : 25;
+            // Normal modifications: 50 rounds (read → plan → edit → verify → fix — enterprise level)
+            // Plan execution / complex: 100 rounds (full autonomy for multi-file architecture)
+            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 100 : 50;
             if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
                 try {
@@ -5468,9 +5468,9 @@ Règles d'intégration automatique :
     const p = db.prepare('SELECT generated_code FROM projects WHERE id=?').get(job.project_id);
     return !p?.generated_code || p.generated_code.length < 500;
   })();
-  let maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 16000;
-  // New projects: minimum 32k to ensure full site generation in single call
-  if (isNewProject && maxTokens < 32000) maxTokens = 32000;
+  let maxTokens = ai && ai.getMaxTokensForProject ? ai.getMaxTokensForProject(brief) : 32000;
+  // New projects: minimum 64k to ensure full site generation with all tools
+  if (isNewProject && maxTokens < 64000) maxTokens = 64000;
   const model = 'claude-sonnet-4-20250514';
   console.log(`[Claude API Generate] model: ${model}, max_tokens: ${maxTokens}, new: ${!!isNewProject}, job: ${jobId}`);
 
@@ -5506,7 +5506,7 @@ Règles d'intégration automatique :
     let buffer = '';
     // Track tool_use blocks accumulated during streaming
     const toolBlocks = []; // { name, id, input_json }
-    const MAX_STREAM_TOOL_CALLS = 50; // Safety limit — prevent infinite tool loops in streaming
+    const MAX_STREAM_TOOL_CALLS = 100; // Enterprise: allow complex multi-file generation
     let currentToolId = null;
     let currentToolName = null;
     let currentToolJson = '';
