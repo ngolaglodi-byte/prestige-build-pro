@@ -2405,6 +2405,20 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                     } else if (tc.name === 'edit_file') {
                       updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
+
+                      // GUARD: Block edit_file on large files (> 200 lines) — use line_replace instead
+                      if (fp && fs.existsSync(fp)) {
+                        const lineCount = fs.readFileSync(fp, 'utf8').split('\n').length;
+                        if (lineCount > 200) {
+                          const firstLines = fs.readFileSync(fp, 'utf8').split('\n').slice(0, 10).map((l,i) => `${i+1}| ${l}`).join('\n');
+                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                            content: `✗ INTERDIT: edit_file sur ${tc.input.path} (${lineCount} lignes). Ce fichier est trop grand pour edit_file — risque de corruption.\n\nUtilise view_file("${tc.input.path}", start_line, end_line) pour lire la zone à modifier, puis line_replace pour modifier par numéro de ligne.\n\nDébut du fichier:\n${firstLines}`
+                          });
+                          console.log(`[AgentGuard] Blocked edit_file on ${tc.input.path} (${lineCount} lines)`);
+                          continue; // Skip this tool call
+                        }
+                      }
+
                       let editResult = '✗ Fichier introuvable';
                       if (fp && fs.existsSync(fp)) {
                         // Apply the edit using applyToolEdits (fuzzy matching)
