@@ -5286,15 +5286,53 @@ function generateClaude(messages, jobId, brief, options = {}) {
             writeGeneratedFiles(projDir, result, job.project_id);
 
             // ── STEP 2: Verify — does it work? ──
+            // 2a. Check missing imports (most common AI error: import without creating file)
             let projectOK = true;
             let diagnostic = '';
-            if (containerExecService) {
+            try {
+              const missingFiles = [];
+              const srcDir = path.join(projDir, 'src');
+              const scanImports = (dir) => {
+                if (!fs.existsSync(dir)) return;
+                for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                  if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') {
+                    scanImports(path.join(dir, f.name));
+                  } else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+                    try {
+                      const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                      const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
+                      for (const imp of imports) {
+                        const importPath = imp.match(/@\/([^'"]+)/)?.[1];
+                        if (!importPath) continue;
+                        const resolved = path.join(srcDir, importPath);
+                        if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '.jsx') && !fs.existsSync(resolved)) {
+                          missingFiles.push({ file: f.name, import: importPath });
+                        }
+                      }
+                    } catch {}
+                  }
+                }
+              };
+              scanImports(srcDir);
+              if (missingFiles.length > 0) {
+                const missingList = missingFiles.map(m => `- ${m.file} importe @/${m.import} → FICHIER MANQUANT`).join('\n');
+                diagnostic = `✗ IMPORTS MANQUANTS (fichiers importés mais non créés):\n${missingList}\n\nCrée ces fichiers MAINTENANT avec write_file.`;
+                projectOK = false;
+                console.log(`[AgentMode] ${missingFiles.length} missing imports detected in project ${job.project_id}`);
+              }
+            } catch {}
+
+            // 2b. Check server.js syntax + Express health
+            if (projectOK && containerExecService) {
               try {
                 const isRunning = await isContainerRunningAsync(job.project_id);
                 if (isRunning) {
                   job.progressMessage = 'Vérification...';
-                  diagnostic = await containerExecService.verifyProject(job.project_id);
-                  projectOK = !diagnostic.includes('✗') && !diagnostic.includes('ERREUR');
+                  const serverDiag = await containerExecService.verifyProject(job.project_id);
+                  if (serverDiag.includes('✗') || serverDiag.includes('ERREUR')) {
+                    diagnostic = serverDiag;
+                    projectOK = false;
+                  }
                 }
               } catch (e) {}
             }
@@ -5819,37 +5857,69 @@ IMPORTANT : dans write_file, ecris SEULEMENT les parties modifiees. Utilise "// 
         }
       }
 
-      // ── POST-STREAM DOCKER VERIFICATION (Agent Mode) ──
-      // After streaming writes files, check container health.
-      // If server.js has syntax errors → auto-fix with callClaudeAPI (non-streaming).
-      if (job.project_id && containerExecService) {
+      // ── POST-STREAM VERIFICATION (Agent Mode) ──
+      // Check for: missing imports, syntax errors, container health.
+      // Auto-fix any issues by calling Claude.
+      if (job.project_id) {
+        const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+        let postStreamErrors = [];
+
+        // 1. Scan for missing imports (most common AI error)
         try {
-          const isRunning = await isContainerRunningAsync(job.project_id);
-          if (isRunning) {
-            const syntaxCheck = await containerExecService.execInContainer(job.project_id, 'node --check server.cjs 2>&1', { timeout: 10000 }).catch(() => null);
-            if (syntaxCheck && syntaxCheck.exitCode !== 0) {
-              const errMsg = (syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 500);
-              console.log(`[Stream] Post-stream syntax error in project ${job.project_id}: ${errMsg.substring(0, 100)}`);
-              // Auto-fix: send error to Claude for correction
-              try {
-                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-                const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
-                const fixPrompt = `ERREUR CRITIQUE: server.js a une erreur de syntaxe:\n${errMsg}\n\nVoici le fichier server.js complet:\n${serverContent.substring(0, 8000)}\n\nCorrige l'erreur de syntaxe avec edit_file ou write_file.`;
-                const fixBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Fix syntax.' }];
-                const fixResult = await callClaudeAPI(fixBlocks, [{ role: 'user', content: fixPrompt }], 16000,
-                  { userId: job.user_id, projectId: job.project_id, operation: 'auto-fix-syntax' },
-                  { useTools: true });
-                if (fixResult) {
-                  writeGeneratedFiles(projDir, fixResult, job.project_id);
-                  console.log(`[Stream] Auto-fixed syntax error in project ${job.project_id}`);
-                }
-              } catch (fixErr) {
-                console.warn(`[Stream] Auto-fix failed: ${fixErr.message}`);
+          const srcDir = path.join(projDir, 'src');
+          const scanDir = (dir) => {
+            if (!fs.existsSync(dir)) return;
+            for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanDir(path.join(dir, f.name));
+              else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+                try {
+                  const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                  const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
+                  for (const imp of imports) {
+                    const p = imp.match(/@\/([^'"]+)/)?.[1];
+                    if (!p) continue;
+                    const r = path.join(srcDir, p);
+                    if (!fs.existsSync(r + '.tsx') && !fs.existsSync(r + '.ts') && !fs.existsSync(r + '.jsx') && !fs.existsSync(r)) {
+                      postStreamErrors.push(`${f.name} importe @/${p} → FICHIER MANQUANT`);
+                    }
+                  }
+                } catch {}
               }
             }
+          };
+          scanDir(srcDir);
+        } catch {}
+
+        // 2. Check server.js syntax
+        if (containerExecService) {
+          try {
+            const isRunning = await isContainerRunningAsync(job.project_id);
+            if (isRunning) {
+              const syntaxCheck = await containerExecService.execInContainer(job.project_id, 'node --check server.cjs 2>&1', { timeout: 10000 }).catch(() => null);
+              if (syntaxCheck && syntaxCheck.exitCode !== 0) {
+                postStreamErrors.push(`server.js ERREUR DE SYNTAXE: ${(syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 300)}`);
+              }
+            }
+          } catch {}
+        }
+
+        // 3. Auto-fix all detected errors
+        if (postStreamErrors.length > 0) {
+          console.log(`[Stream] ${postStreamErrors.length} error(s) detected post-stream in project ${job.project_id}`);
+          try {
+            const errorList = postStreamErrors.map((e, i) => `${i + 1}. ${e}`).join('\n');
+            const fixPrompt = `ERREURS DÉTECTÉES après la génération :\n\n${errorList}\n\nCrée les fichiers manquants avec write_file et corrige les erreurs de syntaxe. Chaque fichier manquant doit être un composant React valide avec export default.`;
+            const fixBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Fix errors.' }];
+            const fixResult = await callClaudeAPI(fixBlocks, [{ role: 'user', content: fixPrompt }], 32000,
+              { userId: job.user_id, projectId: job.project_id, operation: 'auto-fix-post-stream' },
+              { useTools: true });
+            if (fixResult) {
+              writeGeneratedFiles(projDir, fixResult, job.project_id);
+              console.log(`[Stream] Auto-fixed ${postStreamErrors.length} error(s) in project ${job.project_id}`);
+            }
+          } catch (fixErr) {
+            console.warn(`[Stream] Auto-fix failed: ${fixErr.message}`);
           }
-        } catch (verifyErr) {
-          // Don't break the flow
         }
       }
 
