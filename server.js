@@ -5267,11 +5267,19 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
-          // ── STEP 1: Always start with Sonnet (fast, cheap) ──
-          const maxTok = 32000;
+          // ── STEP 1: Detect complexity → Opus for complex, Sonnet for simple ──
+          const isComplex = /syst[eè]me complet|multi.?fichier|architecture|backend.*frontend|fullstack|dashboard complet|admin.*panel|authentification.*complet|base de donn[eé]es.*complet|refonte|redesign|erp|crm|saas|e.?commerce|plan valid[eé]|INSTRUCTION OBLIGATOIRE|stripe|paiement|payment|multi.?r[oô]le|multi.?page|site.*complet|application.*compl[eè]te/i.test(effectiveBrief);
+          const useOpusFirst = isComplex;
+          const startModel = useOpusFirst ? 'claude-opus-4-20250514' : undefined;
+          const maxTok = useOpusFirst ? 64000 : 32000;
           const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
 
-          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
+          if (useOpusFirst) {
+            console.log(`[AgentMode] Complex task → starting with Opus for project ${job.project_id}`);
+            job.progressMessage = 'Analyse avancée (Opus)...';
+          }
+
+          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId, ...(startModel ? { model: startModel } : {}) });
 
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
