@@ -810,6 +810,26 @@ function autoFixMechanicalErrors(projectDir, files) {
       return `import ${varName} from '${mod}'`;
     });
 
+    // ── Fix duplicate declarations: lucide icon name conflicts with component name ──
+    // Common AI mistake: import { Users } from 'lucide-react' + export default function Users()
+    const componentNameMatch = fixed.match(/export\s+default\s+function\s+(\w+)/);
+    if (componentNameMatch) {
+      const compName = componentNameMatch[1];
+      // Check if same name is imported from lucide-react
+      const lucideImportRe = new RegExp(`import\\s*\\{([^}]*\\b${compName}\\b[^}]*)\\}\\s*from\\s*['"]lucide-react['"]`);
+      const lucideMatch = fixed.match(lucideImportRe);
+      if (lucideMatch) {
+        // Rename the icon import: Users → UsersIcon
+        fixed = fixed.replace(lucideImportRe, (m, imports) => {
+          const renamed = imports.replace(new RegExp(`\\b${compName}\\b`), `${compName} as ${compName}Icon`);
+          return `import {${renamed}} from 'lucide-react'`;
+        });
+        // Rename usage in JSX: <Users → <UsersIcon
+        fixed = fixed.replace(new RegExp(`<${compName}(\\s|\\/)`, 'g'), `<${compName}Icon$1`);
+        fixed = fixed.replace(new RegExp(`{${compName}}`, 'g'), `{${compName}Icon}`);
+      }
+    }
+
     if (fixed !== content) {
       const filePath = path.join(projectDir, fn);
       try {
