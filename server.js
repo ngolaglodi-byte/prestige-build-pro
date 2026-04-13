@@ -2608,9 +2608,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                           const syntaxCheck = await containerExecService.execInContainer(trackingInfo.projectId, 'node --check server.cjs 2>&1', { timeout: 5000 }).catch(() => null);
                           if (syntaxCheck && syntaxCheck.exitCode !== 0) {
                             const errMsg = (syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 500);
-                            toolResults.push({ type: 'tool_result', tool_use_id: 'system_check',
-                              content: `⚠ ERREUR DÉTECTÉE — server.js a une erreur de syntaxe:\n${errMsg}\nCorrige cette erreur MAINTENANT avant de continuer.`
-                            });
+                            // Append syntax error to last tool_result (can't create fake tool_use_id)
+                            if (toolResults.length > 0) {
+                              toolResults[toolResults.length - 1].content += `\n\n⚠ ERREUR DÉTECTÉE — server.js a une erreur de syntaxe:\n${errMsg}\nCorrige cette erreur MAINTENANT.`;
+                            }
                             console.log(`[AgentMode] Syntax error detected in project ${trackingInfo.projectId}`);
                           }
                         }
@@ -2621,9 +2622,8 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                   }
 
                   // FOCUS REMINDER: inject the original user request at EVERY round
-                  // Use opts._originalRequest (cached on first call) to avoid .pop() bug
+                  // Appended to the LAST tool_result (not as a separate fake tool_result)
                   if (!opts._originalRequest) {
-                    // Find the LAST user message that's a string (the actual request, not tool results)
                     for (let mi = messages.length - 1; mi >= 0; mi--) {
                       if (messages[mi].role === 'user' && typeof messages[mi].content === 'string') {
                         opts._originalRequest = messages[mi].content.substring(0, 300);
@@ -2631,10 +2631,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                       }
                     }
                   }
-                  if (opts._originalRequest) {
-                    toolResults.push({ type: 'tool_result', tool_use_id: 'focus_reminder',
-                      content: `📌 RAPPEL — L'utilisateur a demandé: "${opts._originalRequest}"\nConcentre-toi UNIQUEMENT sur cette demande. Ne modifie AUCUN autre fichier.`
-                    });
+                  if (opts._originalRequest && toolResults.length > 0) {
+                    // Append reminder to the last tool_result content (not a new block)
+                    const lastResult = toolResults[toolResults.length - 1];
+                    lastResult.content += `\n\n📌 RAPPEL — L'utilisateur a demandé: "${opts._originalRequest}"\nConcentre-toi UNIQUEMENT sur cette demande. Ne modifie AUCUN autre fichier.`;
                   }
 
                   // Continue conversation with tool results (all in one user message per Anthropic API spec)
