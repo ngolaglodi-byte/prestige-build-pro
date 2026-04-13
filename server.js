@@ -7294,6 +7294,20 @@ async function autoRecoveryTick() {
         continue;
       }
 
+      // CRITICAL: Don't restart if AI is actively working on this project
+      // Restarting during modification causes lost work and broken state.
+      let hasActiveJob = false;
+      for (const [, job] of generationJobs) {
+        if (job.project_id === projectId && (job.status === 'running' || job.status === 'pending')) {
+          hasActiveJob = true;
+          break;
+        }
+      }
+      if (hasActiveJob) {
+        console.log(`[AutoRecovery] Skipping project ${projectId} — AI is actively working`);
+        continue;
+      }
+
       log('warn', 'auto-recovery', 'unhealthy container detected, restarting', {
         projectId, containerName: name
       });
@@ -8687,7 +8701,15 @@ async function monitorContainers() {
 
       // Auto-sleep: stop idle pbp-project-* containers only (never the main Prestige container)
       const targetContainer = getContainerName(project.id);
-      if (running && !project.is_published && idle > SLEEP_TIMEOUT_MS && targetContainer.startsWith('pbp-project-')) {
+      // Don't sleep if AI is actively working on this project
+      let projectHasActiveJob = false;
+      for (const [, job] of generationJobs) {
+        if (job.project_id === project.id && (job.status === 'running' || job.status === 'pending')) {
+          projectHasActiveJob = true;
+          break;
+        }
+      }
+      if (running && !project.is_published && !projectHasActiveJob && idle > SLEEP_TIMEOUT_MS && targetContainer.startsWith('pbp-project-')) {
         console.log(`[Sleep] Stopping idle ${targetContainer} (idle ${Math.round(idle / 60000)}min)`);
         try {
           const container = docker.getContainer(targetContainer);
