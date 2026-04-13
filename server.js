@@ -2360,7 +2360,8 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
             // Agent loop depth: how many tool-call rounds Claude can do.
             // Normal modifications: 50 rounds (read → plan → edit → verify → fix — enterprise level)
             // Plan execution / complex: 100 rounds (full autonomy for multi-file architecture)
-            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 100 : 50;
+            // Lovable uses ~20 rounds. More = wasted tokens, not better results.
+            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 30 : 20;
             if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
                 try {
@@ -5418,52 +5419,21 @@ function generateClaude(messages, jobId, brief, options = {}) {
               } catch (e) {}
             }
 
-            // ── STEP 3: If errors → Sonnet tries to fix (free retry, same model) ──
+            // ── STEP 3: If errors → 1 auto-fix attempt (like Lovable) ──
             if (!projectOK) {
-              console.log(`[AgentMode] Errors after Sonnet — auto-fixing with Sonnet for project ${job.project_id}`);
-              job.progressMessage = '🔧 Correction automatique des erreurs...';
+              console.log(`[AgentMode] Auto-fixing errors for project ${job.project_id}`);
+              job.progressMessage = '🔧 Correction automatique...';
               try {
-                const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8').substring(0, 10000) : '';
+                // Send ONLY the error + relevant file content (not entire project)
+                const fixContext = diagnostic.substring(0, 2000);
                 const fixMessages = [
-                  ...ctxMessages,
-                  { role: 'assistant', content: 'Modifications appliquées.' },
-                  { role: 'user', content: `ERREURS DÉTECTÉES après tes modifications :\n\n${diagnostic}\n\nserver.js:\n${serverContent}\n\nCorrige ces erreurs MAINTENANT.` }
+                  { role: 'user', content: `ERREURS DÉTECTÉES :\n\n${fixContext}\n\nCorrige ces erreurs avec edit_file ou write_file.` }
                 ];
-                const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 32000,
-                  { ...tracking, operation: 'auto-fix-sonnet' }, { useTools: true, jobId });
+                const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 16000,
+                  { ...tracking, operation: 'auto-fix' }, { useTools: true, jobId });
                 if (fixResult) writeGeneratedFiles(projDir, fixResult, job.project_id);
-
-                // Re-verify
-                try {
-                  const diag2 = await containerExecService.verifyProject(job.project_id);
-                  projectOK = !diag2.includes('✗') && !diag2.includes('ERREUR');
-                  diagnostic = diag2;
-                } catch {}
               } catch (e) {
-                console.warn(`[AgentMode] Sonnet auto-fix failed: ${e.message}`);
-              }
-            }
-
-            // ── STEP 4: If STILL broken → ESCALATE to Opus (expensive, powerful) ──
-            if (!projectOK) {
-              // Second retry with more context (still Sonnet — no Opus needed)
-              console.log(`[AgentMode] Sonnet retry #2 with full context for project ${job.project_id}`);
-              job.progressMessage = '🔧 Dernière correction...';
-              try {
-                const allFiles = readProjectFilesRecursive(projDir);
-                const allCode = formatProjectCode(allFiles);
-                const retryMessages = [
-                  { role: 'user', content: `ERREURS RESTANTES:\n${diagnostic}\n\nFICHIERS DU PROJET:\n${allCode.substring(0, 20000)}\n\nCorrige les erreurs restantes.` },
-                ];
-                const retryResult = await callClaudeAPI(systemBlocks, retryMessages, 24000,
-                  { ...tracking, operation: 'auto-fix-retry' },
-                  { useTools: true, jobId });
-                if (retryResult) {
-                  writeGeneratedFiles(projDir, retryResult, job.project_id);
-                  console.log(`[AgentMode] Retry fix applied for project ${job.project_id}`);
-                }
-              } catch (retryErr) {
-                console.warn(`[AgentMode] Retry failed: ${retryErr.message}`);
+                console.warn(`[AgentMode] Auto-fix failed: ${e.message}`);
               }
             } else {
               console.log(`[AgentMode] Project ${job.project_id} verified OK`);
@@ -5625,7 +5595,7 @@ Règles d'intégration automatique :
     let buffer = '';
     // Track tool_use blocks accumulated during streaming
     const toolBlocks = []; // { name, id, input_json }
-    const MAX_STREAM_TOOL_CALLS = 100; // Enterprise: allow complex multi-file generation
+    const MAX_STREAM_TOOL_CALLS = 30; // Like Lovable — focused, not wasteful
     let currentToolId = null;
     let currentToolName = null;
     let currentToolJson = '';
@@ -5991,7 +5961,7 @@ IMPORTANT : dans write_file, ecris SEULEMENT les parties modifiees. Utilise "// 
             const errorList = postStreamErrors.map((e, i) => `${i + 1}. ${e}`).join('\n');
             const fixPrompt = `ERREURS DÉTECTÉES après la génération :\n\n${errorList}\n\nCrée les fichiers manquants avec write_file et corrige les erreurs de syntaxe. Chaque fichier manquant doit être un composant React valide avec export default.`;
             const fixBlocks = [{ type: 'text', text: ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Fix errors.' }];
-            const fixResult = await callClaudeAPI(fixBlocks, [{ role: 'user', content: fixPrompt }], 32000,
+            const fixResult = await callClaudeAPI(fixBlocks, [{ role: 'user', content: fixPrompt }], 16000,
               { userId: job.user_id, projectId: job.project_id, operation: 'auto-fix-post-stream' },
               { useTools: true });
             if (fixResult) {
