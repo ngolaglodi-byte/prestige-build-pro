@@ -5463,7 +5463,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
                 const opusMessages = [
                   { role: 'user', content: `PROJET COMPLET:\n${allCode.substring(0, 30000)}\n\nERREURS:\n${diagnostic}\n\nDEMANDE ORIGINALE: ${effectiveBrief}\n\nLe développeur précédent a essayé mais a laissé des erreurs. Corrige TOUT et vérifie que le projet fonctionne.` },
                 ];
-                const opusResult = await callClaudeAPI(systemBlocks, opusMessages, 64000,
+                const opusResult = await callClaudeAPI(systemBlocks, opusMessages, 32000,
                   { ...tracking, operation: 'escalate-opus' },
                   { useTools: true, jobId, model: 'claude-opus-4-20250514' });
                 if (opusResult) {
