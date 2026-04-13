@@ -5169,9 +5169,9 @@ async function generatePlan(jobId, user, project, message) {
     const planMarkdown = await callClaudeAPI(
       planSystemBlocks,
       planMessages,
-      4000, // hard cap on plan length — plans are short by design
+      16000, // Plans can be detailed for complex features (like Lovable — no artificial limit)
       { userId: user.id, projectId: project.id, operation: 'plan', jobId }, // jobId → AbortController
-      {} // NO tools — markdown only
+      {} // NO tools — markdown only (planning phase, execution comes after approval)
     );
 
     if (!planMarkdown || typeof planMarkdown !== 'string' || planMarkdown.trim().length < 30) {

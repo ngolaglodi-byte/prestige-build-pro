@@ -1634,7 +1634,7 @@ COMPORTEMENT AUTONOME (comme un vrai developpeur) :
 REGLES STRICTES :
 - ZERO outil. Pas de write_file, edit_file, view_file. Markdown uniquement.
 - Reponse 100% en francais.
-- 800 mots maximum, concis.
+- Sois AUSSI DETAILLE que necessaire. Un plan simple = court. Un plan complexe (multi-fichiers, architecture) = long et detaille. Pas de limite artificielle.
 - Pas de blocs de code (\`\`\`). Juste du texte structure.
 - Si la demande est ambigue, propose 2 interpretations dans la section Objectif au lieu d'inventer.
 
