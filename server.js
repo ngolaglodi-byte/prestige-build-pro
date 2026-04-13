@@ -2406,16 +2406,53 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                       updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
 
-                      // GUARD: Block edit_file on large files (> 200 lines) — use line_replace instead
+                      // GUARD: Convert edit_file on large files to safe line_replace automatically
                       if (fp && fs.existsSync(fp)) {
-                        const lineCount = fs.readFileSync(fp, 'utf8').split('\n').length;
-                        if (lineCount > 200) {
-                          const firstLines = fs.readFileSync(fp, 'utf8').split('\n').slice(0, 10).map((l,i) => `${i+1}| ${l}`).join('\n');
-                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
-                            content: `✗ INTERDIT: edit_file sur ${tc.input.path} (${lineCount} lignes). Ce fichier est trop grand pour edit_file — risque de corruption.\n\nUtilise view_file("${tc.input.path}", start_line, end_line) pour lire la zone à modifier, puis line_replace pour modifier par numéro de ligne.\n\nDébut du fichier:\n${firstLines}`
-                          });
-                          console.log(`[AgentGuard] Blocked edit_file on ${tc.input.path} (${lineCount} lines)`);
-                          continue; // Skip this tool call
+                        const fileContent = fs.readFileSync(fp, 'utf8');
+                        const lines = fileContent.split('\n');
+                        if (lines.length > 200 && tc.input?.search) {
+                          console.log(`[AgentGuard] Large file ${tc.input.path} (${lines.length} lines) — converting edit_file to line_replace`);
+                          updateProgress(`🔒 Modification sécurisée de ${tc.input.path}...`);
+
+                          // Find the search text in the file by line
+                          const searchLines = tc.input.search.split('\n');
+                          const searchFirst = searchLines[0].trim();
+                          let matchStart = -1;
+                          for (let i = 0; i < lines.length; i++) {
+                            if (lines[i].includes(searchFirst) || lines[i].trim() === searchFirst) {
+                              // Verify full multi-line match
+                              let fullMatch = true;
+                              for (let j = 1; j < searchLines.length && (i + j) < lines.length; j++) {
+                                if (!lines[i + j].includes(searchLines[j].trim()) && lines[i + j].trim() !== searchLines[j].trim()) {
+                                  fullMatch = false;
+                                  break;
+                                }
+                              }
+                              if (fullMatch) { matchStart = i; break; }
+                            }
+                          }
+
+                          if (matchStart >= 0) {
+                            // Found it — do safe line_replace
+                            const matchEnd = matchStart + searchLines.length;
+                            const before = lines.slice(0, matchStart);
+                            const after = lines.slice(matchEnd);
+                            const newContent = [...before, ...(tc.input.replace || '').split('\n'), ...after].join('\n');
+                            fs.writeFileSync(fp, newContent);
+                            toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                              content: `✓ Modification sécurisée appliquée dans ${tc.input.path} (lignes ${matchStart + 1}-${matchEnd}, fichier ${lines.length} lignes). Converti de edit_file en line_replace automatiquement.`
+                            });
+                            console.log(`[AgentGuard] Safe line_replace applied: ${tc.input.path} lines ${matchStart + 1}-${matchEnd}`);
+                          } else {
+                            // Can't find the text — send file context so AI can retry with line_replace
+                            const numbered = lines.map((l, i) => `${i + 1}| ${l}`).join('\n');
+                            const truncated = numbered.length > 6000 ? numbered.substring(0, 6000) + '\n... (tronqué)' : numbered;
+                            toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                              content: `✗ Texte non trouvé dans ${tc.input.path} (${lines.length} lignes). Le fichier est trop grand pour edit_file.\n\nUtilise line_replace avec les numeros de ligne exacts. Voici le fichier:\n${truncated}`
+                            });
+                            console.log(`[AgentGuard] Search text not found in ${tc.input.path}, sent file content for retry`);
+                          }
+                          continue;
                         }
                       }
 
