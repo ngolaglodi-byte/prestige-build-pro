@@ -1682,56 +1682,76 @@ function buildPlanContext(project, history, userMessage) {
     lines.push('');
   }
 
-  // ── Send FULL file content from DISK (not DB) so plan sees latest code ──
+  // ── Send FULL file content so plan sees the REAL code ──
   let hasCode = false;
   const projectId = project?.id;
   const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
   const projDir = projectId ? require('path').join(DOCKER_PROJECTS_DIR, String(projectId)) : null;
-  let diskFiles = null;
+  let files = {};
 
-  // Try reading from disk first (most up-to-date), fall back to DB
+  // 1. Try reading from DISK first (most up-to-date — includes manual changes)
   if (projDir) {
     try {
       const fs = require('fs');
+      const pathMod = require('path');
       if (fs.existsSync(projDir)) {
-        // Use the same recursive scan as the rest of the system
-        const readProjectFilesRecursive = require('../server.js')?.readProjectFilesRecursive;
-        // Fallback: parse from generated_code in DB
+        const readDir = (dir, prefix) => {
+          const result = {};
+          for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (f.name === 'node_modules' || f.name === '.git' || f.name === 'dist' || f.name === 'data') continue;
+            const fullPath = pathMod.join(dir, f.name);
+            const relPath = prefix ? `${prefix}/${f.name}` : f.name;
+            if (f.isDirectory()) {
+              Object.assign(result, readDir(fullPath, relPath));
+            } else if (/\.(tsx|ts|jsx|js|css|json|html)$/.test(f.name) && f.name !== 'package-lock.json') {
+              try {
+                const content = fs.readFileSync(fullPath, 'utf8');
+                if (content.length < 50000) result[relPath] = content; // Skip huge files
+              } catch (_) {}
+            }
+          }
+          return result;
+        };
+        const diskFiles = readDir(projDir, '');
+        if (Object.keys(diskFiles).length > 0) {
+          files = diskFiles;
+        }
       }
     } catch (_) {}
   }
 
-  // Parse from DB code (always available)
-  if (project && project.generated_code && project.generated_code.length > 100) {
+  // 2. Fallback: parse from DB generated_code
+  if (Object.keys(files).length === 0 && project && project.generated_code && project.generated_code.length > 100) {
     try {
-      const files = parseCodeFiles(project.generated_code);
-      const fileNames = Object.keys(files);
-      if (fileNames.length > 0) {
-        hasCode = true;
-        // Run back-tests and include results in plan context
-        const backTestIssues = runBackTests(files);
-        const errors = backTestIssues.filter(i => i.severity !== 'warning');
-        const warnings = backTestIssues.filter(i => i.severity === 'warning');
+      files = parseCodeFiles(project.generated_code);
+    } catch (_) {}
+  }
 
-        if (errors.length > 0 || warnings.length > 0) {
-          lines.push(`# PROBLÈMES DÉTECTÉS AUTOMATIQUEMENT (${errors.length} erreur(s), ${warnings.length} avertissement(s))`);
-          for (const issue of [...errors, ...warnings]) {
-            lines.push(`- ${issue.severity === 'warning' ? '⚠' : '❌'} ${issue.file} — ${issue.issue}: ${issue.message}`);
-          }
-          lines.push('');
-        }
+  // 3. Build context from files
+  const fileNames = Object.keys(files);
+  if (fileNames.length > 0) {
+    hasCode = true;
 
-        lines.push(`# Code actuel du projet (${fileNames.length} fichiers) — LIS TOUT avant de planifier`);
-        lines.push('');
-        for (const fn of fileNames) {
-          const content = files[fn] || '';
-          lines.push(`### ${fn}`);
-          lines.push(content);
-          lines.push('');
-        }
+    // Run back-tests and include results in plan context
+    const backTestIssues = runBackTests(files);
+    const errors = backTestIssues.filter(i => i.severity !== 'warning');
+    const warnings = backTestIssues.filter(i => i.severity === 'warning');
+
+    if (errors.length > 0 || warnings.length > 0) {
+      lines.push(`# PROBLÈMES DÉTECTÉS AUTOMATIQUEMENT (${errors.length} erreur(s), ${warnings.length} avertissement(s))`);
+      for (const issue of [...errors, ...warnings]) {
+        lines.push(`- ${issue.severity === 'warning' ? '⚠' : '❌'} ${issue.file} — ${issue.issue}: ${issue.message}`);
       }
-    } catch (e) {
-      // parseCodeFiles failed — fall through to "new project"
+      lines.push('');
+    }
+
+    lines.push(`# Code actuel du projet (${fileNames.length} fichiers LUS DEPUIS LE DISQUE) — LIS TOUT avant de planifier`);
+    lines.push('');
+    for (const fn of fileNames) {
+      const content = files[fn] || '';
+      lines.push(`### ${fn}`);
+      lines.push(content);
+      lines.push('');
     }
   }
   if (!hasCode) {
