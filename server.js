@@ -5267,59 +5267,79 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
-          // ── SMART MODEL SELECTION (Opus for complex, Sonnet for simple) ──
-          const isComplex = /syst[eè]me complet|multi.?fichier|architecture|backend.*frontend|fullstack|dashboard complet|admin.*panel|authentification.*complet|base de donn[eé]es.*complet|refonte|redesign|erp|plan valid[eé]|INSTRUCTION OBLIGATOIRE/i.test(effectiveBrief);
-          const isDebugging = /debug|erreur.*critique|crash|ne.*fonctionne.*plus|tout.*cass[eé]|[eé]cran.*blanc|500.*error|syntaxerror|referenceerror/i.test(effectiveBrief);
-          const useOpus = isComplex || isDebugging;
-          const model = useOpus ? 'claude-sonnet-4-20250514' : undefined;
-          if (useOpus) {
-            console.log(`[AgentMode] Complex task detected for project ${job.project_id}`);
-            job.progressMessage = 'Analyse approfondie en cours...';
-          }
-
-          const maxTok = useOpus ? 64000 : 32000;
+          // ── STEP 1: Always start with Sonnet (fast, cheap) ──
+          const maxTok = 32000;
           const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
 
-          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId, ...(model ? { model } : {}) });
+          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
 
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
             writeGeneratedFiles(projDir, result, job.project_id);
 
-            // ── POST-MODIFICATION VERIFICATION (Agent Mode) ──
-            // After Claude finishes, verify the project works.
-            // If broken → send error back to Claude for auto-fix (like a real developer).
+            // ── STEP 2: Verify — does it work? ──
+            let projectOK = true;
+            let diagnostic = '';
             if (containerExecService) {
               try {
                 const isRunning = await isContainerRunningAsync(job.project_id);
                 if (isRunning) {
-                  job.progressMessage = 'Vérification du projet...';
-                  const diagnostic = await containerExecService.verifyProject(job.project_id);
-                  const hasErrors = diagnostic.includes('✗') || diagnostic.includes('ERREUR');
-                  if (hasErrors) {
-                    console.log(`[AgentMode] Post-modification errors detected in project ${job.project_id} — auto-fixing`);
-                    job.progressMessage = 'Correction automatique...';
-                    // Send diagnostic + project files to Claude for auto-fix
-                    const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8').substring(0, 10000) : '';
-                    const fixMessages = [
-                      ...ctxMessages,
-                      { role: 'assistant', content: 'Modifications appliquées.' },
-                      { role: 'user', content: `VERIFICATION AUTOMATIQUE — des erreurs ont été détectées après tes modifications :\n\n${diagnostic}\n\nserver.js (premiers 10000 chars):\n${serverContent}\n\nCorrige ces erreurs MAINTENANT avec edit_file ou write_file.` }
-                    ];
-                    const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 32000,
-                      { ...tracking, operation: 'auto-fix' },
-                      { useTools: true, jobId });
-                    if (fixResult) {
-                      writeGeneratedFiles(projDir, fixResult, job.project_id);
-                      console.log(`[AgentMode] Auto-fix applied for project ${job.project_id}`);
-                    }
-                  } else {
-                    console.log(`[AgentMode] Project ${job.project_id} verified OK`);
-                  }
+                  job.progressMessage = 'Vérification...';
+                  diagnostic = await containerExecService.verifyProject(job.project_id);
+                  projectOK = !diagnostic.includes('✗') && !diagnostic.includes('ERREUR');
                 }
-              } catch (verifyErr) {
-                console.warn(`[AgentMode] Verification failed: ${verifyErr.message}`);
+              } catch (e) {}
+            }
+
+            // ── STEP 3: If errors → Sonnet tries to fix (free retry, same model) ──
+            if (!projectOK) {
+              console.log(`[AgentMode] Errors after Sonnet — auto-fixing with Sonnet for project ${job.project_id}`);
+              job.progressMessage = 'Correction en cours...';
+              try {
+                const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8').substring(0, 10000) : '';
+                const fixMessages = [
+                  ...ctxMessages,
+                  { role: 'assistant', content: 'Modifications appliquées.' },
+                  { role: 'user', content: `ERREURS DÉTECTÉES après tes modifications :\n\n${diagnostic}\n\nserver.js:\n${serverContent}\n\nCorrige ces erreurs MAINTENANT.` }
+                ];
+                const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 32000,
+                  { ...tracking, operation: 'auto-fix-sonnet' }, { useTools: true, jobId });
+                if (fixResult) writeGeneratedFiles(projDir, fixResult, job.project_id);
+
+                // Re-verify
+                try {
+                  const diag2 = await containerExecService.verifyProject(job.project_id);
+                  projectOK = !diag2.includes('✗') && !diag2.includes('ERREUR');
+                  diagnostic = diag2;
+                } catch {}
+              } catch (e) {
+                console.warn(`[AgentMode] Sonnet auto-fix failed: ${e.message}`);
               }
+            }
+
+            // ── STEP 4: If STILL broken → ESCALATE to Opus (expensive, powerful) ──
+            if (!projectOK) {
+              console.log(`[AgentMode] Sonnet failed to fix — ESCALATING to Opus for project ${job.project_id}`);
+              job.progressMessage = 'Analyse avancée (Opus)...';
+              try {
+                const allFiles = readProjectFilesRecursive(projDir);
+                const allCode = formatProjectCode(allFiles);
+                // Send EVERYTHING to Opus: full code + error diagnostic + user request
+                const opusMessages = [
+                  { role: 'user', content: `PROJET COMPLET:\n${allCode.substring(0, 30000)}\n\nERREURS:\n${diagnostic}\n\nDEMANDE ORIGINALE: ${effectiveBrief}\n\nLe développeur précédent a essayé mais a laissé des erreurs. Corrige TOUT et vérifie que le projet fonctionne.` },
+                ];
+                const opusResult = await callClaudeAPI(systemBlocks, opusMessages, 64000,
+                  { ...tracking, operation: 'escalate-opus' },
+                  { useTools: true, jobId, model: 'claude-opus-4-20250514' });
+                if (opusResult) {
+                  writeGeneratedFiles(projDir, opusResult, job.project_id);
+                  console.log(`[AgentMode] Opus fix applied for project ${job.project_id}`);
+                }
+              } catch (opusErr) {
+                console.warn(`[AgentMode] Opus escalation failed: ${opusErr.message}`);
+              }
+            } else {
+              console.log(`[AgentMode] Project ${job.project_id} verified OK`);
             }
 
             // Re-read files and update DB
