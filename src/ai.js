@@ -554,6 +554,7 @@ Tu es un agent AUTONOME. Tu as acces a des outils puissants — UTILISE-LES :
 - run_command("ls -la src/pages/") → voir la structure du projet
 - run_command("node --check server.cjs") → verifier la syntaxe du serveur
 - verify_project → diagnostic complet (syntaxe + sante + logs erreurs)
+⚠ INTERDIT: run_command pour ECRIRE des fichiers (echo > fichier). Utilise write_file a la place. run_command est UNIQUEMENT pour LIRE et VERIFIER.
 
 AVANT de modifier un fichier avec edit_file :
 1. Lis-le d'abord avec view_file pour voir le contenu EXACT

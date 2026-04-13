@@ -2431,8 +2431,21 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                           console.warn(`[callClaudeAPI] write_file error: ${writeErr.message}`);
                         }
                       }
+                      // VERIFY: confirm file actually exists on disk after write
+                      if (written && fp) {
+                        if (!fs.existsSync(fp)) {
+                          written = false;
+                          console.warn(`[callClaudeAPI] write_file PHANTOM: ${tc.input.path} — reported written but file missing`);
+                        } else {
+                          const size = fs.statSync(fp).size;
+                          if (size === 0) {
+                            written = false;
+                            console.warn(`[callClaudeAPI] write_file EMPTY: ${tc.input.path} — file is 0 bytes`);
+                          }
+                        }
+                      }
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
-                        content: written ? `✓ Fichier écrit: ${tc.input?.path}` : `✗ Fichier NON écrit: ${tc.input?.path} (protégé ou erreur)`
+                        content: written ? `✓ Fichier écrit: ${tc.input?.path} (${fs.existsSync(fp) ? fs.statSync(fp).size : 0} bytes)` : `✗ Fichier NON écrit: ${tc.input?.path} — réessaie avec write_file.`
                       });
                     } else if (tc.name === 'edit_file') {
                       updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
@@ -2556,6 +2569,18 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                       };
                       updateProgress(toolProgressLabels[tc.name] || `🔧 ${tc.name}...`);
 
+                      // GUARD: Block run_command from writing files (must use write_file instead)
+                      if (tc.name === 'run_command' && tc.input?.command) {
+                        const cmd = tc.input.command;
+                        if (/echo\s+['"].*['"]\s*>\s*\w|cat\s*<<|tee\s+\w|printf.*>\s*\w/i.test(cmd)) {
+                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                            content: `✗ INTERDIT: run_command ne doit PAS écrire de fichiers. Utilise write_file à la place. run_command est réservé à la lecture (cat, ls, grep) et à la vérification (node --check).`
+                          });
+                          console.log(`[AgentGuard] Blocked run_command file write: ${cmd.substring(0, 60)}`);
+                          continue;
+                        }
+                      }
+
                       const input = { ...tc.input };
                       if (projDir) input._projectDir = projDir;
                       if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
@@ -2588,6 +2613,21 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                       }
                     } catch (dockerCheckErr) {
                       // Silently ignore — don't break the flow
+                    }
+                  }
+
+                  // FOCUS REMINDER: inject the original user request into tool results
+                  // Prevents AI from drifting after many rounds (like Lovable does)
+                  const depth = opts._depth || 0;
+                  if (depth > 0) {
+                    const originalMessage = messages.filter(m => m.role === 'user').pop();
+                    const originalText = typeof originalMessage?.content === 'string'
+                      ? originalMessage.content
+                      : (Array.isArray(originalMessage?.content) ? originalMessage.content.map(c => c.text || '').join('') : '');
+                    if (originalText && originalText.length > 10) {
+                      toolResults.push({ type: 'tool_result', tool_use_id: 'focus_reminder',
+                        content: `📌 RAPPEL — L'utilisateur a demandé: "${originalText.substring(0, 300)}"\nConcentre-toi UNIQUEMENT sur cette demande. Ne modifie AUCUN autre fichier.`
+                      });
                     }
                   }
 
