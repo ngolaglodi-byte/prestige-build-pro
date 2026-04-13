@@ -2376,6 +2376,37 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                     if (tc.name === 'write_file') {
                       updateProgress(`📝 Écriture de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
+
+                      // GUARD: Protect existing CSS/style files from full rewrite
+                      // AI often rewrites theme.css, index.css when not asked
+                      if (fp && fs.existsSync(fp) && /\.(css|scss)$/.test(tc.input?.path || '')) {
+                        const existing = fs.readFileSync(fp, 'utf8');
+                        const newContent = tc.input?.content || '';
+                        // If the new content removes more than 30% of lines, block it
+                        const existingLines = existing.split('\n').length;
+                        const newLines = newContent.split('\n').length;
+                        if (newLines < existingLines * 0.7 && existingLines > 20) {
+                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                            content: `✗ BLOQUÉ: write_file sur ${tc.input.path} supprimerait ${existingLines - newLines} lignes de CSS existant. Utilise edit_file pour modifier uniquement les parties nécessaires, ou write_file avec "/* ... keep existing styles */" pour préserver le CSS existant.`
+                          });
+                          console.log(`[DesignGuard] Blocked CSS rewrite: ${tc.input.path} (${existingLines} → ${newLines} lines)`);
+                          continue;
+                        }
+                      }
+
+                      // GUARD: Protect existing files from unnecessary full rewrite
+                      // If file exists and AI sends write_file without ellipsis, check if it's really needed
+                      if (fp && fs.existsSync(fp) && PROTECTED_FILES.has(tc.input?.path)) {
+                        const cleanContent = cleanGeneratedContent(tc.input?.content || '');
+                        if (!cleanContent.includes('// ... keep existing') && !cleanContent.includes('/* ... keep existing')) {
+                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                            content: `✗ BLOQUÉ: write_file sur fichier protégé ${tc.input.path} sans "// ... keep existing code". Ce fichier ne peut pas être réécrit entièrement. Utilise edit_file ou line_replace pour modifier des parties spécifiques.`
+                          });
+                          console.log(`[DesignGuard] Blocked full rewrite of protected file: ${tc.input.path}`);
+                          continue;
+                        }
+                      }
+
                       let written = false;
                       if (fp && tc.input?.content && isValidProjectFile(tc.input.path)) {
                         try {
