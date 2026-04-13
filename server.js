@@ -2429,6 +2429,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                           console.log(`[callClaudeAPI] write_file: ${tc.input.path}`);
                         } catch(writeErr) {
                           console.warn(`[callClaudeAPI] write_file error: ${writeErr.message}`);
+                          toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
+                            content: `✗ ERREUR écriture ${tc.input?.path}: ${writeErr.message}. Réessaie avec write_file.`
+                          });
+                          continue;
                         }
                       }
                       // VERIFY: confirm file actually exists on disk after write
@@ -2616,19 +2620,21 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                     }
                   }
 
-                  // FOCUS REMINDER: inject the original user request into tool results
-                  // Prevents AI from drifting after many rounds (like Lovable does)
-                  const depth = opts._depth || 0;
-                  if (depth > 0) {
-                    const originalMessage = messages.filter(m => m.role === 'user').pop();
-                    const originalText = typeof originalMessage?.content === 'string'
-                      ? originalMessage.content
-                      : (Array.isArray(originalMessage?.content) ? originalMessage.content.map(c => c.text || '').join('') : '');
-                    if (originalText && originalText.length > 10) {
-                      toolResults.push({ type: 'tool_result', tool_use_id: 'focus_reminder',
-                        content: `📌 RAPPEL — L'utilisateur a demandé: "${originalText.substring(0, 300)}"\nConcentre-toi UNIQUEMENT sur cette demande. Ne modifie AUCUN autre fichier.`
-                      });
+                  // FOCUS REMINDER: inject the original user request at EVERY round
+                  // Use opts._originalRequest (cached on first call) to avoid .pop() bug
+                  if (!opts._originalRequest) {
+                    // Find the LAST user message that's a string (the actual request, not tool results)
+                    for (let mi = messages.length - 1; mi >= 0; mi--) {
+                      if (messages[mi].role === 'user' && typeof messages[mi].content === 'string') {
+                        opts._originalRequest = messages[mi].content.substring(0, 300);
+                        break;
+                      }
                     }
+                  }
+                  if (opts._originalRequest) {
+                    toolResults.push({ type: 'tool_result', tool_use_id: 'focus_reminder',
+                      content: `📌 RAPPEL — L'utilisateur a demandé: "${opts._originalRequest}"\nConcentre-toi UNIQUEMENT sur cette demande. Ne modifie AUCUN autre fichier.`
+                    });
                   }
 
                   // Continue conversation with tool results (all in one user message per Anthropic API spec)
@@ -5791,12 +5797,40 @@ Règles d'intégration automatique :
                 }
               } else if (currentToolName === 'edit_file' && input.path && input.search && job.project_id) {
                 job.progressMessage = `✏️ Modification de ${input.path}`;
+                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+                const filePath = path.join(projDir, input.path);
+
+                // GUARD: Convert edit_file on large files to line_replace (same as non-streaming)
+                if (fs.existsSync(filePath)) {
+                  const lineCount = fs.readFileSync(filePath, 'utf8').split('\n').length;
+                  if (lineCount > 200) {
+                    console.log(`[StreamGuard] Large file ${input.path} (${lineCount} lines) — converting edit_file to line_replace`);
+                    const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+                    const searchFirst = input.search.split('\n')[0].trim();
+                    let matchStart = -1;
+                    for (let si = 0; si < lines.length; si++) {
+                      if (lines[si].includes(searchFirst) || lines[si].trim() === searchFirst) { matchStart = si; break; }
+                    }
+                    if (matchStart >= 0) {
+                      const searchLines = input.search.split('\n');
+                      const before = lines.slice(0, matchStart);
+                      const after = lines.slice(matchStart + searchLines.length);
+                      const newContent = [...before, ...(input.replace || '').split('\n'), ...after].join('\n');
+                      if (!job._streamBackups[input.path]) job._streamBackups[input.path] = fs.readFileSync(filePath, 'utf8');
+                      fs.writeFileSync(filePath, newContent);
+                      console.log(`[StreamGuard] Safe line_replace applied: ${input.path}`);
+                    } else {
+                      console.warn(`[StreamGuard] Search text not found in ${input.path}`);
+                    }
+                    currentToolId = null; currentToolName = null; currentToolJson = '';
+                    return;
+                  }
+                }
+
                 // ALWAYS send edit to WebContainer via SSE
                 notifyProjectClients(job.project_id, 'file_edited', { path: input.path, search: input.search, replace: input.replace || '' });
                 console.log(`[Stream] SSE edit: ${input.path}`);
                 // Apply edit to disk + container with FUZZY matching (same as applyToolEdits)
-                const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
-                const filePath = path.join(projDir, input.path);
                 if (fs.existsSync(filePath)) {
                   let content = fs.readFileSync(filePath, 'utf8');
                   // Backup for rollback
