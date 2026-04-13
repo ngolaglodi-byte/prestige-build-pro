@@ -2333,9 +2333,32 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                   // Previously: always "OK" → Claude thought it worked → nothing changed.
                   for (const tc of allToolCalls) {
                     if (tc.name === 'write_file') {
-                      // write_file: verify the file was actually written
+                      // write_file: ACTUALLY WRITE the file to disk (was missing before!)
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
-                      const written = fp && fs.existsSync(fp);
+                      let written = false;
+                      if (fp && tc.input?.content && isValidProjectFile(tc.input.path)) {
+                        try {
+                          const dir = path.dirname(fp);
+                          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                          const cleanContent = cleanGeneratedContent(tc.input.content);
+                          // Handle "// ... keep existing code" merge
+                          if (cleanContent.includes('// ... keep existing') && fs.existsSync(fp)) {
+                            const existing = fs.readFileSync(fp, 'utf8');
+                            const merged = mergeEllipsis(existing, cleanContent);
+                            fs.writeFileSync(fp, merged);
+                          } else {
+                            if (fp.endsWith('.tsx') || fp.endsWith('.ts') || fp.endsWith('.jsx')) {
+                              safeWriteTsx(fp, cleanContent);
+                            } else {
+                              fs.writeFileSync(fp, cleanContent);
+                            }
+                          }
+                          written = true;
+                          console.log(`[callClaudeAPI] write_file: ${tc.input.path}`);
+                        } catch(writeErr) {
+                          console.warn(`[callClaudeAPI] write_file error: ${writeErr.message}`);
+                        }
+                      }
                       toolResults.push({ type: 'tool_result', tool_use_id: tc.id,
                         content: written ? `✓ Fichier écrit: ${tc.input?.path}` : `✗ Fichier NON écrit: ${tc.input?.path} (protégé ou erreur)`
                       });

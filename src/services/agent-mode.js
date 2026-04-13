@@ -20,7 +20,7 @@ module.exports = function(ctx) {
 
   // ─── STEP 1: PLAN ───
   // Uses callClaudeAPI (same as all other AI calls) — NOT raw HTTPS
-  async function generateAgentPlan(project, message, previousSteps, existingFiles, callClaudeAPI) {
+  async function generateAgentPlan(project, message, previousSteps, existingFiles, callClaudeAPI, user) {
     const fileList = existingFiles
       ? Object.keys(existingFiles).map(name => `  - ${name} (${existingFiles[name].length} chars)`).join('\n')
       : '  (aucun)';
@@ -38,7 +38,8 @@ RÉPONDS UNIQUEMENT en JSON valide:
 
     const messages = [{ role: 'user', content: message }];
 
-    const reply = await callClaudeAPI(systemBlocks, messages, AGENT_PLAN_MAX_TOKENS, null, {});
+    const reply = await callClaudeAPI(systemBlocks, messages, AGENT_PLAN_MAX_TOKENS,
+      { userId: user?.id, projectId: project?.id, operation: 'agent-plan' }, {});
 
     // Parse JSON from reply
     if (typeof reply === 'string') {
@@ -193,7 +194,7 @@ RÉPONDS UNIQUEMENT en JSON valide:
       job.progressMessage = `Agent: planification (${label})...`;
       let plan;
       try {
-        plan = await generateAgentPlan(project, currentMessage, job.agentSteps, existingFiles, callClaudeAPI);
+        plan = await generateAgentPlan(project, currentMessage, job.agentSteps, existingFiles, callClaudeAPI, user);
         job.agentSteps.push({ type: 'plan', summary: plan.analysis || 'OK', iteration });
         console.log(`[Agent] Plan ${label}: ${plan.analysis || message.substring(0, 50)}`);
       } catch(e) {
