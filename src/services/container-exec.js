@@ -25,10 +25,14 @@ module.exports = function(ctx) {
     'mkdir', 'cp', 'mv', 'touch', 'rm',
     // Text comparison
     'diff', 'comm',
+    // Network (for health checks inside container)
+    'wget', 'curl',
     // Shell (needed for compound commands)
     'sh', 'bash',
     // Test expressions
     'test', '[', 'true', 'false',
+    // Process info
+    'ps', 'sleep',
   ];
 
   // ── SECURITY: Dangerous patterns (blocked even if command is allowed) ──
@@ -263,19 +267,19 @@ module.exports = function(ctx) {
 
     // 1. Server.js syntax check
     try {
-      const check = await execInContainer(projectId, 'node --check server.cjs 2>&1', { timeout: 10000 });
+      const check = await execInContainer(projectId, 'node --check server.cjs', { timeout: 10000 });
       if (check.exitCode === 0) {
         results.push('✓ server.js: syntaxe OK');
       } else {
         results.push(`✗ server.js ERREUR DE SYNTAXE:\n${(check.stderr || check.stdout).substring(0, 500)}`);
       }
     } catch (e) {
-      results.push(`⚠ Vérification syntaxe impossible: ${e.message}`);
+      results.push(`⚠ Vérification syntaxe: ${e.message}`);
     }
 
     // 2. Express health
     try {
-      const health = await execInContainer(projectId, 'wget -q -O- http://localhost:3000/health 2>&1', { timeout: 5000 });
+      const health = await execInContainer(projectId, 'wget -q -O- http://localhost:3000/health', { timeout: 8000 });
       if (health.stdout && health.stdout.includes('"ok"')) {
         results.push('✓ Express (port 3000): OK');
       } else {
@@ -285,55 +289,26 @@ module.exports = function(ctx) {
       results.push(`✗ Express: ${e.message}`);
     }
 
-    // 3. REAL Vite compilation test — catches ALL errors (imports, syntax, types, duplicates)
-    // This is the enterprise check: actually compile and capture any error
+    // 3. Vite compilation — request App.tsx to force full compilation
     try {
-      // Request App.tsx through Vite — forces compilation of the entire dependency tree
-      const viteCheck = await execInContainer(projectId,
-        'wget -q -O /dev/null http://localhost:5173/src/App.tsx 2>&1; ' +
-        'wget -q -O /dev/null http://localhost:5173/src/main.tsx 2>&1; ' +
-        'sleep 1; ' +
-        // Capture Vite's stderr which contains compilation errors
-        'cat /proc/$(cat /tmp/vite.pid 2>/dev/null || echo 1)/fd/2 2>/dev/null | tail -30 || true',
-        { timeout: 15000 });
-
-      // Also check Vite server logs directly
-      const viteErrors = await execInContainer(projectId,
-        'wget -S -O /dev/null http://localhost:5173/src/App.tsx 2>&1 | head -5',
-        { timeout: 8000 });
-
-      const output = (viteCheck.stdout || '') + (viteCheck.stderr || '') + (viteErrors.stdout || '') + (viteErrors.stderr || '');
-      const errorLines = output.split('\n').filter(l =>
-        /error|Error|ERR|Failed to resolve|Duplicate declaration|Cannot find|not exported|Unexpected token|SyntaxError/i.test(l) &&
-        !/node_modules/.test(l)
-      );
-
-      if (errorLines.length > 0) {
-        results.push(`✗ ERREURS DE COMPILATION VITE:\n${errorLines.slice(0, 8).join('\n')}`);
+      const viteCheck = await execInContainer(projectId, 'wget -q -O /dev/null http://localhost:5173/src/App.tsx', { timeout: 10000 });
+      if (viteCheck.exitCode === 0) {
+        results.push('✓ Vite: compilation OK');
       } else {
-        // Double check — request a page that imports everything
-        const pageCheck = await execInContainer(projectId,
-          'wget -q -O /dev/null http://localhost:5173/ 2>&1',
-          { timeout: 5000 });
-        if (pageCheck.exitCode === 0) {
-          results.push('✓ Vite: compilation OK');
-        } else {
-          results.push('⚠ Vite: réponse incertaine');
-        }
+        const errOutput = (viteCheck.stderr || '').substring(0, 400);
+        results.push(`✗ ERREUR COMPILATION VITE:\n${errOutput}`);
       }
     } catch (e) {
       results.push(`⚠ Vite: ${e.message}`);
     }
 
-    // 4. Check for common runtime issues
+    // 4. Check missing exports
     try {
-      // Missing exports (file exists but no export default)
       const exportCheck = await execInContainer(projectId,
-        'grep -rL "export default" src/pages/ src/components/ 2>/dev/null | grep -v ui/ | grep -v node_modules || echo ""',
-        { timeout: 5000 });
-      const missingExports = (exportCheck.stdout || '').trim().split('\n').filter(Boolean);
-      if (missingExports.length > 0) {
-        results.push(`⚠ Fichiers sans export default:\n${missingExports.map(f => `- ${f}`).join('\n')}`);
+        'grep -rL "export default" src/pages/ src/components/ 2>/dev/null | grep -v ui/ | grep -v node_modules', { timeout: 5000 });
+      const missing = (exportCheck.stdout || '').trim().split('\n').filter(Boolean);
+      if (missing.length > 0) {
+        results.push(`⚠ Fichiers sans export default:\n${missing.map(f => `- ${f}`).join('\n')}`);
       }
     } catch {}
 
