@@ -5268,13 +5268,12 @@ function generateClaude(messages, jobId, brief, options = {}) {
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
           // ── SMART MODEL SELECTION (Opus for complex, Sonnet for simple) ──
-          // Detect complexity: multi-file, architecture, debugging, system-level
           const isComplex = /syst[eè]me complet|multi.?fichier|architecture|backend.*frontend|fullstack|dashboard complet|admin.*panel|authentification.*complet|base de donn[eé]es.*complet|refonte|redesign|erp|plan valid[eé]|INSTRUCTION OBLIGATOIRE/i.test(effectiveBrief);
           const isDebugging = /debug|erreur.*critique|crash|ne.*fonctionne.*plus|tout.*cass[eé]|[eé]cran.*blanc|500.*error|syntaxerror|referenceerror/i.test(effectiveBrief);
           const useOpus = isComplex || isDebugging;
-          const model = useOpus ? 'claude-sonnet-4-20250514' : undefined; // Opus: 'claude-opus-4-20250514' when budget allows
+          const model = useOpus ? 'claude-sonnet-4-20250514' : undefined;
           if (useOpus) {
-            console.log(`[AgentMode] Complex task detected — using enhanced model for project ${job.project_id}`);
+            console.log(`[AgentMode] Complex task detected for project ${job.project_id}`);
             job.progressMessage = 'Analyse approfondie en cours...';
           }
 
@@ -5286,6 +5285,42 @@ function generateClaude(messages, jobId, brief, options = {}) {
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
             writeGeneratedFiles(projDir, result, job.project_id);
+
+            // ── POST-MODIFICATION VERIFICATION (Agent Mode) ──
+            // After Claude finishes, verify the project works.
+            // If broken → send error back to Claude for auto-fix (like a real developer).
+            if (containerExecService) {
+              try {
+                const isRunning = await isContainerRunningAsync(job.project_id);
+                if (isRunning) {
+                  job.progressMessage = 'Vérification du projet...';
+                  const diagnostic = await containerExecService.verifyProject(job.project_id);
+                  const hasErrors = diagnostic.includes('✗') || diagnostic.includes('ERREUR');
+                  if (hasErrors) {
+                    console.log(`[AgentMode] Post-modification errors detected in project ${job.project_id} — auto-fixing`);
+                    job.progressMessage = 'Correction automatique...';
+                    // Send diagnostic + project files to Claude for auto-fix
+                    const serverContent = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8').substring(0, 10000) : '';
+                    const fixMessages = [
+                      ...ctxMessages,
+                      { role: 'assistant', content: 'Modifications appliquées.' },
+                      { role: 'user', content: `VERIFICATION AUTOMATIQUE — des erreurs ont été détectées après tes modifications :\n\n${diagnostic}\n\nserver.js (premiers 10000 chars):\n${serverContent}\n\nCorrige ces erreurs MAINTENANT avec edit_file ou write_file.` }
+                    ];
+                    const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 32000,
+                      { ...tracking, operation: 'auto-fix' },
+                      { useTools: true, jobId });
+                    if (fixResult) {
+                      writeGeneratedFiles(projDir, fixResult, job.project_id);
+                      console.log(`[AgentMode] Auto-fix applied for project ${job.project_id}`);
+                    }
+                  } else {
+                    console.log(`[AgentMode] Project ${job.project_id} verified OK`);
+                  }
+                }
+              } catch (verifyErr) {
+                console.warn(`[AgentMode] Verification failed: ${verifyErr.message}`);
+              }
+            }
 
             // Re-read files and update DB
             const finalFiles = readProjectFilesRecursive(projDir);
