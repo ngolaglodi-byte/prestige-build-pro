@@ -1592,17 +1592,28 @@ JAMAIS inventer le texte de recherche — copie-le du fichier existant.`,
       required: ['prompt', 'save_path']
     }
   },
-  // ─── NEW TOOLS (Agent Mode) ───
+  // ─── AGENT TOOLS ───
   {
     name: 'run_command',
-    description: 'Execute a shell command inside the project container. Allowed: node, npm, npx, cat, ls, pwd, grep, find. Use for testing builds, installing packages, or running scripts. Returns stdout/stderr.',
+    description: 'Execute a shell command inside the project Docker container (sandboxed). Use for: checking syntax (node --check server.cjs), listing files (ls src/), reading files (cat src/App.tsx), searching code (grep -rn "fetchData" src/), testing builds (npm run build). Returns stdout+stderr. Timeout: 30s.',
     input_schema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Shell command to run (e.g. "npm run build", "node --check server.js", "ls src/components/")' },
+        command: { type: 'string', description: 'Shell command to run (e.g. "node --check server.cjs", "ls -la src/pages/", "grep -rn fetchData src/", "cat src/App.tsx")' },
         cwd: { type: 'string', description: 'Working directory inside container (default: /app)' }
       },
       required: ['command']
+    }
+  },
+  {
+    name: 'verify_project',
+    description: 'Run a full project health check: 1) server.js syntax check (node --check), 2) Express health endpoint, 3) error log scan. Use AFTER making changes to verify everything works. Returns a diagnostic summary.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'Project ID (auto-filled)' }
+      },
+      required: []
     }
   },
 ];
@@ -1896,6 +1907,13 @@ function executeServerTool(toolName, toolInput) {
     })();
   }
 
+  if (toolName === 'verify_project') {
+    const vpId = toolInput.project_id || toolInput._projectId;
+    if (!vpId) return Promise.resolve('Erreur: project_id manquant');
+    if (!containerExecService || !containerExecService.verifyProject) return Promise.resolve('Service de vérification non disponible');
+    return containerExecService.verifyProject(vpId);
+  }
+
   if (toolName === 'enable_stripe' && toolInput.project_id && db) {
     const keyName = toolInput.stripe_key_name || 'STRIPE_SECRET_KEY';
     try {
@@ -2061,7 +2079,7 @@ function parseToolResponse(response) {
           search: block.input.search,
           replace: block.input.replace || ''
         });
-      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images', 'generate_image', 'run_command'].includes(block.name)) {
+      } else if (['fetch_website', 'read_console_logs', 'run_security_check', 'parse_document', 'generate_mermaid', 'view_file', 'search_files', 'delete_file', 'rename_file', 'add_dependency', 'remove_dependency', 'download_to_project', 'read_project_analytics', 'get_table_schema', 'enable_stripe', 'search_images', 'generate_image', 'run_command', 'verify_project'].includes(block.name)) {
         result.serverToolCalls.push({ id: block.id, name: block.name, input: block.input });
       }
     }
@@ -2320,9 +2338,9 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
             // Without this, Claude stops after the first batch of write_file calls
             const allToolCalls = r.content.filter(b => b.type === 'tool_use');
             // Agent loop depth: how many tool-call rounds Claude can do.
-            // Normal modifications: 10 rounds (sufficient for read → edit → verify)
-            // Plan execution / new projects: 20 rounds (complex multi-file changes)
-            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 20 : 10;
+            // Normal modifications: 25 rounds (read → plan → edit multiple files → verify → fix)
+            // Plan execution / new projects: 50 rounds (complex multi-file architectural changes)
+            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 50 : 25;
             if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
                 try {
@@ -2384,18 +2402,23 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                         } else if (searchGone && !replacePresent) {
                           editResult = `⚠ ${tc.input.path} — le texte recherché a été supprimé mais le remplacement n'est pas trouvé tel quel (possible reformatage). Vérifie avec view_file.`;
                         } else if (!searchGone && tc.input?.search) {
-                          // Include nearby lines so AI can retry with exact text
+                          // AGENT MODE: Include FULL file content so AI can retry with exact text
                           let hint = '';
                           try {
                             const lines = content.split('\n');
                             const searchFirst = tc.input.search.split('\n')[0].trim();
                             const matchIdx = lines.findIndex(l => l.includes(searchFirst) || l.trim() === searchFirst);
                             if (matchIdx >= 0) {
-                              const start = Math.max(0, matchIdx - 2);
-                              const end = Math.min(lines.length, matchIdx + 5);
-                              hint = '\n\nLignes ' + (start+1) + '-' + end + ' du fichier:\n' + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
+                              // Show generous context around the match (30 lines before/after)
+                              const start = Math.max(0, matchIdx - 15);
+                              const end = Math.min(lines.length, matchIdx + 15);
+                              hint = `\n\nVoici les lignes ${start+1}-${end} du fichier (le texte exact à chercher est ici):\n` + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
                             } else {
-                              hint = '\n\nLe texte "' + searchFirst.substring(0,60) + '..." n\'existe pas dans le fichier. Utilise write_file avec "// ... keep existing code" pour ajouter le nouveau code sans tout reecrire.';
+                              // Text not found at all — send full file (truncated) so AI can see reality
+                              const numbered = lines.map((l,i) => (i+1) + '| ' + l).join('\n');
+                              const maxLen = 6000;
+                              hint = `\n\nLe texte recherché N'EXISTE PAS dans le fichier. Voici le contenu COMPLET (${lines.length} lignes):\n` + (numbered.length > maxLen ? numbered.substring(0, maxLen) + '\n... (tronqué)' : numbered);
+                              hint += '\n\nUtilise write_file avec "// ... keep existing code" ou retente edit_file avec le texte EXACT ci-dessus.';
                             }
                           } catch {}
                           editResult = `✗ ECHEC dans ${tc.input.path} — le texte recherché ne correspond pas exactement.` + hint;
@@ -2420,6 +2443,33 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 16000, trackingInfo =
                       console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
                     }
                   }
+                  // ── AGENT MODE: Capture Docker errors after file writes/edits ──
+                  // If we wrote or edited files, check container for runtime errors
+                  // and inject them as context so Claude can self-correct.
+                  const hasFileChanges = allToolCalls.some(tc => ['write_file', 'edit_file', 'line_replace'].includes(tc.name));
+                  if (hasFileChanges && containerExecService && trackingInfo?.projectId) {
+                    try {
+                      const containerName = `pbp-project-${trackingInfo.projectId}`;
+                      const container = docker?.getContainer(containerName);
+                      if (container) {
+                        const info = await container.inspect().catch(() => null);
+                        if (info?.State?.Running) {
+                          // Check server.js syntax
+                          const syntaxCheck = await containerExecService.execInContainer(trackingInfo.projectId, 'node --check server.cjs 2>&1', { timeout: 5000 }).catch(() => null);
+                          if (syntaxCheck && syntaxCheck.exitCode !== 0) {
+                            const errMsg = (syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 500);
+                            toolResults.push({ type: 'tool_result', tool_use_id: 'system_check',
+                              content: `⚠ ERREUR DÉTECTÉE — server.js a une erreur de syntaxe:\n${errMsg}\nCorrige cette erreur MAINTENANT avant de continuer.`
+                            });
+                            console.log(`[AgentMode] Syntax error detected in project ${trackingInfo.projectId}`);
+                          }
+                        }
+                      }
+                    } catch (dockerCheckErr) {
+                      // Silently ignore — don't break the flow
+                    }
+                  }
+
                   // Continue conversation with tool results (all in one user message per Anthropic API spec)
                   const currentCode = toolResponseToCode(parsed);
                   const followUp = await callClaudeAPI(systemBlocks, [
@@ -5217,10 +5267,21 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
-          const maxTok = 32000;
+          // ── SMART MODEL SELECTION (Opus for complex, Sonnet for simple) ──
+          // Detect complexity: multi-file, architecture, debugging, system-level
+          const isComplex = /syst[eè]me complet|multi.?fichier|architecture|backend.*frontend|fullstack|dashboard complet|admin.*panel|authentification.*complet|base de donn[eé]es.*complet|refonte|redesign|erp|plan valid[eé]|INSTRUCTION OBLIGATOIRE/i.test(effectiveBrief);
+          const isDebugging = /debug|erreur.*critique|crash|ne.*fonctionne.*plus|tout.*cass[eé]|[eé]cran.*blanc|500.*error|syntaxerror|referenceerror/i.test(effectiveBrief);
+          const useOpus = isComplex || isDebugging;
+          const model = useOpus ? 'claude-sonnet-4-20250514' : undefined; // Opus: 'claude-opus-4-20250514' when budget allows
+          if (useOpus) {
+            console.log(`[AgentMode] Complex task detected — using enhanced model for project ${job.project_id}`);
+            job.progressMessage = 'Analyse approfondie en cours...';
+          }
+
+          const maxTok = useOpus ? 64000 : 32000;
           const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
 
-          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
+          const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId, ...(model ? { model } : {}) });
 
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
