@@ -901,6 +901,45 @@ function autoFixMechanicalErrors(projectDir, files) {
   return totalFixes;
 }
 
+// ─── PROJECT RULES MEMORY (.prestige/rules.md) ───
+// Append a learned rule to the project's rules file so Claude never repeats the same mistake.
+// Rules are deduped by checking if the exact text already exists in the file.
+function appendProjectRule(projectDir, rule) {
+  if (!projectDir || !rule) return;
+  try {
+    const prestigeDir = path.join(projectDir, '.prestige');
+    const rulesPath = path.join(prestigeDir, 'rules.md');
+    if (!fs.existsSync(prestigeDir)) {
+      fs.mkdirSync(prestigeDir, { recursive: true });
+    }
+    let existing = '';
+    if (fs.existsSync(rulesPath)) {
+      existing = fs.readFileSync(rulesPath, 'utf8');
+    } else {
+      existing = '# Règles du projet (auto-générées)\n';
+    }
+    // Dedup: skip if rule already present
+    const ruleNormalized = rule.trim().replace(/^-\s*/, '');
+    if (existing.includes(ruleNormalized)) return;
+    const entry = `- ${ruleNormalized}\n`;
+    fs.writeFileSync(rulesPath, existing.trimEnd() + '\n' + entry, 'utf8');
+    console.log(`[Rules] Added rule to ${rulesPath}: ${ruleNormalized.substring(0, 80)}`);
+  } catch (e) {
+    console.warn(`[Rules] Failed to append rule: ${e.message}`);
+  }
+}
+
+// Ensure .prestige/ directory exists for a project
+function ensurePrestigeDir(projectDir) {
+  if (!projectDir) return;
+  try {
+    const prestigeDir = path.join(projectDir, '.prestige');
+    if (!fs.existsSync(prestigeDir)) {
+      fs.mkdirSync(prestigeDir, { recursive: true });
+    }
+  } catch (_) {}
+}
+
 function readProjectFilesRecursive(projectDir) {
   const files = {};
   const validNames = [
@@ -1105,6 +1144,7 @@ function generateClaudeCode(projectId, brief, jobId, options = {}) {
   if (!fs.existsSync(srcDir)) {
     fs.mkdirSync(srcDir, { recursive: true });
   }
+  ensurePrestigeDir(projectDir);
 
   // Detect sector profile
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
@@ -2516,6 +2556,12 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
                           console.log(`[AgentGuard] Large file ${tc.input.path} (${lines.length} lines) — converting edit_file to line_replace`);
                           updateProgress(`🔒 Modification sécurisée de ${tc.input.path}...`);
 
+                          // Learn: save rule about large files for this project
+                          if (trackingInfo?.projectId) {
+                            const ruleDir = path.join(DOCKER_PROJECTS_DIR, String(trackingInfo.projectId));
+                            appendProjectRule(ruleDir, `${tc.input.path} fait ${lines.length}+ lignes — toujours utiliser view_file + line_replace, JAMAIS edit_file`);
+                          }
+
                           // Find the search text in the file by line
                           const searchLines = tc.input.search.split('\n');
                           const searchFirst = searchLines[0].trim();
@@ -2961,6 +3007,7 @@ function generateViaAPI(projectId, brief, jobId) {
   if (!fs.existsSync(projectDir)) fs.mkdirSync(projectDir, { recursive: true });
   const srcDirApi = path.join(projectDir, 'src');
   if (!fs.existsSync(srcDirApi)) fs.mkdirSync(srcDirApi, { recursive: true });
+  ensurePrestigeDir(projectDir);
 
   job.status = 'running';
   job.progressMessage = 'Analyse du brief...';
@@ -5563,6 +5610,14 @@ function generateClaude(messages, jobId, brief, options = {}) {
                 const fixResult = await callClaudeAPI(systemBlocks, fixMessages, 16000,
                   { ...tracking, operation: 'auto-fix' }, { useTools: true, jobId });
                 if (fixResult) writeGeneratedFiles(projDir, fixResult, job.project_id);
+
+                // Learn from the error — save rule for future generations
+                if (diagnostic.includes('MANQUANT')) {
+                  appendProjectRule(projDir, 'Ne pas oublier de créer le fichier quand on ajoute un import (@/ alias)');
+                }
+                if (diagnostic.includes('syntax') || diagnostic.includes('ERREUR')) {
+                  appendProjectRule(projDir, 'Toujours vérifier la syntaxe server.js (CommonJS, require, pas import)');
+                }
               } catch (e) {
                 console.warn(`[AgentMode] Auto-fix failed: ${e.message}`);
               }

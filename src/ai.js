@@ -789,12 +789,34 @@ function parseCodeFiles(code) {
 function buildConversationContext(project, messages, userMessage, configuredKeys, llmSelectedFiles, projectMemory) {
   const context = [];
 
+  // ── Read .prestige/rules.md (learned rules from past errors) ──
+  let projectRules = '';
+  if (project && project.id) {
+    try {
+      const fs = require('fs');
+      const pathMod = require('path');
+      const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
+      const rulesPath = pathMod.join(DOCKER_PROJECTS_DIR, String(project.id), '.prestige', 'rules.md');
+      if (fs.existsSync(rulesPath)) {
+        const rulesContent = fs.readFileSync(rulesPath, 'utf8').trim();
+        if (rulesContent.length > 0) {
+          projectRules = rulesContent;
+        }
+      }
+    } catch (_) { /* rules file not found or unreadable — not critical */ }
+  }
+
   if (project && project.generated_code) {
     const files = parseCodeFiles(project.generated_code);
     const affected = detectAffectedFiles(userMessage);
 
     // Build project structure overview
     let structure = 'PROJET REACT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
+
+    // Inject learned rules FIRST — these are lessons from past errors, highest priority
+    if (projectRules) {
+      structure = `RÈGLES DU PROJET (apprises des erreurs précédentes) :\n${projectRules}\n\n` + structure;
+    }
 
     // Inject persistent project memory (preferences) if any. Goes BEFORE everything
     // else so Claude treats it as background context, not conversation noise.
@@ -1759,6 +1781,26 @@ Liste a puces : pieges, dependances, interactions a surveiller. Si rien : ecrire
 function buildPlanContext(project, history, userMessage) {
   const lines = [];
 
+  // ── Read .prestige/rules.md (learned rules from past errors) ──
+  const projectId = project?.id;
+  const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
+  const projDir = projectId ? require('path').join(DOCKER_PROJECTS_DIR, String(projectId)) : null;
+
+  if (projDir) {
+    try {
+      const fs = require('fs');
+      const rulesPath = require('path').join(projDir, '.prestige', 'rules.md');
+      if (fs.existsSync(rulesPath)) {
+        const rulesContent = fs.readFileSync(rulesPath, 'utf8').trim();
+        if (rulesContent.length > 0) {
+          lines.push(`# RÈGLES DU PROJET (apprises des erreurs précédentes)`);
+          lines.push(rulesContent);
+          lines.push('');
+        }
+      }
+    } catch (_) {}
+  }
+
   if (project && project.brief) {
     lines.push(`# Contexte projet`);
     lines.push(`Brief initial : ${project.brief}`);
@@ -1768,9 +1810,6 @@ function buildPlanContext(project, history, userMessage) {
 
   // ── Send FULL file content so plan sees the REAL code ──
   let hasCode = false;
-  const projectId = project?.id;
-  const DOCKER_PROJECTS_DIR = process.env.DOCKER_PROJECTS_DIR || '/data/projects';
-  const projDir = projectId ? require('path').join(DOCKER_PROJECTS_DIR, String(projectId)) : null;
   let files = {};
 
   // 1. Try reading from DISK first (most up-to-date — includes manual changes)
