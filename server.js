@@ -2883,23 +2883,32 @@ function callGPT4Mini(prompt, maxTokens = 500) {
 // Cost: ~$0.001 per call. Latency: ~300-600ms. Catches "le bouton est trop petit"
 // (no action verb but clearly a fix request) and "tu peux ajouter X ?" (verb in middle).
 //
-// Returns: { intent: 'code'|'discuss'|'clarify', confidence: 0-1, source: 'haiku'|'fallback' }
+// Returns: { intent: 'code'|'discuss'|'partner'|'clarify', confidence: 0-1, source: 'haiku'|'fallback' }
 //
 // On any error → fallback to regex (existing behavior preserved, zero risk).
 const INTENT_PROMPT = `Tu es un classifieur d'intentions. Tu reponds UNIQUEMENT avec un JSON strict.
 
-Ton job : determiner si le message utilisateur demande de coder, de discuter, ou s'il est trop vague.
+Ton job : determiner si le message utilisateur demande de coder, de discuter, de se faire guider, ou s'il est trop vague.
 
 Categories :
-- "code" : l'utilisateur veut creer/modifier/supprimer/corriger du code (verbes d'action OU constat de bug a fixer)
-- "discuss" : pure question sans action attendue (comment ca marche, c'est quoi, explique-moi)
-- "clarify" : trop vague, devrait demander une precision avant d'agir
+- "code" : l'utilisateur veut creer/modifier/supprimer/corriger du code. Il sait CE QU'IL VEUT. (verbes d'action OU constat de bug)
+- "partner" : l'utilisateur explore, hesite, demande un avis, veut des suggestions, ou decrit un besoin SANS precision technique. Il a besoin d'un GUIDE.
+- "discuss" : pure question technique sans action attendue (comment ca marche, c'est quoi, explique-moi un concept)
+- "clarify" : trop vague pour agir (1-2 mots sans contexte)
 
 Exemples :
 - "Ajoute une page contact" -> {"intent":"code","confidence":0.98}
 - "Le bouton est trop petit" -> {"intent":"code","confidence":0.92}
 - "Tu peux ajouter une FAQ ?" -> {"intent":"code","confidence":0.95}
+- "Corrige l'erreur dans la page produits" -> {"intent":"code","confidence":0.95}
+- "Je voudrais ameliorer mon site" -> {"intent":"partner","confidence":0.95}
+- "Comment rendre le site plus professionnel ?" -> {"intent":"partner","confidence":0.93}
+- "Qu'est-ce que tu proposes pour la page d'accueil ?" -> {"intent":"partner","confidence":0.96}
+- "J'ai besoin d'un espace admin" -> {"intent":"partner","confidence":0.90}
+- "Mon site manque de quelque chose" -> {"intent":"partner","confidence":0.92}
+- "Tu penses quoi du design ?" -> {"intent":"partner","confidence":0.94}
 - "Comment marche le router ?" -> {"intent":"discuss","confidence":0.97}
+- "C'est quoi Tailwind ?" -> {"intent":"discuss","confidence":0.96}
 - "Site web" -> {"intent":"clarify","confidence":0.9}
 
 Reponds UNIQUEMENT avec le JSON, rien d'autre.`;
@@ -2918,7 +2927,7 @@ async function classifyIntent(message) {
     const jsonMatch = reply.match(/\{[^}]*"intent"[^}]*\}/);
     if (!jsonMatch) throw new Error('no JSON found');
     const parsed = JSON.parse(jsonMatch[0]);
-    if (!['code', 'discuss', 'clarify'].includes(parsed.intent)) throw new Error('invalid intent');
+    if (!['code', 'discuss', 'clarify', 'partner'].includes(parsed.intent)) throw new Error('invalid intent');
     const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
     return { intent: parsed.intent, confidence, source: 'haiku' };
   } catch (e) {
@@ -2929,13 +2938,16 @@ async function classifyIntent(message) {
 
 function classifyIntentRegex(message) {
   const msg = (message || '').toLowerCase();
-  const isQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg)
-    && !/\b(crée|ajoute|modifie|change|supprime|corrige|implémente|intègre|construis|fais|mets|retire)\b/.test(msg);
-  return {
-    intent: isQuestion ? 'discuss' : 'code',
-    confidence: 0.6,
-    source: 'fallback'
-  };
+  const hasActionVerb = /\b(cr[ée]{1,2}|ajoute|modifie|change|supprime|corrige|impl[ée]mente|int[èe]gre|construis|fais|mets|retire|remplace|g[ée]n[èe]re)\b/.test(msg);
+  const isPureQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg);
+  const isPartnerRequest = /\b(propose|sugg[èe]re|am[ée]liore|conseill|id[ée]e|avis|penses?|voudrais|besoin|manque|professionnel|mieux|optimis)\b/.test(msg)
+    || /\b(qu'est-ce que tu (proposes|conseilles|recommandes|penses))\b/.test(msg)
+    || (/\?$/.test(msg.trim()) && !hasActionVerb && !isPureQuestion);
+
+  if (hasActionVerb) return { intent: 'code', confidence: 0.7, source: 'fallback' };
+  if (isPartnerRequest) return { intent: 'partner', confidence: 0.65, source: 'fallback' };
+  if (isPureQuestion) return { intent: 'discuss', confidence: 0.6, source: 'fallback' };
+  return { intent: 'code', confidence: 0.5, source: 'fallback' };
 }
 
 // ─── CLARIFICATION PROTOCOL ───
@@ -10342,6 +10354,7 @@ const server = http.createServer(async (req, res) => {
     // Catches edge cases the regex misses ("le bouton est trop petit", "tu peux ajouter X ?").
     const intentResult = await classifyIntent(message);
     const isQuestion = intentResult.intent === 'discuss';
+    const isPartner = intentResult.intent === 'partner';
     log('info', 'intent', 'classified', { intent: intentResult.intent, confidence: intentResult.confidence, source: intentResult.source });
 
     const jobId = crypto.randomUUID();
@@ -10427,6 +10440,29 @@ const server = http.createServer(async (req, res) => {
         job.chat_message = chatReply;
         job.status = 'done';
         job.progressMessage = 'Réponse prête';
+      } catch (e) {
+        job.status = 'error';
+        job.error = e.message;
+      }
+    } else if (isPartner) {
+      // ─── PARTNER MODE: Claude acts as a senior consultant ───
+      // Proposes options, asks questions, guides the user before coding.
+      // For non-developers who need help deciding WHAT to build.
+      console.log(`[Partner] Consultation mode for: "${message.substring(0, 60)}..."`);
+      const job = generationJobs.get(jobId);
+      try {
+        const partnerPrompt = ai && ai.PARTNER_SYSTEM_PROMPT ? ai.PARTNER_SYSTEM_PROMPT : 'Tu es un consultant developpement. Propose des options et pose des questions.';
+        const partnerSystemBlocks = [{ type: 'text', text: partnerPrompt }];
+        const partnerReply = await callClaudeAPI(partnerSystemBlocks, messages, 4000,
+          { userId: user.id, projectId: project_id, operation: 'partner' });
+        job.code = '';
+        job.chat_message = partnerReply;
+        job.status = 'done';
+        job.progressMessage = 'Proposition prête';
+        if (project_id) {
+          db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
+            .run(project_id, 'assistant', typeof partnerReply === 'string' ? partnerReply : JSON.stringify(partnerReply));
+        }
       } catch (e) {
         job.status = 'error';
         job.error = e.message;
