@@ -134,26 +134,29 @@ function anthropicRequest(payload, opts, onResponse, onError, job, retryCount = 
   const r = https.request(opts, apiRes => {
     const status = apiRes.statusCode;
 
-    // Retryable errors: 429 (rate limit) and 529 (overloaded)
-    if (status === 429 || status === 529) {
+    // Retryable errors: 429 (rate limit), 529 (overloaded), 500/502/503 (server errors)
+    // Uses exponential backoff: 1s → 2s → 4s → 8s (capped at retry-after header if present)
+    if (status === 429 || status === 529 || status === 500 || status === 502 || status === 503) {
       let body = '';
       apiRes.on('data', c => body += c);
       apiRes.on('end', () => {
-        const retryAfter = parseInt(apiRes.headers['retry-after'] || '60');
-        const wait = Math.min(retryAfter, 120) * 1000;
         if (retryCount < API_MAX_RETRIES) {
-          console.log(`[API] ${status} rate limited, retry ${retryCount + 1}/${API_MAX_RETRIES} in ${wait / 1000}s`);
-          if (job) job.progressMessage = `File d'attente API... (tentative ${retryCount + 1}/${API_MAX_RETRIES})`;
+          // Exponential backoff: 1s, 2s, 4s, 8s... capped by retry-after header
+          const expBackoff = Math.min(1000 * Math.pow(2, retryCount), 30000);
+          const retryAfterHeader = parseInt(apiRes.headers['retry-after'] || '0') * 1000;
+          const wait = retryAfterHeader > 0 ? Math.min(retryAfterHeader, 60000) : expBackoff;
+          console.log(`[API] ${status} — retry ${retryCount + 1}/${API_MAX_RETRIES} in ${(wait / 1000).toFixed(1)}s (backoff)`);
+          if (job) job.progressMessage = `Reconnexion API... (${retryCount + 1}/${API_MAX_RETRIES})`;
           setTimeout(() => anthropicRequest(payload, opts, onResponse, onError, job, retryCount + 1), wait);
         } else {
-          console.error(`[API] Rate limit exhausted after ${API_MAX_RETRIES} retries`);
-          onError(new Error(API_ERROR_MESSAGES[status] || 'Limite API atteinte.'));
+          console.error(`[API] Exhausted ${API_MAX_RETRIES} retries on ${status}`);
+          safeOnError(new Error(API_ERROR_MESSAGES[status] || `Erreur API ${status} après ${API_MAX_RETRIES} tentatives.`));
         }
       });
       return;
     }
 
-    // Non-retryable errors: 400, 401, 402, 403, 404, 413, 500
+    // Non-retryable errors: 400, 401, 402, 403, 404, 413
     if (status >= 400 && status !== 200) {
       let body = '';
       apiRes.on('data', c => body += c);
