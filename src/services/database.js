@@ -65,6 +65,24 @@ function initDatabase(ctx) {
     CREATE INDEX IF NOT EXISTS idx_conv_summaries_project ON conversation_summaries(project_id);
   `);
 
+  // ─── ERROR TELEMETRY TABLE ───
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS error_patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      error_type TEXT NOT NULL,
+      error_signature TEXT NOT NULL,
+      occurrence_count INTEGER DEFAULT 1,
+      last_project_id INTEGER,
+      auto_fixed INTEGER DEFAULT 0,
+      rollback_triggered INTEGER DEFAULT 0,
+      sample_message TEXT,
+      first_seen TEXT DEFAULT (datetime('now')),
+      last_seen TEXT DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_error_patterns_sig ON error_patterns(error_type, error_signature);
+    CREATE INDEX IF NOT EXISTS idx_error_patterns_count ON error_patterns(occurrence_count DESC);
+  `);
+
   // ─── MIGRATIONS (backwards-compat) ───
   try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) {}
   try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAULT 50'); } catch(e) {}

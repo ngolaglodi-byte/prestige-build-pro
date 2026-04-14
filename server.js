@@ -3575,6 +3575,7 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
   if (!viteBuildResult.success && viteBuildResult.error) {
     job.progressMessage = 'Correction d\'erreurs de build...';
     console.log(`[Gen] Vite build failed: ${viteBuildResult.error.substring(0, 200)}`);
+    trackErrorPattern('VITE_BUILD', viteBuildResult.error.split('\n')[0]?.substring(0, 200) || 'unknown', projectId, viteBuildResult.error.substring(0, 500));
 
     // Send the exact Vite error to Claude for auto-fix
     try {
@@ -3599,6 +3600,7 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
           console.log(`[Gen] Vite build OK after fix`);
         } else {
           console.warn(`[Gen] Vite build still failing after fix — rolling back`);
+          trackErrorPattern('ROLLBACK', 'vite_build_after_autofix', projectId, retest.error?.substring(0, 500), { rollback: true });
           rollbackToSnapshot(projectDir, preBuildSnapshot, projectId, 'Vite build failed after auto-fix');
           // Re-read rolled back code
           const rolledBackFiles = readProjectFilesRecursive(projectDir);
@@ -5637,6 +5639,9 @@ function generateClaude(messages, jobId, brief, options = {}) {
                 diagnostic = `✗ IMPORTS MANQUANTS (fichiers importés mais non créés):\n${missingList}\n\nCrée ces fichiers MAINTENANT avec write_file.`;
                 projectOK = false;
                 console.log(`[AgentMode] ${missingFiles.length} missing imports detected in project ${job.project_id}`);
+                for (const m of missingFiles.slice(0, 5)) {
+                  trackErrorPattern('IMPORT_MISSING', `${m.file}:@/${m.import}`, job.project_id, `${m.file} importe @/${m.import} → FICHIER MANQUANT`);
+                }
               }
             } catch {}
 
@@ -5719,6 +5724,9 @@ function generateClaude(messages, jobId, brief, options = {}) {
                     `⚠ INCOHÉRENCES FRONTEND/BACKEND:\n${warningText}\n\nCorrige les noms de champs pour qu'ils correspondent.`;
                   projectOK = false;
                   console.log(`[AgentMode] ${coherenceWarnings.length} frontend/backend coherence issue(s) in project ${job.project_id}`);
+                  for (const w of coherenceWarnings.slice(0, 3)) {
+                    trackErrorPattern('COHERENCE', w.substring(0, 200), job.project_id, w);
+                  }
 
                   // Learn from coherence issues
                   for (const w of coherenceWarnings.slice(0, 3)) {
@@ -5815,6 +5823,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
               if (stillBroken && preModifySnapshot && Object.keys(preModifySnapshot).length > 0) {
                 console.log(`[AgentMode] Auto-fix failed to resolve issues — rolling back to snapshot`);
+                trackErrorPattern('ROLLBACK', 'agent_autofix_failed', job.project_id, diagnostic?.substring(0, 500), { rollback: true });
                 job.progressMessage = '↩ Restauration de la version précédente...';
                 rollbackToSnapshot(projDir, preModifySnapshot, job.project_id, 'Auto-fix STEP 3 failed, project still broken');
                 appendProjectRule(projDir, 'La dernière modification IA a cassé le projet et a été annulée automatiquement');
@@ -7135,6 +7144,28 @@ function rollbackToSnapshot(projectDir, snapshot, projectId, reason) {
   } catch (e) {
     console.error(`[Rollback] Failed to restore: ${e.message}`);
     return false;
+  }
+}
+
+// ─── ERROR TELEMETRY ───
+// Track error patterns for analysis. Uses UPSERT to increment counts.
+// error_type: SYNTAX, IMPORT_MISSING, COHERENCE, VITE_BUILD, ROLLBACK, HMR, etc.
+// error_signature: normalized short string identifying the specific error (e.g. "missing_import:@/hooks/useAuth")
+function trackErrorPattern(errorType, errorSignature, projectId, sampleMessage, opts = {}) {
+  try {
+    const sig = (errorSignature || '').substring(0, 200);
+    const sample = (sampleMessage || '').substring(0, 500);
+    const existing = db.prepare('SELECT id, occurrence_count FROM error_patterns WHERE error_type=? AND error_signature=?').get(errorType, sig);
+    if (existing) {
+      db.prepare('UPDATE error_patterns SET occurrence_count=occurrence_count+1, last_project_id=?, last_seen=datetime(\'now\'), auto_fixed=auto_fixed+?, rollback_triggered=rollback_triggered+? WHERE id=?')
+        .run(projectId, opts.autoFixed ? 1 : 0, opts.rollback ? 1 : 0, existing.id);
+    } else {
+      db.prepare('INSERT INTO error_patterns (error_type, error_signature, last_project_id, sample_message, auto_fixed, rollback_triggered) VALUES (?,?,?,?,?,?)')
+        .run(errorType, sig, projectId, sample, opts.autoFixed ? 1 : 0, opts.rollback ? 1 : 0);
+    }
+  } catch (e) {
+    // Telemetry should never break the main flow
+    console.warn(`[Telemetry] Failed to track error: ${e.message}`);
   }
 }
 
@@ -12883,6 +12914,19 @@ export default defineConfig({
       draft:user.role==='admin'?q("SELECT COUNT(*) as c FROM projects WHERE status='draft'"):q("SELECT COUNT(*) as c FROM projects WHERE user_id=? AND status='draft'",user.id),
       agents:user.role==='admin'?q("SELECT COUNT(*) as c FROM users WHERE role='agent'"):0
     }); return;
+  }
+
+  // ─── ERROR TELEMETRY DASHBOARD (admin only) ───
+  if (url === '/api/admin/error-patterns' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin only' }); return; }
+    try {
+      const patterns = db.prepare('SELECT * FROM error_patterns ORDER BY occurrence_count DESC LIMIT 50').all();
+      const summary = db.prepare('SELECT error_type, SUM(occurrence_count) as total, COUNT(*) as unique_patterns FROM error_patterns GROUP BY error_type ORDER BY total DESC').all();
+      json(res, 200, { patterns, summary, total: patterns.reduce((s, p) => s + p.occurrence_count, 0) });
+    } catch (e) {
+      json(res, 200, { patterns: [], summary: [], total: 0 });
+    }
+    return;
   }
 
   // ─── #8 LOGOUT (token invalidation) ───
