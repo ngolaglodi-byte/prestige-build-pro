@@ -572,6 +572,7 @@ button.card { padding: 0; }
           <button class="btn btn-ghost" id="ws-github-btn" onclick="exportToGithub()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>GitHub</button>
           <button class="btn btn-primary" id="ws-publish-btn" onclick="publishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>Publier</button>
           <button class="btn btn-primary" id="ws-update-btn" style="display:none;" onclick="updatePublishedSite()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Mettre à jour</button>
+          <button class="btn btn-ghost" id="ws-domain-btn" style="display:none;" onclick="manageDomain()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>Domaine</button>
           <button class="btn btn-secondary" id="ws-unpublish-btn" style="display:none;" onclick="unpublishProject()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Retirer</button>
         </div>
       </div>
@@ -1305,6 +1306,7 @@ function updateWorkspaceUI() {
   const isPublished = currentProject.status === 'published' || currentProject.is_published;
   document.getElementById('ws-publish-btn').style.display = (!isPublished) ? 'inline-flex' : 'none';
   document.getElementById('ws-update-btn').style.display = (isPublished) ? 'inline-flex' : 'none';
+  document.getElementById('ws-domain-btn').style.display = (isPublished && isAdmin) ? 'inline-flex' : 'none';
   document.getElementById('ws-unpublish-btn').style.display = (isPublished) ? 'inline-flex' : 'none';
   document.getElementById('ws-restart-btn').style.display = currentProject.build_status === 'done' ? 'inline-flex' : 'none';
 }
@@ -3639,22 +3641,50 @@ function closePresentationMode() {
 // ═══════════════════════════════════════════════════════════════════════════
 async function publishProject() {
   if (!currentProject) return;
-  if (!confirm('Publier ce projet ? Le site sera accessible publiquement.')) return;
+
+  // Ask for optional custom domain
+  const customDomain = prompt(
+    'Publier ce projet ?\n\n' +
+    '(Optionnel) Domaine personnalisé (ex: www.monsite.com) :\n' +
+    'Laissez vide pour utiliser le sous-domaine par défaut.',
+    currentProject.domain || ''
+  );
+  if (customDomain === null) return; // User cancelled
 
   // Show loading state
   const btn = document.getElementById('ws-publish-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Publication...'; }
 
   try {
-    const r = await api('/api/projects/' + currentProject.id + '/publish', 'POST');
+    const body = {};
+    if (customDomain && customDomain.trim()) body.domain = customDomain.trim();
+
+    const r = await api('/api/projects/' + currentProject.id + '/publish', 'POST', body);
     currentProject.status = 'published';
     currentProject.is_published = 1;
     currentProject.subdomain = r.subdomain;
+    if (r.customDomain) currentProject.domain = r.customDomain;
     updateWorkspaceUI();
 
-    // Show success with clickable link
+    // Show success with all links
+    let msg = '✅ **Site publié avec succès !**\n\n';
     const url = r.url || ('https://' + r.subdomain + '.prestige-build.dev');
-    addChatMessage('assistant', '✅ **Site publié !**\n\n🔗 ' + url + '\n\nCliquez "Mettre à jour" après chaque modification pour pousser les changements en production.');
+    msg += '🔗 **URL :** ' + url + '\n';
+
+    if (r.customDomainUrl) {
+      msg += '🌐 **Domaine personnalisé :** ' + r.customDomainUrl + '\n';
+      if (r.customDomainConfigured) {
+        msg += '🔒 SSL automatique activé !\n';
+      } else {
+        msg += '\n⚠️ **Configuration DNS requise :**\n';
+        msg += '- **A record** : `@` → `' + (r.dnsInstructions?.a?.value || '') + '`\n';
+        msg += '- **CNAME** : `www` → `' + (r.dnsInstructions?.cname?.value || '') + '`\n';
+        msg += '\nLe SSL sera automatique dès que le DNS pointe vers notre serveur.\n';
+      }
+    }
+
+    msg += '\nCliquez "Mettre à jour" après chaque modification pour pousser les changements.';
+    addChatMessage('assistant', msg);
   } catch (e) {
     alert('Erreur publication : ' + e.message);
   } finally {
@@ -3693,6 +3723,41 @@ async function unpublishProject() {
     currentProject.domain = null;
     updateWorkspaceUI();
     addChatMessage('assistant', '⊘ Site retiré de la publication.');
+  } catch (e) { alert('Erreur: ' + e.message); }
+}
+
+async function manageDomain() {
+  if (!currentProject || !currentProject.is_published) return;
+  const current = currentProject.domain || '';
+  const newDomain = prompt(
+    'Domaine personnalisé pour ce projet :\n\n' +
+    (current ? 'Actuel : ' + current + '\n\n' : '') +
+    'Entrez le domaine (ex: www.monsite.com)\n' +
+    'Laissez vide pour supprimer le domaine personnalisé.',
+    current
+  );
+  if (newDomain === null) return; // cancelled
+
+  try {
+    const r = await api('/api/projects/' + currentProject.id + '/domain', 'PUT', { domain: newDomain.trim() });
+    currentProject.domain = newDomain.trim() || null;
+
+    if (!newDomain.trim()) {
+      addChatMessage('assistant', '🌐 Domaine personnalisé supprimé. Le site reste accessible via le sous-domaine.');
+    } else {
+      let msg = '🌐 **Domaine configuré : ' + newDomain.trim() + '**\n\n';
+      if (r.ssl) {
+        msg += '🔒 SSL automatique activé !\n';
+      } else {
+        msg += '⚠️ **Configuration DNS requise :**\n';
+        if (r.dnsInstructions) {
+          msg += '- **A record** : `@` → `' + r.dnsInstructions.a.value + '`\n';
+          msg += '- **CNAME** : `www` → `' + r.dnsInstructions.cname.value + '`\n';
+        }
+        msg += '\nLe SSL sera automatique dès que le DNS est configuré.';
+      }
+      addChatMessage('assistant', msg);
+    }
   } catch (e) { alert('Erreur: ' + e.message); }
 }
 

@@ -525,8 +525,8 @@ function getPreviewUrl(projectId) {
 }
 const CNAME_TARGET = process.env.CNAME_TARGET || `app.${PUBLISH_DOMAIN}`;
 const PUBLIC_URL = process.env.PUBLIC_URL || '';
-const CADDY_ADMIN_API = process.env.CADDY_ADMIN_API || 'http://localhost:2019';
-const SERVER_IP = process.env.SERVER_IP || '204.168.177.199';
+const CADDY_ADMIN_API = process.env.CADDY_ADMIN_API || 'http://caddy-sites:2019';
+const SERVER_IP = process.env.SERVER_IP || '37.187.24.98';
 if (!fs.existsSync(SITES_DIR)) { try { fs.mkdirSync(SITES_DIR, { recursive: true }); } catch(e) { console.warn('Could not create SITES_DIR:', e.message); } }
 
 // ─── SCREENSHOTS DIRECTORY FOR VERSION HISTORY ───
@@ -535,15 +535,162 @@ if (!fs.existsSync(SCREENSHOTS_DIR)) { try { fs.mkdirSync(SCREENSHOTS_DIR, { rec
 
 // Path/JSON validation — delegated to src/middleware/validation.js (imported above)
 
-// ─── CADDY CUSTOM DOMAIN HELPER ───
-async function addCustomDomainToCaddy(customDomain, siteDir) {
-  // Custom domains are routed by server.js (not Caddy).
-  // The client points their domain A record to our server IP.
-  // Caddy accepts all hostnames on :80, proxies to Prestige.
-  // Prestige detects the custom domain via Host header and serves the published site.
-  // SSL is handled by Cloudflare (if they proxy through CF) or not at all (direct A record).
-  console.log(`[Custom Domain] ${customDomain} configured — route via server.js Host header detection`);
-  return { success: true, domain: customDomain };
+// ─── CADDY AUTO-PUBLISH SYSTEM ───
+// Manages Caddyfile entries for published sites. Each published project gets
+// a reverse_proxy block pointing to its production container. Caddy handles
+// SSL automatically via Let's Encrypt.
+const CADDYFILE_PATH = process.env.CADDYFILE_PATH || '/data/caddy/Caddyfile';
+const CADDY_CONTAINER_NAME = process.env.CADDY_CONTAINER_NAME || 'caddy-sites';
+
+/**
+ * Add a site (subdomain or custom domain) to the Caddyfile and reload Caddy.
+ * Uses marker comments for safe add/remove operations.
+ */
+async function addSiteToCaddy(domain, containerName) {
+  try {
+    let caddyfile = '';
+    if (fs.existsSync(CADDYFILE_PATH)) {
+      caddyfile = fs.readFileSync(CADDYFILE_PATH, 'utf8');
+    } else {
+      // Bootstrap minimal Caddyfile if missing
+      caddyfile = `{\n  admin 0.0.0.0:2019\n  email admin@prestige-build.dev\n}\n`;
+    }
+
+    // Remove existing block for this domain (if re-publishing)
+    caddyfile = removeCaddyBlock(caddyfile, domain);
+
+    // Append new block with markers
+    const block = [
+      ``,
+      `# <<< pbp-auto:${domain} >>>`,
+      `${domain} {`,
+      `  reverse_proxy ${containerName}:3000`,
+      `}`,
+      `# <<< /pbp-auto:${domain} >>>`
+    ].join('\n');
+    caddyfile = caddyfile.trimEnd() + '\n' + block + '\n';
+
+    // Write Caddyfile
+    fs.writeFileSync(CADDYFILE_PATH, caddyfile);
+    console.log(`[Caddy] Written Caddyfile entry: ${domain} → ${containerName}:3000`);
+
+    // Reload Caddy
+    const reloaded = await reloadCaddy(caddyfile);
+    if (!reloaded) {
+      console.warn(`[Caddy] Reload failed for ${domain} — config written but not active yet`);
+      return { success: false, domain, error: 'Caddy reload failed' };
+    }
+
+    console.log(`[Caddy] ✓ ${domain} → ${containerName}:3000 (SSL auto)`);
+    return { success: true, domain };
+  } catch (err) {
+    console.error(`[Caddy] Failed to add ${domain}: ${err.message}`);
+    return { success: false, domain, error: err.message };
+  }
+}
+
+/**
+ * Remove a site from the Caddyfile and reload Caddy.
+ */
+async function removeSiteFromCaddy(domain) {
+  try {
+    if (!fs.existsSync(CADDYFILE_PATH)) return { success: true };
+
+    let caddyfile = fs.readFileSync(CADDYFILE_PATH, 'utf8');
+    const updated = removeCaddyBlock(caddyfile, domain);
+
+    if (updated !== caddyfile) {
+      fs.writeFileSync(CADDYFILE_PATH, updated);
+      await reloadCaddy(updated);
+      console.log(`[Caddy] Removed ${domain} from Caddyfile`);
+    }
+    return { success: true };
+  } catch (err) {
+    console.error(`[Caddy] Failed to remove ${domain}: ${err.message}`);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Remove a marked block from the Caddyfile content.
+ */
+function removeCaddyBlock(caddyfile, domain) {
+  const escapedDomain = domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Remove marked blocks: # <<< pbp-auto:domain >>> ... # <<< /pbp-auto:domain >>>
+  const markerRegex = new RegExp(
+    `\\n?# <<< pbp-auto:${escapedDomain} >>>\\n[\\s\\S]*?# <<< /pbp-auto:${escapedDomain} >>>\\n?`,
+    'g'
+  );
+  return caddyfile.replace(markerRegex, '\n');
+}
+
+/**
+ * Reload Caddy by POSTing the Caddyfile to its admin API.
+ * Falls back to docker exec if the API is unreachable.
+ */
+async function reloadCaddy(caddyfileContent) {
+  // Method 1: Caddy admin API with Caddyfile adapter
+  try {
+    const adminUrl = CADDY_ADMIN_API || `http://${CADDY_CONTAINER_NAME}:2019`;
+    const result = await new Promise((resolve, reject) => {
+      const urlObj = new URL(adminUrl + '/load');
+      const reqOpts = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || 2019,
+        path: '/load',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/caddyfile',
+          'Content-Length': Buffer.byteLength(caddyfileContent)
+        },
+        timeout: 10000
+      };
+      const req = http.request(reqOpts, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          if (res.statusCode === 200) resolve(true);
+          else reject(new Error(`Caddy API ${res.statusCode}: ${body}`));
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('Caddy API timeout')); });
+      req.write(caddyfileContent);
+      req.end();
+    });
+    console.log('[Caddy] Config reloaded via admin API');
+    return result;
+  } catch (apiErr) {
+    console.warn(`[Caddy] Admin API reload failed: ${apiErr.message} — trying docker exec...`);
+  }
+
+  // Method 2: docker exec caddy reload
+  try {
+    const container = docker.getContainer(CADDY_CONTAINER_NAME);
+    const exec = await container.exec({
+      Cmd: ['caddy', 'reload', '--config', '/etc/caddy/Caddyfile'],
+      AttachStdout: true, AttachStderr: true
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+    await new Promise((resolve) => {
+      stream.on('end', resolve);
+      stream.on('error', resolve);
+      setTimeout(resolve, 5000);
+    });
+    console.log('[Caddy] Config reloaded via docker exec');
+    return true;
+  } catch (dockerErr) {
+    console.error(`[Caddy] Docker exec reload also failed: ${dockerErr.message}`);
+    return false;
+  }
+}
+
+/**
+ * Legacy wrapper — called for custom domains in publish route.
+ */
+async function addCustomDomainToCaddy(customDomain, siteDir, projectId) {
+  const containerName = getContainerName(projectId);
+  return addSiteToCaddy(customDomain, containerName);
 }
 
 // ─── AUTH, JSON, CORS, BODY ───
@@ -9813,6 +9960,88 @@ async function initializeDockerSystem() {
   await ensureDockerNetwork();
   await joinPbpProjectsNetwork();
   await rebuildContainerMapping();
+  await syncCaddyPublishedSites();
+}
+
+// ─── CADDY SYNC: Rebuild Caddyfile for all published projects on startup ───
+async function syncCaddyPublishedSites() {
+  if (!db) return;
+  try {
+    if (!fs.existsSync(CADDYFILE_PATH)) {
+      // Bootstrap minimal Caddyfile
+      fs.writeFileSync(CADDYFILE_PATH, `{\n  admin 0.0.0.0:2019\n  email admin@prestige-build.dev\n}\n`);
+    }
+    let caddyfile = fs.readFileSync(CADDYFILE_PATH, 'utf8');
+    let changed = false;
+
+    // ── AUTO-FIX: Update app.prestige-build.dev with current Coolify container name ──
+    // Coolify changes the container name on each redeploy, causing Caddy 502 errors.
+    // Detect the current container name and update the Caddyfile automatically.
+    const selfHostname = process.env.HOSTNAME || os.hostname();
+    if (selfHostname) {
+      try {
+        const selfContainer = docker.getContainer(selfHostname);
+        const selfInfo = await selfContainer.inspect();
+        const currentName = selfInfo.Name ? selfInfo.Name.replace(/^\//, '') : selfHostname;
+        const appDomain = `app.${PUBLISH_DOMAIN}`;
+
+        // Check if the Caddyfile has app.prestige-build.dev pointing to a different container
+        const appBlockRegex = new RegExp(`${appDomain.replace(/\./g, '\\.')}\\s*\\{[^}]*reverse_proxy\\s+([^:]+):3000`, 'm');
+        const match = caddyfile.match(appBlockRegex);
+
+        if (match && match[1] !== currentName) {
+          // Container name changed — update it
+          console.log(`[Caddy] Fixing app.prestige-build.dev: ${match[1]} → ${currentName}`);
+          caddyfile = caddyfile.replace(match[1] + ':3000', currentName + ':3000');
+          changed = true;
+        } else if (!match) {
+          // No app block at all — add it after the global block
+          console.log(`[Caddy] Adding app.prestige-build.dev → ${currentName}:3000`);
+          const globalEnd = caddyfile.indexOf('}');
+          if (globalEnd !== -1) {
+            const insertPos = globalEnd + 1;
+            const appBlock = `\n\napp.${PUBLISH_DOMAIN} {\n  reverse_proxy ${currentName}:3000\n}\n`;
+            caddyfile = caddyfile.substring(0, insertPos) + appBlock + caddyfile.substring(insertPos);
+            changed = true;
+          }
+        } else {
+          console.log(`[Caddy] app.prestige-build.dev already points to ${currentName}`);
+        }
+      } catch (e) {
+        console.warn(`[Caddy] Could not auto-fix app domain: ${e.message}`);
+      }
+    }
+
+    // ── SYNC: Ensure all published projects have Caddy entries ──
+    const published = db.prepare('SELECT id, subdomain, domain FROM projects WHERE is_published=1 AND subdomain IS NOT NULL').all();
+
+    for (const p of published) {
+      const subFull = `${p.subdomain}.${PUBLISH_DOMAIN}`;
+      const cName = getContainerName(p.id);
+
+      if (!caddyfile.includes(`pbp-auto:${subFull}`)) {
+        const block = `\n# <<< pbp-auto:${subFull} >>>\n${subFull} {\n  reverse_proxy ${cName}:3000\n}\n# <<< /pbp-auto:${subFull} >>>`;
+        caddyfile = caddyfile.trimEnd() + '\n' + block + '\n';
+        changed = true;
+      }
+
+      if (p.domain && !caddyfile.includes(`pbp-auto:${p.domain}`)) {
+        const block = `\n# <<< pbp-auto:${p.domain} >>>\n${p.domain} {\n  reverse_proxy ${cName}:3000\n}\n# <<< /pbp-auto:${p.domain} >>>`;
+        caddyfile = caddyfile.trimEnd() + '\n' + block + '\n';
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(CADDYFILE_PATH, caddyfile);
+      await reloadCaddy(caddyfile);
+      console.log(`[Caddy] Caddyfile synced and reloaded (${published.length} published projects)`);
+    } else {
+      console.log(`[Caddy] Caddyfile up to date (${published.length} published projects)`);
+    }
+  } catch (e) {
+    console.warn(`[Caddy] Sync failed: ${e.message} — published sites still available via server.js fallback`);
+  }
 }
 
 // ─── SERVER ───
@@ -12380,6 +12609,7 @@ export default defineConfig({
       
       // ── PRODUCTION MODE: Switch container from dev (Vite+Express) to prod (Express only) ──
       // This makes the published site stable: Express serves dist/ + API, no Vite dev server
+      let prodContainerHealthy = false;
       try {
         const containerName = getContainerName(id);
         const projectDir = path.join(DOCKER_PROJECTS_DIR, String(id));
@@ -12387,8 +12617,19 @@ export default defineConfig({
 
         // Copy dist/ into the project directory (for the bind mount)
         const localDist = path.join(projectDir, 'dist');
-        if (fs.existsSync(path.join(siteDir, 'assets'))) {
-          // Copy compiled dist back to project dir so container can serve it
+        if (fs.existsSync(distDir) && fs.readdirSync(distDir).length > 0) {
+          // Copy from the real Vite build output (not siteDir which has tracking scripts)
+          if (!fs.existsSync(localDist)) fs.mkdirSync(localDist, { recursive: true });
+          const copyDir = (s, d) => {
+            fs.mkdirSync(d, { recursive: true });
+            for (const f of fs.readdirSync(s, { withFileTypes: true })) {
+              if (f.isDirectory()) copyDir(path.join(s, f.name), path.join(d, f.name));
+              else fs.copyFileSync(path.join(s, f.name), path.join(d, f.name));
+            }
+          };
+          copyDir(distDir, localDist);
+        } else if (fs.existsSync(siteDir)) {
+          // Fallback: copy siteDir to dist
           if (!fs.existsSync(localDist)) fs.mkdirSync(localDist, { recursive: true });
           const copyDir = (s, d) => {
             fs.mkdirSync(d, { recursive: true });
@@ -12400,18 +12641,34 @@ export default defineConfig({
           copyDir(siteDir, localDist);
         }
 
+        // Persist JWT secret in project data dir so it survives container restarts
+        const jwtSecretFile = path.join(dataDir, '.jwt_secret');
+        let jwtSecret;
+        if (fs.existsSync(jwtSecretFile)) {
+          jwtSecret = fs.readFileSync(jwtSecretFile, 'utf8').trim();
+        } else {
+          jwtSecret = crypto.randomBytes(32).toString('hex');
+          if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+          fs.writeFileSync(jwtSecretFile, jwtSecret);
+        }
+
         // Recreate container in PRODUCTION mode (Express only, no Vite)
         await stopContainerAsync(id);
         await ensureDockerNetwork();
-        const jwtSecret = crypto.randomBytes(32).toString('hex');
 
         // Load project API keys
         const projKeys = db.prepare('SELECT env_name, env_value FROM project_api_keys WHERE project_id=?').all(id);
+
+        // Use admin-configured resource limits from DB (fallback to safe defaults)
+        const limits = db.prepare('SELECT limit_ram_mb, limit_cpu_percent FROM projects WHERE id=?').get(id) || {};
+        const ramMb = limits.limit_ram_mb || 256;
+        const cpuPercent = limits.limit_cpu_percent || 25;
+
         const envVars = [
           `PORT=3000`,
           `JWT_SECRET=${jwtSecret}`,
           `NODE_ENV=production`,
-          `NODE_OPTIONS=--max-old-space-size=128`
+          `NODE_OPTIONS=--max-old-space-size=${Math.floor(ramMb * 0.75)}` // 75% of RAM for Node heap
         ];
         projKeys.forEach(k => envVars.push(`${k.env_name}=${decryptValue(k.env_value)}`));
 
@@ -12434,15 +12691,52 @@ export default defineConfig({
               `${projectDir}/index.html:/app/index.html`,
               `${localDist}:/app/dist`
             ],
-            Memory: 128 * 1024 * 1024, // 128MB (production is lighter)
-            NanoCpus: 250000000, // 0.25 CPU
+            Memory: ramMb * 1024 * 1024,
+            NanoCpus: cpuPercent * 10000000, // 25% → 250000000
             SecurityOpt: ['no-new-privileges']
           }
         });
         await prodContainer.start();
-        console.log(`[Publish] Production container started for project ${id} (Express only, 128MB)`);
+        console.log(`[Publish] Production container started for project ${id} (${ramMb}MB, ${cpuPercent}% CPU)`);
+
+        // Wait for container health before adding to Caddy
+        for (let attempt = 0; attempt < 10; attempt++) {
+          await new Promise(r => setTimeout(r, 1500));
+          try {
+            const info = await docker.getContainer(containerName).inspect();
+            if (info.State.Running) {
+              // Check Express is responding
+              const healthOk = await new Promise((resolve) => {
+                const hReq = http.request({ hostname: containerName, port: 3000, path: '/health', method: 'GET', timeout: 3000 }, (hRes) => {
+                  resolve(hRes.statusCode === 200);
+                });
+                hReq.on('error', () => resolve(false));
+                hReq.on('timeout', () => { hReq.destroy(); resolve(false); });
+                hReq.end();
+              });
+              if (healthOk) {
+                prodContainerHealthy = true;
+                console.log(`[Publish] Container ${containerName} healthy after ${(attempt + 1) * 1.5}s`);
+                break;
+              }
+            }
+          } catch {}
+        }
+        if (!prodContainerHealthy) {
+          console.warn(`[Publish] Container ${containerName} not healthy after 15s — adding to Caddy anyway`);
+        }
       } catch (prodErr) {
-        console.warn(`[Publish] Production container failed: ${prodErr.message} — site still serves static files`);
+        console.warn(`[Publish] Production container failed: ${prodErr.message} — site still serves static files via server.js fallback`);
+      }
+
+      // ── AUTO-PUBLISH TO CADDY: Add subdomain reverse_proxy ──
+      const prodContainerName = getContainerName(id);
+      const subdomainFull = `${safeSubdomain}.${PUBLISH_DOMAIN}`;
+      const caddyResult = await addSiteToCaddy(subdomainFull, prodContainerName);
+      if (caddyResult.success) {
+        console.log(`[Publish] Caddy auto-configured: ${subdomainFull} → ${prodContainerName}:3000`);
+      } else {
+        console.warn(`[Publish] Caddy auto-config failed for ${subdomainFull}: ${caddyResult.error} — fallback to server.js routing`);
       }
 
       // Update project status
@@ -12454,26 +12748,36 @@ export default defineConfig({
       const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(publishedUrl)}`;
       
       // Handle custom domain with Caddy SSL
+      // Accept custom domain from body (admin sets it at publish time) or from DB
       let customDomainResult = null;
       let customDomainUrl = null;
-      if (p.domain) {
-        // Validate custom domain format
-        const customDomain = p.domain.toLowerCase().trim();
+      const rawDomain = body.domain || p.domain;
+      if (rawDomain) {
+        const customDomain = rawDomain.toLowerCase().trim();
         if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(customDomain)) {
-          customDomainResult = await addCustomDomainToCaddy(customDomain, siteDir);
+          // Save custom domain to DB
+          db.prepare('UPDATE projects SET domain=? WHERE id=?').run(customDomain, id);
+
+          customDomainResult = await addSiteToCaddy(customDomain, prodContainerName);
           customDomainUrl = `https://${customDomain}`;
-          
+
           // Notify about custom domain
           if (customDomainResult.success) {
             db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(
               p.user_id,
-              `Domaine personnalisé ${customDomain} configuré avec SSL !`,
+              `Domaine personnalisé ${customDomain} configuré avec SSL automatique !`,
               'success'
+            );
+          } else {
+            db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(
+              p.user_id,
+              `Domaine ${customDomain} enregistré mais SSL en attente (vérifiez le DNS: A record → ${SERVER_IP})`,
+              'warning'
             );
           }
         }
       }
-      
+
       const response = {
         ok: true, 
         subdomain: safeSubdomain,
@@ -12484,7 +12788,7 @@ export default defineConfig({
       
       // Add custom domain info if configured
       if (customDomainUrl) {
-        response.customDomain = p.domain;
+        response.customDomain = rawDomain;
         response.customDomainUrl = customDomainUrl;
         response.customDomainConfigured = customDomainResult ? customDomainResult.success : false;
         response.dnsInstructions = {
@@ -12615,13 +12919,21 @@ export default defineConfig({
         }
       }
 
-      // 2. Stop production container
+      // 2. Remove from Caddy (subdomain + custom domain if any)
+      if (p.subdomain) {
+        await removeSiteFromCaddy(`${p.subdomain}.${PUBLISH_DOMAIN}`);
+      }
+      if (p.domain) {
+        await removeSiteFromCaddy(p.domain);
+      }
+
+      // 3. Stop production container
       try {
         await stopContainerAsync(id);
         console.log(`[Unpublish] Stopped container pbp-project-${id}`);
       } catch (e) { /* container might not exist */ }
 
-      // 3. Update DB — back to ready, clear domain to prevent stale routing
+      // 4. Update DB — back to ready, clear domain to prevent stale routing
       db.prepare("UPDATE projects SET is_published=0, status='ready', domain=NULL, updated_at=datetime('now') WHERE id=?").run(id);
       db.prepare('INSERT INTO notifications (user_id,message,type) VALUES (?,?,?)').run(p.user_id, `Projet "${p.title}" retiré de la publication.`, 'info');
 
@@ -12632,10 +12944,61 @@ export default defineConfig({
     }
     return;
   }
+  // ─── CUSTOM DOMAIN: Add/change/remove custom domain on a published project ───
+  if (url.match(/^\/api\/projects\/\d+\/domain$/) && req.method === 'PUT') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin seulement.' }); return; }
+    const id = parseInt(url.split('/')[3]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
+    if (!p) { json(res, 404, { error: 'Projet non trouvé.' }); return; }
+    if (!p.is_published) { json(res, 400, { error: 'Publiez le projet d\'abord.' }); return; }
+
+    try {
+      const body = await getBody(req);
+      const newDomain = (body.domain || '').toLowerCase().trim();
+      const cName = getContainerName(id);
+
+      // Remove old custom domain from Caddy if it existed
+      if (p.domain && p.domain !== newDomain) {
+        await removeSiteFromCaddy(p.domain);
+      }
+
+      if (!newDomain) {
+        // Just remove custom domain
+        db.prepare('UPDATE projects SET domain=NULL WHERE id=?').run(id);
+        json(res, 200, { ok: true, message: 'Domaine personnalisé supprimé.' });
+        return;
+      }
+
+      // Validate domain format
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(newDomain)) {
+        json(res, 400, { error: 'Format de domaine invalide.' }); return;
+      }
+
+      // Add new domain to Caddy
+      const result = await addSiteToCaddy(newDomain, cName);
+      db.prepare('UPDATE projects SET domain=? WHERE id=?').run(newDomain, id);
+
+      json(res, 200, {
+        ok: true,
+        domain: newDomain,
+        ssl: result.success,
+        dnsInstructions: {
+          a: { type: 'A', name: '@', value: SERVER_IP },
+          cname: { type: 'CNAME', name: 'www', value: CNAME_TARGET }
+        },
+        message: result.success
+          ? `${newDomain} configuré avec SSL automatique !`
+          : `${newDomain} enregistré — SSL actif dès que le DNS pointe vers ${SERVER_IP}`
+      });
+    } catch (e) {
+      json(res, 500, { error: 'Erreur: ' + e.message });
+    }
+    return;
+  }
   if (url.match(/^\/api\/projects\/\d+$/) && req.method==='DELETE') {
     if (user.role!=='admin') { json(res,403,{error:'Interdit.'}); return; }
     const id=parseInt(url.split('/').pop());
-    
+
     // Get project info before deletion (for cleanup)
     const project = db.prepare('SELECT * FROM projects WHERE id=?').get(id);
     
@@ -12674,12 +13037,20 @@ export default defineConfig({
       try { fs.rmSync(dockerProjectDir, { recursive: true, force: true }); } catch(e) { console.warn('Docker project cleanup error:', e.message); }
     }
     
-    // Clean up published site files if published
-    if (project && project.subdomain && project.is_published) {
-      const safeSubdomain = project.subdomain.replace(/[^a-zA-Z0-9-]/g, '');
-      const siteDir = path.join(SITES_DIR, safeSubdomain);
-      if (fs.existsSync(siteDir) && isPathSafe(SITES_DIR, siteDir)) {
-        try { fs.rmSync(siteDir, { recursive: true, force: true }); } catch(e) { console.warn('Site cleanup error:', e.message); }
+    // Clean up published site files + Caddy config
+    if (project && project.is_published) {
+      if (project.subdomain) {
+        const safeSubdomain = project.subdomain.replace(/[^a-zA-Z0-9-]/g, '');
+        const siteDir = path.join(SITES_DIR, safeSubdomain);
+        if (fs.existsSync(siteDir) && isPathSafe(SITES_DIR, siteDir)) {
+          try { fs.rmSync(siteDir, { recursive: true, force: true }); } catch(e) { console.warn('Site cleanup error:', e.message); }
+        }
+        // Remove subdomain from Caddy
+        try { await removeSiteFromCaddy(`${safeSubdomain}.${PUBLISH_DOMAIN}`); } catch(e) { console.warn('Caddy subdomain cleanup:', e.message); }
+      }
+      // Remove custom domain from Caddy
+      if (project.domain) {
+        try { await removeSiteFromCaddy(project.domain); } catch(e) { console.warn('Caddy domain cleanup:', e.message); }
       }
     }
 
