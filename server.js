@@ -10519,116 +10519,131 @@ const server = http.createServer(async (req, res) => {
           const testTable = [];
 
           // ══════════════════════════════════════════════════════════
-          // PHASE 1: SERVER EXECUTES ALL TESTS (100% guaranteed)
+          // PHASE 1: SERVER EXECUTES ALL 20 TESTS (100% guaranteed)
           // ══════════════════════════════════════════════════════════
 
-          // Test 1: Server syntax
-          job.progressMessage = 'Test 1/8 — Syntaxe serveur...';
-          try {
-            if (containerExecService) {
-              const check = await containerExecService.execInContainer(project_id, 'node --check server.cjs 2>&1', { timeout: 10000 });
-              const ok = check.exitCode === 0;
-              testTable.push({ test: 'Syntaxe server.js', ok, details: ok ? 'node --check OK' : (check.stdout || check.stderr || '').substring(0, 200) });
-            } else {
-              testTable.push({ test: 'Syntaxe server.js', ok: null, details: 'Container non disponible' });
-            }
-          } catch (e) { testTable.push({ test: 'Syntaxe server.js', ok: false, details: e.message }); }
+          const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+          const srcDir = path.join(projDir, 'src');
+          const totalTests = 20;
+          let testNum = 0;
+          const progress = (label) => { testNum++; job.progressMessage = `Test ${testNum}/${totalTests} — ${label}`; };
 
-          // Test 2: Server health
-          job.progressMessage = 'Test 2/8 — Santé serveur...';
-          try {
-            if (containerExecService) {
-              const health = await containerExecService.execInContainer(project_id, 'curl -s http://localhost:3000/health', { timeout: 8000 });
-              const ok = health.stdout && (health.stdout.includes('"ok"') || health.stdout.includes('ok'));
-              testTable.push({ test: 'Santé serveur (/health)', ok, details: ok ? 'Serveur répond OK' : (health.stdout || health.stderr || 'Pas de réponse').substring(0, 200) });
-            } else {
-              testTable.push({ test: 'Santé serveur (/health)', ok: null, details: 'Container non disponible' });
-            }
-          } catch (e) { testTable.push({ test: 'Santé serveur (/health)', ok: false, details: e.message }); }
+          // Helper: run command in container safely
+          const exec = async (cmd, timeout = 8000) => {
+            if (!containerExecService) return { stdout: '', stderr: '', exitCode: -1, skip: true };
+            return containerExecService.execInContainer(project_id, cmd, { timeout });
+          };
 
-          // Test 3: Login + JWT
-          job.progressMessage = 'Test 3/8 — Authentification...';
+          // ── BACKEND (6 tests) ──
+
+          // 1. Server syntax
+          progress('Syntaxe serveur...');
+          try {
+            const r = await exec('node --check server.cjs 2>&1');
+            if (r.skip) testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: null, details: 'Container non disponible' });
+            else testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: r.exitCode === 0, details: r.exitCode === 0 ? 'node --check OK' : (r.stdout || r.stderr || '').substring(0, 200) });
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: false, details: e.message }); }
+
+          // 2. Server health
+          progress('Santé serveur...');
+          try {
+            const r = await exec('curl -s http://localhost:3000/health');
+            if (r.skip) testTable.push({ cat: 'Backend', test: 'Health endpoint', ok: null, details: 'Container non disponible' });
+            else { const ok = (r.stdout || '').includes('"ok"') || (r.stdout || '').includes('ok'); testTable.push({ cat: 'Backend', test: 'Health endpoint', ok, details: ok ? 'Serveur répond OK' : (r.stdout || 'Pas de réponse').substring(0, 200) }); }
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Health endpoint', ok: false, details: e.message }); }
+
+          // 3. Login + JWT
+          progress('Authentification...');
           let authToken = null;
           try {
-            // Extract credentials from server.js
-            const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
             const credMatch = serverCode.match(/\/\/\s*CREDENTIALS:\s*email=(\S+)\s+password=(\S+)/);
             if (credMatch && containerExecService) {
-              const email = credMatch[1];
-              const password = credMatch[2];
-              const loginResult = await containerExecService.execInContainer(project_id,
-                `curl -s -X POST http://localhost:3000/api/login -H "Content-Type: application/json" -d '{"email":"${email}","password":"${password}"}'`,
-                { timeout: 10000 });
-              const loginBody = loginResult.stdout || '';
-              const hasToken = loginBody.includes('token');
-              if (hasToken) {
-                try { authToken = JSON.parse(loginBody).token; } catch (_) {}
-              }
-              testTable.push({ test: 'Login (' + email + ')', ok: hasToken, details: hasToken ? 'Token JWT reçu' : 'Échec login: ' + loginBody.substring(0, 200) });
+              const email = credMatch[1], password = credMatch[2];
+              const r = await exec(`curl -s -X POST http://localhost:3000/api/login -H "Content-Type: application/json" -d '{"email":"${email}","password":"${password}"}'`, 10000);
+              const body = r.stdout || '';
+              const hasToken = body.includes('token');
+              if (hasToken) try { authToken = JSON.parse(body).token; } catch (_) {}
+              testTable.push({ cat: 'Backend', test: `Login (${email})`, ok: hasToken, details: hasToken ? 'Token JWT reçu' : 'Échec: ' + body.substring(0, 150) });
             } else {
-              testTable.push({ test: 'Login', ok: null, details: credMatch ? 'Container non disponible' : 'Pas de CREDENTIALS dans server.js' });
+              testTable.push({ cat: 'Backend', test: 'Login', ok: null, details: credMatch ? 'Container non disponible' : 'Pas de CREDENTIALS dans server.js' });
             }
-          } catch (e) { testTable.push({ test: 'Login', ok: false, details: e.message }); }
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Login', ok: false, details: e.message }); }
 
-          // Test 4: Protected API routes
-          job.progressMessage = 'Test 4/8 — Routes API protégées...';
+          // 4. GET API routes (up to 8)
+          progress('Routes GET...');
           try {
-            const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
-            const apiRoutes = (serverCode.match(/app\.(get|post)\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [])
+            const allApiRoutes = (serverCode.match(/app\.get\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [])
               .map(r => r.match(/['"`](\/api\/[^'"`]+)/)?.[1]).filter(Boolean);
-            const getRoutes = apiRoutes.filter(r => serverCode.includes(`app.get('${r}'`) || serverCode.includes(`app.get("${r}"`));
-
-            if (getRoutes.length > 0 && containerExecService) {
-              let passed = 0, failed = 0;
-              const failedRoutes = [];
-              // Test up to 5 GET routes
-              for (const route of getRoutes.slice(0, 5)) {
+            if (allApiRoutes.length > 0 && containerExecService) {
+              let passed = 0, failed = 0; const failedList = [];
+              for (const route of allApiRoutes.slice(0, 8)) {
                 try {
-                  const authHeader = authToken ? `-H "Authorization: Bearer ${authToken}"` : '';
-                  const result = await containerExecService.execInContainer(project_id,
-                    `curl -s -o /dev/null -w "%{http_code}" ${authHeader} http://localhost:3000${route}`,
-                    { timeout: 5000 });
-                  const status = parseInt(result.stdout || '0');
-                  if (status >= 200 && status < 400) { passed++; } else { failed++; failedRoutes.push(`${route} → ${status}`); }
-                } catch (_) { failed++; failedRoutes.push(`${route} → timeout`); }
+                  const auth = authToken ? `-H "Authorization: Bearer ${authToken}"` : '';
+                  const r = await exec(`curl -s -o /dev/null -w "%{http_code}" ${auth} http://localhost:3000${route}`, 5000);
+                  const code = parseInt(r.stdout || '0');
+                  if (code >= 200 && code < 400) passed++; else { failed++; failedList.push(`${route}→${code}`); }
+                } catch (_) { failed++; failedList.push(`${route}→timeout`); }
               }
-              const total = passed + failed;
-              testTable.push({ test: `Routes API (${total} testées)`, ok: failed === 0, details: failed === 0 ? `${passed}/${total} retournent 2xx` : `${failed} en erreur: ${failedRoutes.join(', ')}` });
-            } else {
-              testTable.push({ test: 'Routes API', ok: null, details: getRoutes.length === 0 ? 'Aucune route GET détectée' : 'Container non disponible' });
-            }
-          } catch (e) { testTable.push({ test: 'Routes API', ok: false, details: e.message }); }
+              testTable.push({ cat: 'Backend', test: `Routes GET (${passed + failed} testées)`, ok: failed === 0, details: failed === 0 ? `${passed}/${passed + failed} OK` : `${failed} erreurs: ${failedList.join(', ')}` });
+            } else { testTable.push({ cat: 'Backend', test: 'Routes GET', ok: null, details: allApiRoutes.length === 0 ? 'Aucune route GET' : 'Container non disponible' }); }
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Routes GET', ok: false, details: e.message }); }
 
-          // Test 5: Frontend serves HTML
-          job.progressMessage = 'Test 5/8 — Frontend Vite...';
+          // 5. POST API routes (test that they don't crash with empty body)
+          progress('Routes POST...');
+          try {
+            const postRoutes = (serverCode.match(/app\.post\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [])
+              .map(r => r.match(/['"`](\/api\/[^'"`]+)/)?.[1]).filter(r => r && !r.includes('login'));
+            if (postRoutes.length > 0 && containerExecService) {
+              let passed = 0, crashed = 0; const crashedList = [];
+              for (const route of postRoutes.slice(0, 5)) {
+                try {
+                  const auth = authToken ? `-H "Authorization: Bearer ${authToken}"` : '';
+                  const r = await exec(`curl -s -o /dev/null -w "%{http_code}" -X POST ${auth} -H "Content-Type: application/json" -d '{}' http://localhost:3000${route}`, 5000);
+                  const code = parseInt(r.stdout || '0');
+                  if (code < 500) passed++; else { crashed++; crashedList.push(`${route}→${code}`); }
+                } catch (_) { crashed++; crashedList.push(`${route}→timeout`); }
+              }
+              testTable.push({ cat: 'Backend', test: `Routes POST (${passed + crashed} testées)`, ok: crashed === 0, details: crashed === 0 ? `${passed} ne crashent pas (4xx attendu avec body vide)` : `${crashed} crash 500: ${crashedList.join(', ')}` });
+            } else { testTable.push({ cat: 'Backend', test: 'Routes POST', ok: null, details: 'Aucune route POST (hors login)' }); }
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Routes POST', ok: false, details: e.message }); }
+
+          // 6. API response time
+          progress('Temps de réponse API...');
           try {
             if (containerExecService) {
-              const frontend = await containerExecService.execInContainer(project_id, 'curl -s http://localhost:5173/ | head -20', { timeout: 8000 });
-              const html = frontend.stdout || '';
-              const ok = html.includes('id="root"') || html.includes('id=\\"root\\"');
-              testTable.push({ test: 'Frontend Vite', ok, details: ok ? 'HTML servi avec id="root"' : 'Pas de HTML valide: ' + html.substring(0, 150) });
-            } else {
-              testTable.push({ test: 'Frontend Vite', ok: null, details: 'Container non disponible' });
-            }
-          } catch (e) { testTable.push({ test: 'Frontend Vite', ok: false, details: e.message }); }
+              const r = await exec('curl -s -w "%{time_total}" -o /dev/null http://localhost:3000/health');
+              const time = parseFloat(r.stdout || '0');
+              const ok = time < 2.0;
+              testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok, details: `${(time * 1000).toFixed(0)}ms${ok ? '' : ' (> 2s = lent)'}` });
+            } else { testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok: null, details: 'Container non disponible' }); }
+          } catch (e) { testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok: false, details: e.message }); }
 
-          // Test 6: verify_project (full diagnostic)
-          job.progressMessage = 'Test 6/8 — Diagnostic complet...';
-          let verifyResult = '';
-          try {
-            if (containerExecService) {
-              verifyResult = await containerExecService.verifyProject(project_id);
-              const hasErrors = verifyResult.includes('✗');
-              testTable.push({ test: 'verify_project', ok: !hasErrors, details: hasErrors ? 'Erreurs détectées (voir ci-dessous)' : 'Tout OK' });
-            } else {
-              testTable.push({ test: 'verify_project', ok: null, details: 'Container non disponible' });
-            }
-          } catch (e) { testTable.push({ test: 'verify_project', ok: false, details: e.message }); }
+          // ── FRONTEND (5 tests) ──
 
-          // Test 7: Missing imports (static analysis)
-          job.progressMessage = 'Test 7/8 — Imports manquants...';
+          // 7. Frontend HTML
+          progress('Frontend Vite...');
           try {
-            const srcDir = path.join(projDir, 'src');
+            const r = await exec('curl -s http://localhost:5173/ | head -20');
+            if (r.skip) testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok: null, details: 'Container non disponible' });
+            else { const ok = (r.stdout || '').includes('id="root"'); testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok, details: ok ? 'HTML avec id="root" servi' : 'Pas de HTML valide' }); }
+          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok: false, details: e.message }); }
+
+          // 8. All React routes have components
+          progress('Routes React...');
+          try {
+            const appContent = fs.existsSync(path.join(srcDir, 'App.tsx')) ? fs.readFileSync(path.join(srcDir, 'App.tsx'), 'utf8') : '';
+            const routeImports = (appContent.match(/import\s+(\w+)\s+from\s+['"]@\/([^'"]+)['"]/g) || []);
+            const missing = [];
+            for (const imp of routeImports) {
+              const m = imp.match(/from\s+['"]@\/([^'"]+)['"]/);
+              if (m) { const p = path.join(srcDir, m[1]); if (!fs.existsSync(p + '.tsx') && !fs.existsSync(p + '.ts') && !fs.existsSync(p + '.jsx') && !fs.existsSync(p)) missing.push(m[1]); }
+            }
+            testTable.push({ cat: 'Frontend', test: 'Routes → composants', ok: missing.length === 0, details: missing.length === 0 ? `${routeImports.length} imports résolus` : `Manquants: ${missing.join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Routes → composants', ok: false, details: e.message }); }
+
+          // 9. Missing imports @/
+          progress('Imports manquants...');
+          try {
             const missingImports = [];
             const scanDir = (dir) => {
               if (!fs.existsSync(dir)) return;
@@ -10637,31 +10652,209 @@ const server = http.createServer(async (req, res) => {
                 else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
                   try {
                     const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
-                    const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
-                    for (const imp of imports) {
-                      const p = imp.match(/@\/([^'"]+)/)?.[1];
-                      if (!p) continue;
+                    for (const imp of (content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [])) {
+                      const p = imp.match(/@\/([^'"]+)/)?.[1]; if (!p) continue;
                       const resolved = path.join(srcDir, p);
                       if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '.jsx') && !fs.existsSync(resolved))
-                        missingImports.push(`${f.name} → @/${p}`);
+                        missingImports.push(`${f.name}→@/${p}`);
                     }
                   } catch (_) {}
                 }
               }
             };
             scanDir(srcDir);
-            testTable.push({ test: 'Imports @/', ok: missingImports.length === 0,
-              details: missingImports.length === 0 ? 'Tous les imports résolus' : `${missingImports.length} manquants: ${missingImports.slice(0, 5).join(', ')}` });
-          } catch (e) { testTable.push({ test: 'Imports @/', ok: false, details: e.message }); }
+            testTable.push({ cat: 'Frontend', test: 'Imports @/', ok: missingImports.length === 0, details: missingImports.length === 0 ? 'Tous résolus' : `${missingImports.length} manquants: ${missingImports.slice(0, 5).join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Imports @/', ok: false, details: e.message }); }
 
-          // Test 8: Frontend console errors
-          job.progressMessage = 'Test 8/8 — Erreurs console...';
+          // 10. Export default in all components/pages
+          progress('Export default...');
+          try {
+            const noExport = [];
+            const checkExports = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory()) checkExports(path.join(dir, f.name));
+                else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name) && f.name !== 'main.tsx') {
+                  try { const c = fs.readFileSync(path.join(dir, f.name), 'utf8'); if (!c.includes('export default')) noExport.push(f.name); } catch (_) {}
+                }
+              }
+            };
+            checkExports(path.join(srcDir, 'pages')); checkExports(path.join(srcDir, 'components'));
+            testTable.push({ cat: 'Frontend', test: 'Export default', ok: noExport.length === 0, details: noExport.length === 0 ? 'Tous les composants exportent' : `Sans export: ${noExport.slice(0, 5).join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Export default', ok: false, details: e.message }); }
+
+          // 11. Console errors
+          progress('Erreurs console...');
           try {
             const consoleLogs = clientLogs.get(String(project_id)) || [];
             const errors = consoleLogs.filter(l => l.level === 'error');
-            testTable.push({ test: 'Console frontend', ok: errors.length === 0,
-              details: errors.length === 0 ? 'Aucune erreur' : `${errors.length} erreur(s): ${errors.slice(0, 3).map(e => e.message).join('; ')}` });
-          } catch (e) { testTable.push({ test: 'Console frontend', ok: false, details: e.message }); }
+            testTable.push({ cat: 'Frontend', test: 'Console errors', ok: errors.length === 0, details: errors.length === 0 ? 'Aucune erreur' : `${errors.length} erreur(s): ${errors.slice(0, 3).map(e => e.message?.substring(0, 60)).join('; ')}` });
+          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Console errors', ok: false, details: e.message }); }
+
+          // ── DATA (4 tests) ──
+
+          // 12. Fetch/route matching
+          progress('Cohérence fetch/routes...');
+          try {
+            const mismatches = [];
+            const scanFetch = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanFetch(path.join(dir, f.name));
+                else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name)) {
+                  try {
+                    const c = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                    const fetches = c.match(/fetch\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [];
+                    for (const ft of fetches) {
+                      const url = ft.match(/['"`](\/api\/[^'"`]+)/)?.[1];
+                      if (url && !serverCode.includes(`'${url}'`) && !serverCode.includes(`"${url}"`)) mismatches.push(`${f.name}: fetch("${url}") → pas de route`);
+                    }
+                  } catch (_) {}
+                }
+              }
+            };
+            scanFetch(srcDir);
+            testTable.push({ cat: 'Données', test: 'Fetch ↔ routes', ok: mismatches.length === 0, details: mismatches.length === 0 ? 'Tous les fetch ont une route' : `${mismatches.length} sans route: ${mismatches.slice(0, 3).join('; ')}` });
+          } catch (e) { testTable.push({ cat: 'Données', test: 'Fetch ↔ routes', ok: false, details: e.message }); }
+
+          // 13. Tables have demo data (INSERT INTO)
+          progress('Données de demo...');
+          try {
+            const tables = (serverCode.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+            const tablesWithData = tables.filter(t => serverCode.includes(`INSERT INTO ${t}`) || serverCode.includes(`INSERT OR IGNORE INTO ${t}`) || serverCode.includes(`insert into ${t}`));
+            const empty = tables.filter(t => !tablesWithData.includes(t));
+            testTable.push({ cat: 'Données', test: `Tables avec données (${tablesWithData.length}/${tables.length})`, ok: empty.length === 0, details: empty.length === 0 ? 'Toutes les tables ont des INSERT' : `Sans données: ${empty.join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Données', test: 'Tables avec données', ok: false, details: e.message }); }
+
+          // 14. Field name coherence (frontend body vs backend req.body)
+          progress('Cohérence champs...');
+          try {
+            const fieldIssues = [];
+            const routeBodyMap = {};
+            const routeRegex = /app\.(post|put|patch)\s*\(\s*['"`]([^'"`]+)/g;
+            let rm; while ((rm = routeRegex.exec(serverCode)) !== null) {
+              const after = serverCode.substring(rm.index, rm.index + 2000);
+              const bm = after.match(/const\s*\{([^}]+)\}\s*=\s*req\.body/);
+              if (bm) routeBodyMap[rm[2]] = bm[1].split(',').map(f => f.trim().split(/\s/)[0]).filter(Boolean);
+            }
+            const scanFields = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanFields(path.join(dir, f.name));
+                else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name)) {
+                  try {
+                    const c = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                    const fetchRe = /fetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*body\s*:\s*JSON\.stringify\s*\(\s*\{([^}]*)\}/g;
+                    let fm; while ((fm = fetchRe.exec(c)) !== null) {
+                      const frontFields = fm[2].split(',').map(f => f.trim().split(/\s*:/)[0].trim()).filter(Boolean);
+                      const backFields = routeBodyMap[fm[1]];
+                      if (backFields) {
+                        const extra = frontFields.filter(f => !backFields.includes(f));
+                        if (extra.length > 0) fieldIssues.push(`${f.name}→${fm[1]}: envoie {${extra.join(',')}} non attendu`);
+                      }
+                    }
+                  } catch (_) {}
+                }
+              }
+            };
+            scanFields(srcDir);
+            testTable.push({ cat: 'Données', test: 'Cohérence champs', ok: fieldIssues.length === 0, details: fieldIssues.length === 0 ? 'Frontend/backend alignés' : `${fieldIssues.length} incohérence(s): ${fieldIssues.slice(0, 3).join('; ')}` });
+          } catch (e) { testTable.push({ cat: 'Données', test: 'Cohérence champs', ok: false, details: e.message }); }
+
+          // 15. Dead links in navigation
+          progress('Liens navigation...');
+          try {
+            const deadLinks = [];
+            const allPages = new Set();
+            // Collect all Route paths from App.tsx
+            const appContent = fs.existsSync(path.join(srcDir, 'App.tsx')) ? fs.readFileSync(path.join(srcDir, 'App.tsx'), 'utf8') : '';
+            (appContent.match(/path=["']([^"']+)["']/g) || []).forEach(m => allPages.add(m.match(/["']([^"']+)["']/)?.[1]));
+            // Scan all components for Link to= or href=
+            const scanLinks = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanLinks(path.join(dir, f.name));
+                else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name)) {
+                  try {
+                    const c = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                    const links = c.match(/(?:to|href)=["'](\/[^"']*?)["']/g) || [];
+                    for (const l of links) {
+                      const href = l.match(/["'](\/[^"']*?)["']/)?.[1];
+                      if (href && !allPages.has(href) && !href.startsWith('/api') && href !== '/#' && href !== '/') deadLinks.push(`${f.name}: ${href}`);
+                    }
+                  } catch (_) {}
+                }
+              }
+            };
+            scanLinks(path.join(srcDir, 'components')); scanLinks(path.join(srcDir, 'pages'));
+            testTable.push({ cat: 'Données', test: 'Liens navigation', ok: deadLinks.length === 0, details: deadLinks.length === 0 ? 'Tous les liens pointent vers des routes' : `${deadLinks.length} lien(s) mort(s): ${deadLinks.slice(0, 5).join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Données', test: 'Liens navigation', ok: false, details: e.message }); }
+
+          // ── SÉCURITÉ (3 tests) ──
+
+          // 16. Unprotected sensitive routes
+          progress('Routes sans auth...');
+          try {
+            const sensitivePatterns = ['/api/users', '/api/admin', '/api/internal', '/api/settings', '/api/config'];
+            const unprotected = [];
+            for (const pattern of sensitivePatterns) {
+              const routeRe = new RegExp(`app\\.(get|post|put|delete)\\s*\\(\\s*['"\`]${pattern.replace('/', '\\/')}`, 'g');
+              let m; while ((m = routeRe.exec(serverCode)) !== null) {
+                // Check if there's auth middleware before the handler
+                const after = serverCode.substring(m.index, m.index + 500);
+                if (!after.includes('auth') && !after.includes('token') && !after.includes('jwt') && !after.includes('protect') && !after.includes('user.role'))
+                  unprotected.push(m[0].match(/['"`]([^'"`]+)/)?.[1] || pattern);
+              }
+            }
+            testTable.push({ cat: 'Sécurité', test: 'Routes protégées', ok: unprotected.length === 0, details: unprotected.length === 0 ? 'Routes sensibles ont auth/token check' : `Sans protection: ${[...new Set(unprotected)].join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'Routes protégées', ok: false, details: e.message }); }
+
+          // 17. Password hashing
+          progress('Hachage mots de passe...');
+          try {
+            const hasBcrypt = serverCode.includes('bcrypt');
+            const hasPlainPassword = serverCode.match(/password\s*===?\s*['"`]/g);
+            const ok = hasBcrypt && !hasPlainPassword;
+            testTable.push({ cat: 'Sécurité', test: 'Hachage passwords', ok, details: ok ? 'bcrypt utilisé' : (!hasBcrypt ? 'bcrypt non détecté' : 'Comparaison en clair détectée') });
+          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'Hachage passwords', ok: false, details: e.message }); }
+
+          // 18. SQL injection check (string concatenation in queries)
+          progress('Injection SQL...');
+          try {
+            const unsafePatterns = serverCode.match(/\.(run|get|all|prepare)\s*\(\s*[`'"]\s*(?:SELECT|INSERT|UPDATE|DELETE).*\$\{/gi) || [];
+            const ok = unsafePatterns.length === 0;
+            testTable.push({ cat: 'Sécurité', test: 'SQL injection', ok, details: ok ? 'Prepared statements utilisés' : unsafePatterns.length + ' requête(s) avec interpolation de variables' });
+          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'SQL injection', ok: false, details: e.message }); }
+
+          // ── QUALITÉ (2 tests) ──
+
+          // 19. verify_project diagnostic
+          progress('Diagnostic complet...');
+          let verifyResult = '';
+          try {
+            if (containerExecService) {
+              verifyResult = await containerExecService.verifyProject(project_id);
+              const hasErrors = verifyResult.includes('✗');
+              testTable.push({ cat: 'Qualité', test: 'verify_project', ok: !hasErrors, details: hasErrors ? 'Erreurs détectées' : 'Tout OK' });
+            } else { testTable.push({ cat: 'Qualité', test: 'verify_project', ok: null, details: 'Container non disponible' }); }
+          } catch (e) { testTable.push({ cat: 'Qualité', test: 'verify_project', ok: false, details: e.message }); }
+
+          // 20. File sizes (detect bloated files)
+          progress('Taille des fichiers...');
+          try {
+            const bigFiles = [];
+            const checkSizes = (dir, prefix) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory() && f.name !== 'node_modules') checkSizes(path.join(dir, f.name), prefix ? `${prefix}/${f.name}` : f.name);
+                else if (f.isFile() && /\.(tsx|jsx|ts|js)$/.test(f.name)) {
+                  try { const lines = fs.readFileSync(path.join(dir, f.name), 'utf8').split('\n').length; if (lines > 300 && f.name !== 'server.js') bigFiles.push(`${prefix ? prefix + '/' : ''}${f.name} (${lines}L)`); } catch (_) {}
+                }
+              }
+            };
+            checkSizes(srcDir, 'src');
+            testTable.push({ cat: 'Qualité', test: 'Fichiers volumineux', ok: bigFiles.length === 0, details: bigFiles.length === 0 ? 'Tous < 300 lignes' : `${bigFiles.length} trop grands: ${bigFiles.slice(0, 3).join(', ')}` });
+          } catch (e) { testTable.push({ cat: 'Qualité', test: 'Fichiers volumineux', ok: false, details: e.message }); }
 
           // ══════════════════════════════════════════════════════════
           // PHASE 2: READ PROJECT FILES FOR CONTEXT
@@ -10683,12 +10876,17 @@ const server = http.createServer(async (req, res) => {
           const failCount = testTable.filter(t => t.ok === false).length;
           const skipCount = testTable.filter(t => t.ok === null).length;
 
-          // Build the test results table for Claude
-          let testResultsText = 'RÉSULTATS DES TESTS AUTOMATIQUES (exécutés par le serveur) :\n\n';
-          testResultsText += '| Test | Résultat | Détails |\n|------|----------|--------|\n';
-          for (const t of testTable) {
-            const icon = t.ok === true ? '✓' : t.ok === false ? '✗' : '⚠';
-            testResultsText += `| ${t.test} | ${icon} | ${t.details} |\n`;
+          // Build the test results table for Claude, grouped by category
+          let testResultsText = `RÉSULTATS DES TESTS AUTOMATIQUES (${testTable.length} tests exécutés par le serveur) :\n\n`;
+          const categories = [...new Set(testTable.map(t => t.cat || 'Autre'))];
+          for (const cat of categories) {
+            const catTests = testTable.filter(t => (t.cat || 'Autre') === cat);
+            testResultsText += `\n**${cat}** (${catTests.filter(t => t.ok === true).length}/${catTests.length} OK)\n`;
+            testResultsText += '| Test | Résultat | Détails |\n|------|----------|--------|\n';
+            for (const t of catTests) {
+              const icon = t.ok === true ? '✓' : t.ok === false ? '✗' : '⚠';
+              testResultsText += `| ${t.test} | ${icon} | ${t.details} |\n`;
+            }
           }
           testResultsText += `\nScore brut : ${passCount} réussis, ${failCount} échoués, ${skipCount} non testés sur ${testTable.length}\n`;
 
