@@ -13661,6 +13661,68 @@ export default defineConfig({
     return;
   }
 
+  // ─── AUDIT PDF EXPORT (printable HTML) ───
+  const auditPdfMatch = url.match(/^\/api\/projects\/(\d+)\/audits\/(\d+)\/pdf$/);
+  if (auditPdfMatch && req.method === 'GET') {
+    const pid = parseInt(auditPdfMatch[1]);
+    const aid = parseInt(auditPdfMatch[2]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé' }); return; }
+    try {
+      const audit = db.prepare('SELECT * FROM audit_results WHERE id=? AND project_id=?').get(aid, pid);
+      if (!audit) { json(res, 404, { error: 'Audit non trouvé' }); return; }
+      const tests = JSON.parse(audit.results_json || '[]');
+      const categories = [...new Set(tests.map(t => t.cat || 'Autre'))];
+
+      // Generate print-optimized HTML
+      let testsHtml = '';
+      for (const cat of categories) {
+        const catTests = tests.filter(t => (t.cat || 'Autre') === cat);
+        const catPass = catTests.filter(t => t.ok === true).length;
+        testsHtml += `<h3 style="margin-top:20px;color:#1e293b">${cat} (${catPass}/${catTests.length})</h3>`;
+        testsHtml += '<table style="width:100%;border-collapse:collapse;margin-bottom:10px">';
+        testsHtml += '<tr style="background:#f1f5f9"><th style="text-align:left;padding:6px;border:1px solid #e2e8f0">Test</th><th style="width:60px;padding:6px;border:1px solid #e2e8f0">Résultat</th><th style="text-align:left;padding:6px;border:1px solid #e2e8f0">Détails</th></tr>';
+        for (const t of catTests) {
+          const icon = t.ok === true ? '<span style="color:#16a34a">&#10003;</span>' : t.ok === false ? '<span style="color:#dc2626">&#10007;</span>' : '<span style="color:#d97706">&#9888;</span>';
+          const bg = t.ok === false ? 'background:#fef2f2' : '';
+          testsHtml += `<tr style="${bg}"><td style="padding:6px;border:1px solid #e2e8f0">${t.test}</td><td style="padding:6px;border:1px solid #e2e8f0;text-align:center">${icon}</td><td style="padding:6px;border:1px solid #e2e8f0;font-size:13px">${t.details || ''}</td></tr>`;
+        }
+        testsHtml += '</table>';
+      }
+
+      const scoreColor = audit.score >= 8 ? '#16a34a' : audit.score >= 5 ? '#d97706' : '#dc2626';
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Audit — ${p.title || 'Projet'}</title>
+<style>@media print{body{margin:0}@page{size:A4;margin:15mm}}body{font-family:system-ui,-apple-system,sans-serif;max-width:800px;margin:0 auto;padding:30px;color:#1e293b}
+h1{font-size:22px;margin-bottom:5px}h2{font-size:16px;color:#64748b;font-weight:normal;margin-top:0}
+.score{font-size:64px;font-weight:bold;color:${scoreColor};text-align:center;margin:20px 0}
+.meta{color:#64748b;font-size:13px;text-align:center;margin-bottom:30px}
+.summary{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:15px;margin:20px 0;display:flex;justify-content:space-around}
+.summary div{text-align:center}.summary .num{font-size:24px;font-weight:bold}.summary .label{font-size:12px;color:#64748b}
+.report{margin-top:30px;line-height:1.6;white-space:pre-wrap}
+.footer{margin-top:40px;padding-top:15px;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;text-align:center}</style></head><body>
+<h1>Rapport d'audit — ${p.title || 'Projet ' + pid}</h1>
+<h2>${p.brief ? p.brief.substring(0, 100) : 'Prestige Build Pro'}</h2>
+<div class="score">${audit.score}/10</div>
+<div class="meta">${audit.triggered_by === 'auto' ? 'Audit automatique' : 'Audit manuel'} — ${audit.created_at}</div>
+<div class="summary">
+<div><div class="num" style="color:#16a34a">${audit.passed}</div><div class="label">Réussis</div></div>
+<div><div class="num" style="color:#dc2626">${audit.failed}</div><div class="label">Échoués</div></div>
+<div><div class="num" style="color:#d97706">${audit.skipped}</div><div class="label">Non testés</div></div>
+<div><div class="num">${audit.total}</div><div class="label">Total</div></div>
+</div>
+${testsHtml}
+${audit.report ? '<h3 style="margin-top:30px">Rapport IA</h3><div class="report">' + audit.report.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>' : ''}
+<div class="footer">Généré par Prestige Build Pro — prestige-build.dev</div>
+</body></html>`;
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } catch (e) {
+      json(res, 500, { error: e.message });
+    }
+    return;
+  }
+
   // ─── #8 LOGOUT (token invalidation) ───
   if (url === '/api/logout' && req.method === 'POST') {
     // JWT is stateless — we can't truly revoke it server-side without a blacklist.
