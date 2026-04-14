@@ -2408,7 +2408,7 @@ function applyToolEdits(projectDir, edits) {
 // opts.useTools: if true, pass CODE_TOOLS and return parsed tool response
 // opts.rawResponse: if true, return the full API response object instead of text
 // opts.model: override the default model (Sonnet 4). Used for cheap routing (Haiku).
-function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo = null, opts = {}) {
+function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo = null, opts = {}) {
   return new Promise((resolve, reject) => {
     // Model routing: opts.model overrides the default. Used by classifyIntent (Haiku 4.5)
     // and reserved for future cheap-task routing (file selection, verify pass, etc.).
@@ -2420,7 +2420,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 24000, trackingInfo =
       if (opts.webSearch !== false) {
         apiPayload.tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
       }
-      apiPayload.tool_choice = { type: 'auto' };
+      // Force tool use (type: 'any') so Claude MUST use write_file/edit_file instead of
+      // responding with text explaining what it WOULD do. Recursive calls (depth > 0)
+      // use 'auto' to allow Claude to signal completion with a text response.
+      apiPayload.tool_choice = (opts._depth || 0) > 0 ? { type: 'auto' } : { type: 'any' };
     }
     const payload = JSON.stringify(apiPayload);
 
@@ -5591,8 +5594,8 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const ctxMessages = ai ? ai.buildConversationContext(project, history.reverse(), effectiveBrief, projectKeys, null, projectMemory) : messages;
 
-          // ── STEP 1: Sonnet for everything (like Lovable) — 24K standard ──
-          const maxTok = 24000;
+          // ── STEP 1: Sonnet for everything (like Lovable) — 32K for complete output ──
+          const maxTok = 32000;
           const tracking = { userId: job.user_id, projectId: job.project_id, operation: 'modify', jobId };
 
           const result = await callClaudeAPI(systemBlocks, ctxMessages, maxTok, tracking, { useTools: true, jobId });
