@@ -870,83 +870,93 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
 
     let projectContext = structure;
 
-    // ── SMART FILE SELECTION (like Lovable) ──
-    // Lovable sends a file TREE (all names) + content of RELEVANT files only.
-    // For simple modifications: send affected files (fast, 30s response).
-    // Claude can always use view_file to read other files if needed.
+    // ── OPTIMIZED FILE SELECTION (Lovable-style) ──
+    // Strategy: send the PROJECT MAP (structure, routes, interfaces) to EVERY request (~2K tokens)
+    // but send FULL CODE of only 2-5 directly relevant files (~10-20K tokens).
+    // Claude uses view_file to read any other file it needs.
+    // This reduces input from ~100K to ~15-25K tokens per request → 4-5x cheaper.
+    const MAX_FILES_TO_SEND = 7;
     const filesToSend = [];
     const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle|plan validé|INSTRUCTION OBLIGATOIRE/i.test(userMessage);
 
-    if (isMajor || allFileNames.length <= 15) {
-      // Major changes or small projects: send EVERYTHING
+    if (isMajor || allFileNames.length <= 8) {
+      // Major rewrites or very small projects: send everything
       allFileNames.forEach(f => filesToSend.push(f));
     } else if (llmSelectedFiles && llmSelectedFiles.length > 0) {
-      // GPT-4 Mini selected relevant files
-      if (!llmSelectedFiles.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
-      for (const f of llmSelectedFiles) { if (files[f]) filesToSend.push(f); }
+      // GPT-4 Mini selected relevant files — trust it but cap at MAX_FILES_TO_SEND
+      for (const f of llmSelectedFiles) { if (files[f] && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(f); }
+      // Always include App.tsx for routing context
+      if (!filesToSend.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
     } else {
-      // Regex fallback: send core files + affected files
-      if (files['src/App.tsx']) filesToSend.push('src/App.tsx');
-      if (files['src/index.css']) filesToSend.push('src/index.css');
-      if (files['tailwind.config.js']) filesToSend.push('tailwind.config.js');
-      if (affected.serverJs && files['server.js']) filesToSend.push('server.js');
-      for (const comp of affected.components) {
-        const key = `src/components/${comp}.tsx`;
-        if (files[key]) filesToSend.push(key);
-      }
-      for (const page of affected.pages) {
-        const key = `src/pages/${page}.tsx`;
-        if (files[key]) filesToSend.push(key);
-      }
-      // Also include any file whose name or topic is mentioned in the message
+      // ── Regex-based selection: TARGETED, not broad ──
       const msgLower = userMessage.toLowerCase();
+
+      // 1. Files directly mentioned by name in the message (highest priority)
       for (const fn of allFileNames) {
-        const baseName = fn.split('/').pop().replace('.tsx','').replace('.ts','').toLowerCase();
-        if (msgLower.includes(baseName) && !filesToSend.includes(fn)) filesToSend.push(fn);
-      }
-      // If message mentions an error with a file path, include that file
-      const errorFileMatch = userMessage.match(/src\/[^\s:]+\.(tsx|ts|jsx)/g);
-      if (errorFileMatch) {
-        for (const ef of errorFileMatch) {
-          if (files[ef] && !filesToSend.includes(ef)) filesToSend.push(ef);
+        if (filesToSend.length >= MAX_FILES_TO_SEND) break;
+        const baseName = fn.split('/').pop().replace(/\.(tsx|ts|jsx|js)$/, '').toLowerCase();
+        if (baseName.length > 2 && msgLower.includes(baseName) && !filesToSend.includes(fn)) {
+          filesToSend.push(fn);
         }
       }
-      // If message mentions a concept, search ALL files for related content
-      // This catches "corrige les actualités" → finds src/pages/public/Actualites.tsx
-      const conceptKeywords = msgLower.match(/actualit|partenaire|centre|contact|equipe|service|produit|propos|mission|blog|galerie|t[ée]moignage|formation|public.?cible|accueil|erreur|charg/g);
+
+      // 2. Files mentioned by path in the message
+      const pathMatches = userMessage.match(/src\/[^\s:,'"]+\.(tsx|ts|jsx)/g);
+      if (pathMatches) {
+        for (const p of pathMatches) {
+          if (files[p] && !filesToSend.includes(p) && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(p);
+        }
+      }
+
+      // 3. Concept-matched files (e.g. "actualités" → Actualites.tsx)
+      const conceptKeywords = msgLower.match(/actualit|partenaire|centre|contact|equipe|service|produit|propos|mission|blog|galerie|t[ée]moignage|formation|public.?cible|accueil|rapport|notification|dashboard|profil|param/g);
       if (conceptKeywords) {
         for (const fn of allFileNames) {
+          if (filesToSend.length >= MAX_FILES_TO_SEND) break;
           if (filesToSend.includes(fn)) continue;
           const fnLower = fn.toLowerCase();
           for (const kw of conceptKeywords) {
-            if (fnLower.includes(kw.substring(0, 5))) { // match first 5 chars of keyword
+            if (fnLower.includes(kw.substring(0, 5))) {
               filesToSend.push(fn);
               break;
             }
           }
         }
       }
-      // If the message mentions "erreur" or "chargement" or "corrige", include ALL pages
-      // that use fetch() — they're likely the problem
-      if (/erreur|chargement|corrige|fix|bug|problème|ne.*fonctionne|ne.*marche|ne.*charge/i.test(userMessage)) {
-        for (const fn of allFileNames) {
-          if (filesToSend.includes(fn)) continue;
-          if (fn.startsWith('src/pages/') && files[fn] && files[fn].includes('fetch(')) {
-            filesToSend.push(fn);
-          }
+
+      // 4. Backend: send server.js ONLY if the request touches API/backend
+      if (affected.serverJs && files['server.js'] && !filesToSend.includes('server.js')) {
+        filesToSend.push('server.js');
+      }
+
+      // 5. App.tsx always included for routing context (small file)
+      if (!filesToSend.includes('src/App.tsx') && files['src/App.tsx']) {
+        filesToSend.push('src/App.tsx');
+      }
+
+      // 6. If nothing matched, include the files detected by detectAffectedFiles
+      if (filesToSend.length <= 1) {
+        for (const comp of affected.components) {
+          const key = `src/components/${comp}.tsx`;
+          if (files[key] && !filesToSend.includes(key) && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
+        }
+        for (const page of affected.pages) {
+          const key = `src/pages/${page}.tsx`;
+          if (files[key] && !filesToSend.includes(key) && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
         }
       }
     }
 
-    const uniqueFiles = [...new Set(filesToSend)];
+    const uniqueFiles = [...new Set(filesToSend)].slice(0, isMajor ? 999 : MAX_FILES_TO_SEND);
     const notSent = allFileNames.filter(f => !uniqueFiles.includes(f));
 
-    projectContext += `\n\nFICHIERS DU PROJET (contenu complet — retourne SEULEMENT ceux que tu MODIFIES):`;
+    projectContext += `\n\nFICHIERS ENVOYÉS (${uniqueFiles.length}/${allFileNames.length} — contenu complet):`;
     for (const fn of uniqueFiles) {
       projectContext += `\n\n### ${fn}\n${files[fn]}`;
     }
     if (notSent.length > 0) {
-      projectContext += `\n\nFICHIERS NON ENVOYÉS (tu connais leur structure ci-dessus — demande-les si besoin): ${notSent.join(', ')}`;
+      projectContext += `\n\nFICHIERS DISPONIBLES (utilise view_file pour lire ceux dont tu as besoin): ${notSent.join(', ')}`;
+      projectContext += `\nRAPPEL : tu DOIS utiliser view_file(path) AVANT de modifier un fichier non envoye ci-dessus.`;
     }
 
     context.push({ role: 'user', content: projectContext });
