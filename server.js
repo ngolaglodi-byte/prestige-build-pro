@@ -842,6 +842,59 @@ function autoFixMechanicalErrors(projectDir, files) {
     }
   }
 
+  // ── Fix missing shadcn CSS variables ──
+  // If the project uses shadcn (has src/components/ui/) but index.css is missing
+  // the required CSS custom properties, inject the standard shadcn/ui theme.
+  const SHADCN_CSS_VARS = `@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 213 72% 59%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 213 72% 59%;
+    --radius: 0.5rem;
+  }
+}`;
+
+  try {
+    const uiDir = path.join(projectDir, 'src', 'components', 'ui');
+    const indexCssPath = path.join(projectDir, 'src', 'index.css');
+    if (fs.existsSync(uiDir) && fs.existsSync(indexCssPath)) {
+      let cssContent = fs.readFileSync(indexCssPath, 'utf8');
+      if (!cssContent.includes('--background:') && !cssContent.includes('--background :')) {
+        console.log(`[AutoFix] Injecting shadcn CSS variables into src/index.css`);
+        // Insert after @tailwind directives if present, otherwise prepend
+        const tailwindEnd = cssContent.lastIndexOf('@tailwind');
+        if (tailwindEnd !== -1) {
+          const lineEnd = cssContent.indexOf('\n', tailwindEnd);
+          const insertPos = lineEnd !== -1 ? lineEnd + 1 : cssContent.length;
+          cssContent = cssContent.slice(0, insertPos) + '\n' + SHADCN_CSS_VARS + '\n' + cssContent.slice(insertPos);
+        } else {
+          cssContent = SHADCN_CSS_VARS + '\n\n' + cssContent;
+        }
+        fs.writeFileSync(indexCssPath, cssContent, 'utf8');
+        totalFixes++;
+        console.log(`[AutoFix] ✅ Fixed src/index.css — shadcn CSS variables injected`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[AutoFix] shadcn CSS check failed: ${e.message}`);
+  }
+
   if (totalFixes > 0) {
     console.log(`[AutoFix] ${totalFixes} file(s) fixed directly (no AI needed)`);
   }
