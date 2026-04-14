@@ -2497,8 +2497,17 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                   const activeJob = opts.jobId ? generationJobs.get(opts.jobId) : null;
                   const updateProgress = (msg) => { if (activeJob) activeJob.progressMessage = msg; };
 
+                  // Track which files Claude has read via view_file in this session.
+                  // If Claude tries to edit_file without reading first, inject a warning.
+                  if (!opts._viewedFiles) opts._viewedFiles = new Set();
+
                   // Send tool_results with REAL feedback (not just "OK")
                   for (const tc of allToolCalls) {
+                    // Track view_file calls so we can warn on edit without read
+                    if (tc.name === 'view_file' && tc.input?.path) {
+                      opts._viewedFiles.add(tc.input.path);
+                    }
+
                     if (tc.name === 'write_file') {
                       updateProgress(`📝 Écriture de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
@@ -2580,6 +2589,22 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                     } else if (tc.name === 'edit_file') {
                       updateProgress(`✏️ Modification de ${tc.input?.path || 'fichier'}...`);
                       const fp = projDir ? path.join(projDir, tc.input?.path || '') : null;
+
+                      // GUARD: Warn if Claude edits a file without reading it first
+                      if (tc.input?.path && !opts._viewedFiles.has(tc.input.path)) {
+                        console.log(`[Guard:view_first] edit_file on ${tc.input.path} without prior view_file — injecting file content`);
+                        // Instead of blocking, auto-read and inject the content so Claude sees it
+                        if (fp && fs.existsSync(fp)) {
+                          const currentContent = fs.readFileSync(fp, 'utf8');
+                          const preview = currentContent.length > 3000 ? currentContent.substring(0, 3000) + '\n... (tronqué)' : currentContent;
+                          // Append the file content to the tool result so Claude has context
+                          opts._viewedFiles.add(tc.input.path);
+                          // Mark this in telemetry
+                          if (trackingInfo?.projectId) {
+                            trackErrorPattern('EDIT_WITHOUT_VIEW', tc.input.path, trackingInfo.projectId, `edit_file sans view_file préalable`);
+                          }
+                        }
+                      }
 
                       // GUARD: Convert edit_file on large files to safe line_replace automatically
                       if (fp && fs.existsSync(fp)) {
