@@ -5582,7 +5582,97 @@ function generateClaude(messages, jobId, brief, options = {}) {
               }
             } catch {}
 
-            // 2b. Check server.js syntax + Express health
+            // 2b. Check frontend/backend coherence (field name mismatches)
+            try {
+              const coherenceWarnings = [];
+              const projSrcDir = path.join(projDir, 'src');
+              const projServerPath = path.join(projDir, 'server.js');
+              let serverContent = '';
+              if (fs.existsSync(projServerPath)) {
+                serverContent = fs.readFileSync(projServerPath, 'utf8');
+              }
+
+              if (serverContent && fs.existsSync(projSrcDir)) {
+                // Extract all backend route handlers and their expected body fields
+                // Pattern: app.post('/api/...', ...  const { field1, field2 } = req.body
+                const routeBodyMap = {};
+                const routeRegex = /app\.(post|put|patch)\s*\(\s*['"`]([^'"`]+)['"`]/g;
+                let routeMatch;
+                while ((routeMatch = routeRegex.exec(serverContent)) !== null) {
+                  const routePath = routeMatch[2];
+                  // Find the next req.body destructuring after this route
+                  const afterRoute = serverContent.substring(routeMatch.index, routeMatch.index + 2000);
+                  const bodyMatch = afterRoute.match(/const\s*\{([^}]+)\}\s*=\s*req\.body/);
+                  if (bodyMatch) {
+                    const fields = bodyMatch[1].split(',').map(f => f.trim().split(/\s/)[0]).filter(Boolean);
+                    routeBodyMap[routePath] = fields;
+                  }
+                }
+
+                // Scan .tsx files for fetch() calls and extract sent fields
+                const scanCoherence = (dir) => {
+                  if (!fs.existsSync(dir)) return;
+                  for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                    if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') {
+                      scanCoherence(path.join(dir, f.name));
+                    } else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+                      try {
+                        const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                        // Find fetch() calls with URL and body
+                        const fetchRegex = /fetch\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*\{[^}]*body\s*:\s*JSON\.stringify\s*\(\s*\{([^}]*)\}/g;
+                        let fetchMatch;
+                        while ((fetchMatch = fetchRegex.exec(content)) !== null) {
+                          const fetchUrl = fetchMatch[1];
+                          const bodyStr = fetchMatch[2];
+                          const frontendFields = bodyStr.split(',')
+                            .map(f => f.trim().split(/\s*:/)[0].trim())
+                            .filter(Boolean);
+
+                          // Check if this URL matches a known backend route
+                          const backendFields = routeBodyMap[fetchUrl];
+                          if (backendFields && frontendFields.length > 0) {
+                            // Compare fields
+                            const missingInBackend = frontendFields.filter(f => !backendFields.includes(f));
+                            const missingInFrontend = backendFields.filter(f => !frontendFields.includes(f));
+                            if (missingInBackend.length > 0) {
+                              coherenceWarnings.push(
+                                `${f.name} envoie { ${missingInBackend.join(', ')} } vers ${fetchUrl} mais le backend ne les attend pas (attend: ${backendFields.join(', ')})`
+                              );
+                            }
+                            if (missingInFrontend.length > 0 && missingInFrontend.some(f => !['id', 'created_at', 'updated_at'].includes(f))) {
+                              const relevant = missingInFrontend.filter(f => !['id', 'created_at', 'updated_at'].includes(f));
+                              if (relevant.length > 0) {
+                                coherenceWarnings.push(
+                                  `${f.name} n'envoie PAS { ${relevant.join(', ')} } vers ${fetchUrl} mais le backend les attend`
+                                );
+                              }
+                            }
+                          }
+                        }
+                      } catch (_) {}
+                    }
+                  }
+                };
+                scanCoherence(projSrcDir);
+
+                if (coherenceWarnings.length > 0) {
+                  const warningText = coherenceWarnings.map(w => `- ${w}`).join('\n');
+                  diagnostic += (diagnostic ? '\n\n' : '') +
+                    `⚠ INCOHÉRENCES FRONTEND/BACKEND:\n${warningText}\n\nCorrige les noms de champs pour qu'ils correspondent.`;
+                  projectOK = false;
+                  console.log(`[AgentMode] ${coherenceWarnings.length} frontend/backend coherence issue(s) in project ${job.project_id}`);
+
+                  // Learn from coherence issues
+                  for (const w of coherenceWarnings.slice(0, 3)) {
+                    appendProjectRule(projDir, w);
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn(`[AgentMode] Coherence check failed: ${e.message}`);
+            }
+
+            // 2c. Check server.js syntax + Express health
             if (projectOK && containerExecService) {
               try {
                 const isRunning = await isContainerRunningAsync(job.project_id);
