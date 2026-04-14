@@ -13607,9 +13607,23 @@ export default defineConfig({
     try {
       const patterns = db.prepare('SELECT * FROM error_patterns ORDER BY occurrence_count DESC LIMIT 50').all();
       const summary = db.prepare('SELECT error_type, SUM(occurrence_count) as total, COUNT(*) as unique_patterns FROM error_patterns GROUP BY error_type ORDER BY total DESC').all();
-      json(res, 200, { patterns, summary, total: patterns.reduce((s, p) => s + p.occurrence_count, 0) });
+      // Trend: errors per day (last 30 days)
+      const trend = db.prepare("SELECT date(last_seen) as day, COUNT(*) as count, SUM(occurrence_count) as total FROM error_patterns WHERE last_seen > datetime('now', '-30 days') GROUP BY day ORDER BY day").all();
+      // Top erreurs par projet
+      const byProject = db.prepare('SELECT last_project_id as project_id, COUNT(*) as unique_errors, SUM(occurrence_count) as total_occurrences FROM error_patterns WHERE last_project_id IS NOT NULL GROUP BY last_project_id ORDER BY total_occurrences DESC LIMIT 10').all();
+      // Taux de correction automatique
+      const autoFixRate = db.prepare('SELECT SUM(auto_fixed) as fixed, SUM(rollback_triggered) as rolled_back, SUM(occurrence_count) as total FROM error_patterns').get();
+      // Audit score trend (last 30 days)
+      let auditTrend = [];
+      try { auditTrend = db.prepare("SELECT date(created_at) as day, AVG(score) as avg_score, COUNT(*) as audits FROM audit_results WHERE created_at > datetime('now', '-30 days') GROUP BY day ORDER BY day").all(); } catch (_) {}
+      json(res, 200, {
+        patterns, summary, trend, byProject,
+        autoFixRate: autoFixRate || { fixed: 0, rolled_back: 0, total: 0 },
+        auditTrend,
+        total: patterns.reduce((s, p) => s + p.occurrence_count, 0)
+      });
     } catch (e) {
-      json(res, 200, { patterns: [], summary: [], total: 0 });
+      json(res, 200, { patterns: [], summary: [], trend: [], byProject: [], autoFixRate: {}, auditTrend: [], total: 0 });
     }
     return;
   }
