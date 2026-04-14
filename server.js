@@ -2893,16 +2893,17 @@ function callGPT4Mini(prompt, maxTokens = 500) {
 // Cost: ~$0.001 per call. Latency: ~300-600ms. Catches "le bouton est trop petit"
 // (no action verb but clearly a fix request) and "tu peux ajouter X ?" (verb in middle).
 //
-// Returns: { intent: 'code'|'discuss'|'partner'|'clarify', confidence: 0-1, source: 'haiku'|'fallback' }
+// Returns: { intent: 'code'|'discuss'|'partner'|'audit'|'clarify', confidence: 0-1, source: 'haiku'|'fallback' }
 //
 // On any error → fallback to regex (existing behavior preserved, zero risk).
 const INTENT_PROMPT = `Tu es un classifieur d'intentions. Tu reponds UNIQUEMENT avec un JSON strict.
 
-Ton job : determiner si le message utilisateur demande de coder, de discuter, de se faire guider, ou s'il est trop vague.
+Ton job : determiner si le message utilisateur demande de coder, de discuter, de se faire guider, d'auditer, ou s'il est trop vague.
 
 Categories :
 - "code" : l'utilisateur veut creer/modifier/supprimer/corriger du code. Il sait CE QU'IL VEUT. (verbes d'action OU constat de bug)
 - "partner" : l'utilisateur explore, hesite, demande un avis, veut des suggestions, ou decrit un besoin SANS precision technique. Il a besoin d'un GUIDE.
+- "audit" : l'utilisateur veut une REVUE COMPLETE du projet. Verifier que tout fonctionne, trouver les problemes, rapport qualite.
 - "discuss" : pure question technique sans action attendue (comment ca marche, c'est quoi, explique-moi un concept)
 - "clarify" : trop vague pour agir (1-2 mots sans contexte)
 
@@ -2917,6 +2918,13 @@ Exemples :
 - "J'ai besoin d'un espace admin" -> {"intent":"partner","confidence":0.90}
 - "Mon site manque de quelque chose" -> {"intent":"partner","confidence":0.92}
 - "Tu penses quoi du design ?" -> {"intent":"partner","confidence":0.94}
+- "Audite mon projet" -> {"intent":"audit","confidence":0.98}
+- "Verifie que tout fonctionne" -> {"intent":"audit","confidence":0.97}
+- "Fais un test complet" -> {"intent":"audit","confidence":0.96}
+- "Il y a des problemes dans mon site ?" -> {"intent":"audit","confidence":0.93}
+- "Revue du projet" -> {"intent":"audit","confidence":0.95}
+- "Teste tout" -> {"intent":"audit","confidence":0.95}
+- "Le site est pret pour la production ?" -> {"intent":"audit","confidence":0.94}
 - "Comment marche le router ?" -> {"intent":"discuss","confidence":0.97}
 - "C'est quoi Tailwind ?" -> {"intent":"discuss","confidence":0.96}
 - "Site web" -> {"intent":"clarify","confidence":0.9}
@@ -2937,7 +2945,7 @@ async function classifyIntent(message) {
     const jsonMatch = reply.match(/\{[^}]*"intent"[^}]*\}/);
     if (!jsonMatch) throw new Error('no JSON found');
     const parsed = JSON.parse(jsonMatch[0]);
-    if (!['code', 'discuss', 'clarify', 'partner'].includes(parsed.intent)) throw new Error('invalid intent');
+    if (!['code', 'discuss', 'clarify', 'partner', 'audit'].includes(parsed.intent)) throw new Error('invalid intent');
     const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
     return { intent: parsed.intent, confidence, source: 'haiku' };
   } catch (e) {
@@ -2950,11 +2958,16 @@ function classifyIntentRegex(message) {
   const msg = (message || '').toLowerCase();
   const hasActionVerb = /\b(cr[ée]{1,2}|ajoute|modifie|change|supprime|corrige|impl[ée]mente|int[èe]gre|construis|fais|mets|retire|remplace|g[ée]n[èe]re)\b/.test(msg);
   const isPureQuestion = /^(comment|pourquoi|qu'est-ce|c'est quoi|explique|quel|quelle|est-ce que|combien|où|quand)\b/.test(msg);
-  const isPartnerRequest = /\b(propose|sugg[èe]re|am[ée]liore|conseill|id[ée]e|avis|penses?|voudrais|besoin|manque|professionnel|mieux|optimis)\b/.test(msg)
+  const isAuditRequest = /\b(audit[ée]?|v[ée]rifi[ée]?|test[ée]? (complet|tout)|revue|review|probl[èe]mes?|pr[êe]t pour|production|qualit[ée]|diagnostic|bilan|inspection|teste tout|tout fonctionne)\b/.test(msg)
+    || /\b(audit|v[ée]rifi|teste)\b/.test(msg) && /\b(projet|site|tout|complet|entier)\b/.test(msg);
+  const isPartnerRequest = !isAuditRequest && (
+    /\b(propose|sugg[èe]re|am[ée]liore|conseill|id[ée]e|avis|penses?|voudrais|besoin|manque|professionnel|mieux|optimis)\b/.test(msg)
     || /\b(qu'est-ce que tu (proposes|conseilles|recommandes|penses))\b/.test(msg)
-    || (/\?$/.test(msg.trim()) && !hasActionVerb && !isPureQuestion);
+    || (/\?$/.test(msg.trim()) && !hasActionVerb && !isPureQuestion));
 
-  if (hasActionVerb) return { intent: 'code', confidence: 0.7, source: 'fallback' };
+  // Audit takes priority over code verbs — "Audite mon projet" is audit, not code
+  if (isAuditRequest) return { intent: 'audit', confidence: 0.7, source: 'fallback' };
+  if (hasActionVerb && !isAuditRequest) return { intent: 'code', confidence: 0.7, source: 'fallback' };
   if (isPartnerRequest) return { intent: 'partner', confidence: 0.65, source: 'fallback' };
   if (isPureQuestion) return { intent: 'discuss', confidence: 0.6, source: 'fallback' };
   return { intent: 'code', confidence: 0.5, source: 'fallback' };
@@ -10365,6 +10378,7 @@ const server = http.createServer(async (req, res) => {
     const intentResult = await classifyIntent(message);
     const isQuestion = intentResult.intent === 'discuss';
     const isPartner = intentResult.intent === 'partner';
+    const isAudit = intentResult.intent === 'audit';
     log('info', 'intent', 'classified', { intent: intentResult.intent, confidence: intentResult.confidence, source: intentResult.source });
 
     const jobId = crypto.randomUUID();
@@ -10489,6 +10503,38 @@ const server = http.createServer(async (req, res) => {
       } catch (e) {
         job.status = 'error';
         job.error = e.message;
+      }
+    } else if (isAudit) {
+      // ─── AUDIT MODE: full project review with read-only tools ───
+      // Claude reads every important file, runs verify_project, checks routes/imports/fields,
+      // and produces a structured audit report. No code written. Cost: ~$0.05-0.10.
+      console.log(`[Audit] Full project audit for project ${project_id}: "${message.substring(0, 60)}..."`);
+      const job = generationJobs.get(jobId);
+      job.progressMessage = 'Audit en cours — lecture des fichiers...';
+      try {
+        const auditPrompt = ai && ai.AUDIT_SYSTEM_PROMPT ? ai.AUDIT_SYSTEM_PROMPT : 'Fais un audit complet du projet.';
+        const auditSystemBlocks = [{ type: 'text', text: auditPrompt, cache_control: { type: 'ephemeral' } }];
+
+        // Audit gets read-only tools + higher token budget for thorough analysis.
+        // Max depth 10: enough to read ~10 files + verify + report.
+        const auditReply = await callClaudeAPI(auditSystemBlocks, messages, 16000,
+          { userId: user.id, projectId: project_id, operation: 'audit' },
+          { useTools: true, _partnerReadOnly: true });
+
+        job.code = '';
+        job.chat_message = typeof auditReply === 'string' ? auditReply : auditReply;
+        job.status = 'done';
+        job.progressMessage = 'Audit terminé';
+        if (project_id) {
+          const replyText = typeof auditReply === 'string' ? auditReply : JSON.stringify(auditReply);
+          db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
+            .run(project_id, 'assistant', replyText.substring(0, 15000));
+        }
+        console.log(`[Audit] Completed for project ${project_id}`);
+      } catch (e) {
+        job.status = 'error';
+        job.error = e.message;
+        console.warn(`[Audit] Failed: ${e.message}`);
       }
     } else if (mode === 'agent') {
       // ─── AGENT MODE: autonomous plan/execute/validate/fix loop ───
