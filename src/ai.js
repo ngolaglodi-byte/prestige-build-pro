@@ -12,10 +12,16 @@
 
 const SYSTEM_PROMPT = `Tu es Prestige AI, un developpeur senior fullstack autonome. Tu construis des applications React + Express professionnelles.
 
+═══ CONTEXTE ═══
+
+Tu recois la CARTE du projet (structure, routes, types, schemas) + le code de 2-5 fichiers pertinents.
+Les autres fichiers existent mais ne sont pas envoyes. Tu y accedes avec view_file(path).
+Travaille comme un dev senior : si tu as besoin d'un fichier pour comprendre le contexte, LIS-LE avec view_file AVANT de modifier quoi que ce soit. Ne devine jamais le contenu d'un fichier que tu n'as pas lu.
+
 ═══ CRITICAL (violation = ecran blanc / bug) ═══
 
 1. FULLSTACK ATOMIQUE : chaque fetch('/api/...') dans un composant a sa route dans server.js. Les deux dans LA MEME reponse. Un fetch sans route = 404 = bug.
-2. LIRE AVANT D'ECRIRE : toujours view_file avant edit_file ou line_replace. Le contenu exact du fichier change entre les tours.
+2. LIRE AVANT D'ECRIRE : toujours view_file avant edit_file ou line_replace. Si un fichier n'est pas dans le contexte, appelle view_file pour le lire d'abord.
 3. ROBUSTESSE : chaque composant exporte "export default function NomComposant()". Chaque import declare. Pas de require() en .tsx.
 4. GROS FICHIERS (> 200 lignes) : utilise view_file(path, start, end) puis line_replace. Pas edit_file — le search/replace echoue sur les gros fichiers.
 5. TOOL CALLS PARALLELES : tous les write_file, edit_file, view_file dans UNE reponse. Chaque round-trip supplementaire = latence pour l'utilisateur.
@@ -470,10 +476,16 @@ function getModelForProject() {
 // Key difference: CHAT is for SURGICAL edits on existing code. SYSTEM is for NEW generation.
 const CHAT_SYSTEM_PROMPT = `Tu es Prestige AI, un developpeur senior autonome. Tu modifies des applications React existantes avec precision chirurgicale.
 
+═══ CONTEXTE ═══
+
+Tu recois la CARTE du projet (structure, routes, types, schemas) + le code de 2-5 fichiers pertinents.
+Pour tout autre fichier, utilise view_file(path) pour le lire. Ne suppose jamais le contenu d'un fichier non lu.
+Si tu dois modifier un fichier qui n'est pas dans le contexte : view_file d'abord, puis edit_file/line_replace.
+
 ═══ CRITICAL ═══
 
 1. SCOPE : modifie UNIQUEMENT les fichiers concernes par la demande. "Modifie Reports.tsx" = tu touches Reports.tsx et rien d'autre. Exception : App.tsx pour une nouvelle route.
-2. LIRE PUIS ECRIRE : view_file(path) avant chaque edit_file ou line_replace. Le contenu du fichier a pu changer.
+2. LIRE PUIS ECRIRE : view_file(path) avant chaque edit_file ou line_replace. Si le fichier n'est pas dans le contexte, appelle view_file d'abord.
 3. FULLSTACK ATOMIQUE : chaque nouveau fetch('/api/...') a sa route backend dans la meme reponse.
 4. GROS FICHIERS (> 200 lignes) : view_file(path, start, end) → line_replace. Pas edit_file — le matching echoue.
 5. TOOL CALLS PARALLELES : toutes les operations dans UNE reponse.
@@ -727,180 +739,140 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
   if (project && project.generated_code) {
     const files = parseCodeFiles(project.generated_code);
     const affected = detectAffectedFiles(userMessage);
+    const allFileNames = Object.keys(files);
 
-    // Build project structure overview
-    let structure = 'PROJET REACT "' + (project.title || 'Sans titre') + '"\nBrief: ' + (project.brief || '-') + '\n';
+    // ════════════════════════════════════════════════════════════════════
+    // PART 1: PROJECT MAP (~2K tokens) — sent to EVERY request
+    // Claude sees the full architecture without reading every file.
+    // This is the "carte" of the project: structure, routes, types, schemas.
+    // ════════════════════════════════════════════════════════════════════
 
-    // Inject learned rules FIRST — these are lessons from past errors, highest priority
+    let projectMap = '';
+
+    // Inject learned rules FIRST (highest priority)
     if (projectRules) {
-      structure = `RÈGLES DU PROJET (apprises des erreurs précédentes) :\n${projectRules}\n\n` + structure;
+      projectMap += `RÈGLES DU PROJET (apprises des erreurs précédentes) :\n${projectRules}\n\n`;
+    }
+    if (projectMemory && typeof projectMemory === 'string' && projectMemory.trim().length > 0) {
+      projectMap += `MEMOIRE PROJET :\n${projectMemory.trim()}\n\n`;
     }
 
-    // Inject persistent project memory (preferences) if any. Goes BEFORE everything
-    // else so Claude treats it as background context, not conversation noise.
-    if (projectMemory && typeof projectMemory === 'string' && projectMemory.trim().length > 0) {
-      structure = `MEMOIRE PROJET (preferences persistantes a respecter) :\n${projectMemory.trim()}\n\n` + structure;
-    }
+    projectMap += `PROJET REACT "${project.title || 'Sans titre'}" — ${allFileNames.length} fichiers\nBrief: ${project.brief || '-'}\n`;
 
     if (configuredKeys && configuredKeys.length > 0) {
-      structure += 'APIs: ' + configuredKeys.map(k => k.env_name).join(', ') + '\n';
+      projectMap += 'APIs: ' + configuredKeys.map(k => k.env_name).join(', ') + '\n';
     }
 
-    // Extract structure from code
+    // ── Backend summary (routes + tables — NOT the full server.js code) ──
     const serverJs = files['server.js'] || '';
-    const routes = (serverJs.match(/app\.(get|post|put|delete)\(['"`/][^,]+/g) || []).slice(0, 20);
+    const serverLines = serverJs.split('\n').length;
+    const routes = (serverJs.match(/app\.(get|post|put|delete)\s*\(\s*['"`]([^'"`]+)/g) || [])
+      .map(r => r.replace(/app\.(get|post|put|delete)\s*\(\s*['"`]/, (m, method) => method.toUpperCase() + ' '))
+      .slice(0, 30);
     const tables = (serverJs.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
 
-    const appJsx = files['src/App.tsx'] || '';
-    const reactRoutes = (appJsx.match(/<Route\s+path="([^"]+)"/g) || []);
-    const components = Object.keys(files).filter(f => f.startsWith('src/components/'));
-    const pages = Object.keys(files).filter(f => f.startsWith('src/pages/'));
+    if (serverJs) {
+      projectMap += `\nBACKEND (server.js — ${serverLines} lignes) :\n`;
+      projectMap += `  Routes (${routes.length}): ${routes.join(', ') || 'aucune'}\n`;
+      projectMap += `  Tables (${tables.length}): ${tables.join(', ') || 'aucune'}\n`;
+    }
 
-    // ── SCAN TYPESCRIPT INTERFACES & SQL SCHEMAS ──
-    // Extract interfaces from .ts/.tsx files and column definitions from CREATE TABLE
-    // so Claude knows the real field names and never invents wrong ones.
+    // ── React routes ──
+    const appJsx = files['src/App.tsx'] || '';
+    const reactRoutes = (appJsx.match(/<Route\s+path="([^"]+)"/g) || []).map(r => r.match(/path="([^"]+)"/)?.[1]).filter(Boolean);
+    if (reactRoutes.length > 0) {
+      projectMap += `  Routes React: ${reactRoutes.join(', ')}\n`;
+    }
+
+    // ── TypeScript interfaces & SQL schemas ──
     const tsInterfaces = [];
     const sqlSchemas = [];
 
     for (const [fn, content] of Object.entries(files)) {
       if (!content) continue;
 
-      // Extract TypeScript interfaces: interface Name { ... }
       if (fn.endsWith('.tsx') || fn.endsWith('.ts')) {
+        // Extract interfaces
         const ifaceRegex = /(?:export\s+)?interface\s+(\w+)\s*\{([^}]*)\}/g;
         let match;
         while ((match = ifaceRegex.exec(content)) !== null) {
-          const ifaceName = match[1];
-          const body = match[2];
-          // Extract field names (ignore types) — e.g. "id: number;" → "id"
-          const fields = body.match(/(\w+)\s*[?:]?\s*:/g);
-          if (fields && fields.length > 0) {
-            const fieldNames = fields.map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
-            tsInterfaces.push(`  ${ifaceName} (${fn}): { ${fieldNames.join(', ')} }`);
-          }
+          const fields = (match[2].match(/(\w+)\s*[?:]?\s*:/g) || [])
+            .map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
+          if (fields.length > 0) tsInterfaces.push(`  ${match[1]} (${fn}): { ${fields.join(', ')} }`);
         }
-
-        // Also extract type aliases with object shape: type Name = { ... }
+        // Extract type aliases
         const typeRegex = /(?:export\s+)?type\s+(\w+)\s*=\s*\{([^}]*)\}/g;
         while ((match = typeRegex.exec(content)) !== null) {
-          const typeName = match[1];
-          const body = match[2];
-          const fields = body.match(/(\w+)\s*[?:]?\s*:/g);
-          if (fields && fields.length > 0) {
-            const fieldNames = fields.map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
-            tsInterfaces.push(`  ${typeName} (${fn}): { ${fieldNames.join(', ')} }`);
-          }
+          const fields = (match[2].match(/(\w+)\s*[?:]?\s*:/g) || [])
+            .map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
+          if (fields.length > 0) tsInterfaces.push(`  ${match[1]} (${fn}): { ${fields.join(', ')} }`);
         }
       }
 
-      // Extract SQL table schemas from CREATE TABLE statements
       if (fn === 'server.js' || fn.endsWith('.js')) {
         const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(([^)]+)\)/gi;
         let match;
         while ((match = tableRegex.exec(content)) !== null) {
-          const tableName = match[1];
-          const body = match[2];
-          // Extract column names (first word of each comma-separated definition)
-          const columns = body.split(',')
-            .map(col => col.trim().split(/\s+/)[0])
+          const columns = match[2].split(',').map(c => c.trim().split(/\s+/)[0])
             .filter(c => c && !c.match(/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX)$/i));
-          if (columns.length > 0) {
-            sqlSchemas.push(`  ${tableName}(${columns.join(', ')})`);
-          }
+          if (columns.length > 0) sqlSchemas.push(`  ${match[1]}(${columns.join(', ')})`);
         }
       }
     }
 
-    // Inject into structure so Claude sees exact field names
     if (tsInterfaces.length > 0 || sqlSchemas.length > 0) {
-      structure += '\nINTERFACES ET SCHEMAS DU PROJET (noms de champs EXACTS — utilise CES noms) :\n';
-      if (tsInterfaces.length > 0) {
-        structure += 'TypeScript:\n' + tsInterfaces.join('\n') + '\n';
-      }
-      if (sqlSchemas.length > 0) {
-        structure += 'Tables SQL:\n' + sqlSchemas.join('\n') + '\n';
-      }
+      projectMap += '\nTYPES & SCHEMAS (noms de champs EXACTS) :\n';
+      if (tsInterfaces.length > 0) projectMap += tsInterfaces.join('\n') + '\n';
+      if (sqlSchemas.length > 0) projectMap += sqlSchemas.join('\n') + '\n';
     }
 
-    // Build detailed file map with imports and exports for each file
-    structure += '\nSTRUCTURE REACT COMPLÈTE:\n';
-    const allFileNames = Object.keys(files);
+    // ── File tree with metadata (like Lovable: name + size + key info) ──
+    projectMap += `\nFICHIERS DU PROJET (${allFileNames.length}) :\n`;
     for (const fn of allFileNames) {
       const content = files[fn] || '';
-      const size = content.length;
-      if (fn === 'server.js') {
-        structure += `\n  ${fn} (${size} chars)\n`;
-        structure += `    Routes API: ${routes.slice(0, 15).join(', ') || 'aucune'}\n`;
-        structure += `    Tables: ${tables.join(', ') || 'aucune'}\n`;
-      } else if (fn === 'src/App.tsx') {
-        const imports = (content.match(/import\s+(\w+)/g) || []).map(i => i.replace('import ', ''));
-        structure += `\n  ${fn} (${size} chars)\n`;
-        structure += `    Routes: ${reactRoutes.join(', ') || 'aucune'}\n`;
-        structure += `    Imports: ${imports.join(', ')}\n`;
-      } else if (fn.startsWith('src/components/') || fn.startsWith('src/pages/')) {
-        // Show imports and exports for each component so AI understands relationships
-        const imports = (content.match(/import\s+.*from\s+['"]([^'"]+)['"]/g) || [])
-          .map(i => i.match(/from\s+['"]([^'"]+)['"]/)?.[1] || '').filter(Boolean);
-        const hasState = content.includes('useState');
-        const hasEffect = content.includes('useEffect');
+      const lines = content.split('\n').length;
+
+      if (fn === 'server.js' || fn === 'src/App.tsx' || fn === 'package.json') {
+        // Already summarized above — just show size
+        projectMap += `  ${fn} (${lines} lignes)\n`;
+      } else if (fn.startsWith('src/components/') || fn.startsWith('src/pages/') || fn.startsWith('src/hooks/') || fn.startsWith('src/lib/')) {
+        // Components/pages: show imports + hooks (1 line per file)
+        const deps = (content.match(/from\s+['"]([^'"]+)['"]/g) || [])
+          .map(i => i.match(/['"]([^'"]+)['"]/)?.[1] || '').filter(Boolean);
         const hasFetch = content.includes('fetch(');
-        const props = content.match(/export default function \w+\((\{[^}]+\}|\w+)\)/)?.[1] || 'none';
-        structure += `\n  ${fn} (${size} chars)`;
-        if (imports.length) structure += ` — imports: ${imports.join(', ')}`;
-        if (hasState || hasEffect || hasFetch) {
-          const hooks = [];
-          if (hasState) hooks.push('useState');
-          if (hasEffect) hooks.push('useEffect');
-          if (hasFetch) hooks.push('fetch');
-          structure += ` — hooks: ${hooks.join(', ')}`;
-        }
-        structure += '\n';
-      } else if (fn === 'package.json') {
-        try {
-          const pkg = JSON.parse(content);
-          structure += `\n  ${fn} — ${pkg.name || 'project'}\n`;
-          structure += `    Deps: ${Object.keys(pkg.dependencies || {}).join(', ')}\n`;
-        } catch { structure += `\n  ${fn}\n`; }
+        let info = `  ${fn} (${lines}L)`;
+        if (deps.length > 0) info += ` deps:[${deps.slice(0, 4).join(', ')}${deps.length > 4 ? '...' : ''}]`;
+        if (hasFetch) info += ' [fetch]';
+        projectMap += info + '\n';
       } else {
-        structure += `\n  ${fn} (${size} chars)\n`;
+        projectMap += `  ${fn} (${lines}L)\n`;
       }
     }
-    structure += '\nTu modifies CE projet React. Retourne UNIQUEMENT les fichiers modifiés avec ### markers.';
-    structure += '\nSi tu crées un NOUVEAU composant/page, retourne aussi src/App.tsx avec la nouvelle route.';
 
-    let projectContext = structure;
+    // ════════════════════════════════════════════════════════════════════
+    // PART 2: FILE SELECTION — only 2-5 relevant files sent as full code
+    // Claude uses view_file() to read any other file it needs.
+    // ════════════════════════════════════════════════════════════════════
 
-    // ── OPTIMIZED FILE SELECTION (Lovable-style) ──
-    // Strategy: send the PROJECT MAP (structure, routes, interfaces) to EVERY request (~2K tokens)
-    // but send FULL CODE of only 2-5 directly relevant files (~10-20K tokens).
-    // Claude uses view_file to read any other file it needs.
-    // This reduces input from ~100K to ~15-25K tokens per request → 4-5x cheaper.
-    const MAX_FILES_TO_SEND = 7;
+    const MAX_FILES_TO_SEND = 5;
     const filesToSend = [];
     const isMajor = /redesign complet|refonte|tout changer|full rewrite|système complet|erp|multi.?rôle|plan validé|INSTRUCTION OBLIGATOIRE/i.test(userMessage);
 
     if (isMajor || allFileNames.length <= 8) {
-      // Major rewrites or very small projects: send everything
       allFileNames.forEach(f => filesToSend.push(f));
     } else if (llmSelectedFiles && llmSelectedFiles.length > 0) {
-      // GPT-4 Mini selected relevant files — trust it but cap at MAX_FILES_TO_SEND
       for (const f of llmSelectedFiles) { if (files[f] && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(f); }
-      // Always include App.tsx for routing context
-      if (!filesToSend.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
     } else {
-      // ── Regex-based selection: TARGETED, not broad ──
       const msgLower = userMessage.toLowerCase();
 
-      // 1. Files directly mentioned by name in the message (highest priority)
+      // Priority 1: Files mentioned by name
       for (const fn of allFileNames) {
         if (filesToSend.length >= MAX_FILES_TO_SEND) break;
         const baseName = fn.split('/').pop().replace(/\.(tsx|ts|jsx|js)$/, '').toLowerCase();
-        if (baseName.length > 2 && msgLower.includes(baseName) && !filesToSend.includes(fn)) {
-          filesToSend.push(fn);
-        }
+        if (baseName.length > 2 && msgLower.includes(baseName) && !filesToSend.includes(fn)) filesToSend.push(fn);
       }
 
-      // 2. Files mentioned by path in the message
+      // Priority 2: Files mentioned by path
       const pathMatches = userMessage.match(/src\/[^\s:,'"]+\.(tsx|ts|jsx)/g);
       if (pathMatches) {
         for (const p of pathMatches) {
@@ -908,55 +880,51 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
         }
       }
 
-      // 3. Concept-matched files (e.g. "actualités" → Actualites.tsx)
+      // Priority 3: Concept matching
       const conceptKeywords = msgLower.match(/actualit|partenaire|centre|contact|equipe|service|produit|propos|mission|blog|galerie|t[ée]moignage|formation|public.?cible|accueil|rapport|notification|dashboard|profil|param/g);
       if (conceptKeywords) {
         for (const fn of allFileNames) {
-          if (filesToSend.length >= MAX_FILES_TO_SEND) break;
-          if (filesToSend.includes(fn)) continue;
+          if (filesToSend.length >= MAX_FILES_TO_SEND || filesToSend.includes(fn)) continue;
           const fnLower = fn.toLowerCase();
           for (const kw of conceptKeywords) {
-            if (fnLower.includes(kw.substring(0, 5))) {
-              filesToSend.push(fn);
-              break;
-            }
+            if (fnLower.includes(kw.substring(0, 5))) { filesToSend.push(fn); break; }
           }
         }
       }
 
-      // 4. Backend: send server.js ONLY if the request touches API/backend
-      if (affected.serverJs && files['server.js'] && !filesToSend.includes('server.js')) {
-        filesToSend.push('server.js');
-      }
+      // Priority 4: server.js only if backend is touched
+      if (affected.serverJs && files['server.js'] && !filesToSend.includes('server.js')) filesToSend.push('server.js');
 
-      // 5. App.tsx always included for routing context (small file)
-      if (!filesToSend.includes('src/App.tsx') && files['src/App.tsx']) {
-        filesToSend.push('src/App.tsx');
-      }
-
-      // 6. If nothing matched, include the files detected by detectAffectedFiles
-      if (filesToSend.length <= 1) {
+      // Priority 5: Fallback to detectAffectedFiles
+      if (filesToSend.length === 0) {
         for (const comp of affected.components) {
           const key = `src/components/${comp}.tsx`;
-          if (files[key] && !filesToSend.includes(key) && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
+          if (files[key] && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
         }
         for (const page of affected.pages) {
           const key = `src/pages/${page}.tsx`;
-          if (files[key] && !filesToSend.includes(key) && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
+          if (files[key] && filesToSend.length < MAX_FILES_TO_SEND) filesToSend.push(key);
         }
       }
     }
 
-    const uniqueFiles = [...new Set(filesToSend)].slice(0, isMajor ? 999 : MAX_FILES_TO_SEND);
+    // Always include App.tsx (small, needed for routing)
+    if (!filesToSend.includes('src/App.tsx') && files['src/App.tsx']) filesToSend.push('src/App.tsx');
+
+    const uniqueFiles = [...new Set(filesToSend)].slice(0, isMajor ? 999 : MAX_FILES_TO_SEND + 1);
     const notSent = allFileNames.filter(f => !uniqueFiles.includes(f));
 
-    projectContext += `\n\nFICHIERS ENVOYÉS (${uniqueFiles.length}/${allFileNames.length} — contenu complet):`;
+    // ════════════════════════════════════════════════════════════════════
+    // PART 3: Assemble context — map + selected file contents
+    // ════════════════════════════════════════════════════════════════════
+
+    let projectContext = projectMap;
+    projectContext += `\n══ CODE DES FICHIERS PERTINENTS (${uniqueFiles.length}/${allFileNames.length}) ══`;
     for (const fn of uniqueFiles) {
       projectContext += `\n\n### ${fn}\n${files[fn]}`;
     }
     if (notSent.length > 0) {
-      projectContext += `\n\nFICHIERS DISPONIBLES (utilise view_file pour lire ceux dont tu as besoin): ${notSent.join(', ')}`;
-      projectContext += `\nRAPPEL : tu DOIS utiliser view_file(path) AVANT de modifier un fichier non envoye ci-dessus.`;
+      projectContext += `\n\n══ AUTRES FICHIERS (utilise view_file pour les lire AVANT de les modifier) ══\n${notSent.join(', ')}`;
     }
 
     context.push({ role: 'user', content: projectContext });
