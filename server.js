@@ -13398,6 +13398,74 @@ export default defineConfig({
     return;
   }
 
+  // ─── ADMIN: PROJECT RESOURCE LIMITS ───
+  if (url.match(/^\/api\/projects\/(\d+)\/limits$/) && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const projectId = url.match(/\/api\/projects\/(\d+)\/limits/)[1];
+    const project = db.prepare('SELECT id, title, limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, limit_cpu_percent, limit_bandwidth_gb, monthly_price FROM projects WHERE id=?').get(projectId);
+    if (!project) { json(res, 404, { error: 'Projet non trouvé.' }); return; }
+
+    // Calculate current usage
+    const projDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+    let usage = { storage_mb: 0, db_mb: 0, uploads_mb: 0 };
+    try {
+      const { execSync } = require('child_process');
+      usage.storage_mb = Math.round(parseInt(execSync(`du -s ${projDir} 2>/dev/null | cut -f1`).toString().trim() || '0') / 1024);
+      const dbPath = path.join(projDir, 'data', 'app.db');
+      if (fs.existsSync(dbPath)) usage.db_mb = Math.round(fs.statSync(dbPath).size / (1024 * 1024) * 100) / 100;
+      const uploadsPath = path.join(projDir, 'data', 'uploads');
+      if (fs.existsSync(uploadsPath)) usage.uploads_mb = Math.round(parseInt(execSync(`du -s ${uploadsPath} 2>/dev/null | cut -f1`).toString().trim() || '0') / 1024);
+    } catch {}
+
+    json(res, 200, { ...project, usage });
+    return;
+  }
+
+  if (url.match(/^\/api\/projects\/(\d+)\/limits$/) && req.method === 'PUT') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const projectId = url.match(/\/api\/projects\/(\d+)\/limits/)[1];
+    const body = await parseBody(req);
+    const { limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, limit_cpu_percent, limit_bandwidth_gb, monthly_price } = body;
+
+    db.prepare(`UPDATE projects SET
+      limit_storage_mb = COALESCE(?, limit_storage_mb),
+      limit_db_mb = COALESCE(?, limit_db_mb),
+      limit_uploads_mb = COALESCE(?, limit_uploads_mb),
+      limit_ram_mb = COALESCE(?, limit_ram_mb),
+      limit_cpu_percent = COALESCE(?, limit_cpu_percent),
+      limit_bandwidth_gb = COALESCE(?, limit_bandwidth_gb),
+      monthly_price = COALESCE(?, monthly_price)
+      WHERE id = ?`).run(
+      limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, limit_cpu_percent, limit_bandwidth_gb, monthly_price, projectId
+    );
+
+    json(res, 200, { message: 'Limites mises à jour' });
+    return;
+  }
+
+  // ─── ADMIN: ALL PROJECTS WITH USAGE ───
+  if (url === '/api/admin/projects/usage' && req.method === 'GET') {
+    if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
+    const projects = db.prepare('SELECT id, title, status, is_published, limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, monthly_price FROM projects ORDER BY id').all();
+
+    const result = projects.map(p => {
+      const projDir = path.join(DOCKER_PROJECTS_DIR, String(p.id));
+      let usage = { storage_mb: 0, db_mb: 0, uploads_mb: 0 };
+      try {
+        const { execSync } = require('child_process');
+        usage.storage_mb = Math.round(parseInt(execSync(`du -s ${projDir} 2>/dev/null | cut -f1`).toString().trim() || '0') / 1024);
+        const dbPath = path.join(projDir, 'data', 'app.db');
+        if (fs.existsSync(dbPath)) usage.db_mb = Math.round(fs.statSync(dbPath).size / (1024 * 1024) * 100) / 100;
+        const uploadsPath = path.join(projDir, 'data', 'uploads');
+        if (fs.existsSync(uploadsPath)) usage.uploads_mb = Math.round(parseInt(execSync(`du -s ${uploadsPath} 2>/dev/null | cut -f1`).toString().trim() || '0') / 1024);
+      } catch {}
+      return { ...p, usage };
+    });
+
+    json(res, 200, result);
+    return;
+  }
+
   // ─── ADMIN: GLOBAL ANALYTICS (all published sites) ───
   if (url === '/api/admin/analytics' && req.method === 'GET') {
     if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }

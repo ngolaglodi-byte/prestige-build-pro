@@ -108,6 +108,15 @@ function initDatabase(ctx) {
   try { db.exec('ALTER TABLE users ADD COLUMN monthly_generation_limit INTEGER DEFAULT 500'); } catch(e) {}
   try { db.exec('ALTER TABLE projects ADD COLUMN workspace_id INTEGER'); } catch(e) {}
 
+  // Project resource limits (configurable by admin per project)
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_storage_mb INTEGER DEFAULT 250'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_db_mb INTEGER DEFAULT 50'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_uploads_mb INTEGER DEFAULT 100'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_ram_mb INTEGER DEFAULT 256'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_cpu_percent INTEGER DEFAULT 25'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN limit_bandwidth_gb INTEGER DEFAULT 5'); } catch(e) {}
+  try { db.exec('ALTER TABLE projects ADD COLUMN monthly_price REAL DEFAULT 0'); } catch(e) {}
+
   // ─── INDEXES ───
   try { db.exec(`
     CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
