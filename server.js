@@ -5910,6 +5910,8 @@ function generateClaude(messages, jobId, brief, options = {}) {
           job.status = 'done';
           job.progressMessage = '✅ Modifications appliquées';
           console.log(`[generateClaude] Modification done for project ${job.project_id}`);
+          // Run quick audit in background (non-blocking, $0.00)
+          if (job.project_id) runQuickAudit(job.project_id).catch(() => {});
         } catch (e) {
           if (e.name === 'AbortError' || e.message?.includes('abort')) {
             job.status = 'cancelled';
@@ -7143,6 +7145,127 @@ function saveProjectVersion(projectId, code, userId, message) {
     db.prepare('INSERT INTO project_versions (project_id, version_number, generated_code, created_by, message) VALUES (?,?,?,?,?)').run(projectId, versionNumber, code, userId, message || `Version ${versionNumber}`);
     return versionNumber;
   } catch(e) { console.error('Version save error:', e.message); return null; }
+}
+
+// ─── SAVE AUDIT RESULTS TO DB ───
+function saveAuditResults(projectId, testTable, report, triggeredBy) {
+  try {
+    const passCount = testTable.filter(t => t.ok === true).length;
+    const failCount = testTable.filter(t => t.ok === false).length;
+    const skipCount = testTable.filter(t => t.ok === null).length;
+    const score = testTable.length > 0 ? Math.round((passCount / testTable.length) * 10) : 0;
+    db.prepare('INSERT INTO audit_results (project_id, score, passed, failed, skipped, total, results_json, report, triggered_by) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(projectId, score, passCount, failCount, skipCount, testTable.length,
+        JSON.stringify(testTable), (report || '').substring(0, 15000), triggeredBy || 'manual');
+    console.log(`[Audit] Saved: project ${projectId}, score ${score}/10, ${passCount}✓ ${failCount}✗`);
+    return score;
+  } catch (e) {
+    console.warn(`[Audit] Failed to save results: ${e.message}`);
+    return null;
+  }
+}
+
+// ─── LIGHTWEIGHT POST-GENERATION AUDIT (runs automatically, no AI cost) ───
+// Executes a subset of the 20 tests (the ones that don't need a container running)
+// after each code generation. If score < 7, sends a warning notification via SSE.
+async function runQuickAudit(projectId) {
+  try {
+    const projDir = path.join(DOCKER_PROJECTS_DIR, String(projectId));
+    if (!fs.existsSync(projDir)) return null;
+    const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+    const srcDir = path.join(projDir, 'src');
+    const testTable = [];
+
+    // Static tests only (no curl, no container needed) — instant, $0.00
+
+    // 1. Missing imports
+    const missingImports = [];
+    const scanDir = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanDir(path.join(dir, f.name));
+        else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+          try {
+            const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+            for (const imp of (content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [])) {
+              const p = imp.match(/@\/([^'"]+)/)?.[1]; if (!p) continue;
+              const resolved = path.join(srcDir, p);
+              if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '.jsx') && !fs.existsSync(resolved))
+                missingImports.push(`@/${p}`);
+            }
+          } catch (_) {}
+        }
+      }
+    };
+    scanDir(srcDir);
+    testTable.push({ cat: 'Frontend', test: 'Imports @/', ok: missingImports.length === 0, details: missingImports.length === 0 ? 'OK' : missingImports.slice(0, 3).join(', ') });
+
+    // 2. Export default
+    const noExport = [];
+    const checkExports = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (f.isDirectory()) checkExports(path.join(dir, f.name));
+        else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name) && f.name !== 'main.tsx') {
+          try { if (!fs.readFileSync(path.join(dir, f.name), 'utf8').includes('export default')) noExport.push(f.name); } catch (_) {}
+        }
+      }
+    };
+    checkExports(path.join(srcDir, 'pages')); checkExports(path.join(srcDir, 'components'));
+    testTable.push({ cat: 'Frontend', test: 'Export default', ok: noExport.length === 0, details: noExport.length === 0 ? 'OK' : noExport.slice(0, 3).join(', ') });
+
+    // 3. Fetch ↔ routes
+    const fetchMismatches = [];
+    const scanFetch = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanFetch(path.join(dir, f.name));
+        else if (f.isFile() && /\.(tsx|jsx)$/.test(f.name)) {
+          try {
+            const c = fs.readFileSync(path.join(dir, f.name), 'utf8');
+            for (const ft of (c.match(/fetch\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [])) {
+              const url = ft.match(/['"`](\/api\/[^'"`]+)/)?.[1];
+              if (url && !serverCode.includes(`'${url}'`) && !serverCode.includes(`"${url}"`)) fetchMismatches.push(url);
+            }
+          } catch (_) {}
+        }
+      }
+    };
+    scanFetch(srcDir);
+    testTable.push({ cat: 'Données', test: 'Fetch ↔ routes', ok: fetchMismatches.length === 0, details: fetchMismatches.length === 0 ? 'OK' : fetchMismatches.slice(0, 3).join(', ') });
+
+    // 4. Tables with demo data
+    const tables = (serverCode.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
+    const tablesNoData = tables.filter(t => !serverCode.includes(`INSERT INTO ${t}`) && !serverCode.includes(`INSERT OR IGNORE INTO ${t}`));
+    testTable.push({ cat: 'Données', test: 'Données demo', ok: tablesNoData.length === 0, details: tablesNoData.length === 0 ? 'OK' : `Vides: ${tablesNoData.join(', ')}` });
+
+    // 5. Password hashing
+    const hasBcrypt = serverCode.includes('bcrypt');
+    testTable.push({ cat: 'Sécurité', test: 'Hachage passwords', ok: hasBcrypt, details: hasBcrypt ? 'bcrypt' : 'Pas de bcrypt' });
+
+    // Calculate score
+    const passCount = testTable.filter(t => t.ok === true).length;
+    const score = testTable.length > 0 ? Math.round((passCount / testTable.length) * 10) : 0;
+
+    // Save to DB
+    saveAuditResults(projectId, testTable, null, 'auto');
+
+    // If score < 7, warn via SSE
+    if (score < 7) {
+      const issues = testTable.filter(t => t.ok === false).map(t => t.test).join(', ');
+      notifyProjectClients(projectId, 'audit_warning', {
+        score, issues,
+        message: `Audit automatique : ${score}/10 — problèmes détectés : ${issues}`
+      });
+      console.log(`[QuickAudit] Project ${projectId}: ${score}/10 — warning sent`);
+    } else {
+      console.log(`[QuickAudit] Project ${projectId}: ${score}/10 — OK`);
+    }
+    return score;
+  } catch (e) {
+    console.warn(`[QuickAudit] Failed for project ${projectId}: ${e.message}`);
+    return null;
+  }
 }
 
 // ─── AUTOMATIC ROLLBACK SYSTEM ───
@@ -10231,6 +10354,8 @@ const server = http.createServer(async (req, res) => {
         previewUrl: `/run/${job.project_id}/`,
         message: `${user.name} a généré une nouvelle version`
       }, user.id);
+      // Run quick audit in background after finalization ($0.00, non-blocking)
+      runQuickAudit(job.project_id).catch(() => {});
       if (activeGenerations > 0) activeGenerations--;
     }
     // Also decrement counter on error (prevents counter leak blocking all future generations)
@@ -10924,10 +11049,12 @@ const server = http.createServer(async (req, res) => {
           job.chat_message = typeof auditReply === 'string' ? auditReply : auditReply;
           job.status = 'done';
           job.progressMessage = 'Audit terminé';
-          // Send audit completion via SSE with summary
+          // Save full audit to DB + send SSE completion
+          const auditReplyText = typeof auditReply === 'string' ? auditReply : JSON.stringify(auditReply);
+          const auditScore = saveAuditResults(project_id, testTable, auditReplyText, 'manual');
           if (project_id) {
             notifyProjectClients(project_id, 'audit_complete', {
-              score: Math.round((passCount / testTable.length) * 10),
+              score: auditScore || Math.round((passCount / testTable.length) * 10),
               passed: passCount, failed: failCount, skipped: skipCount, total: testTable.length
             });
           }
@@ -13465,6 +13592,39 @@ export default defineConfig({
       json(res, 200, { patterns, summary, total: patterns.reduce((s, p) => s + p.occurrence_count, 0) });
     } catch (e) {
       json(res, 200, { patterns: [], summary: [], total: 0 });
+    }
+    return;
+  }
+
+  // ─── AUDIT HISTORY ───
+  const auditMatch = url.match(/^\/api\/projects\/(\d+)\/audits$/);
+  if (auditMatch && req.method === 'GET') {
+    const pid = parseInt(auditMatch[1]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé' }); return; }
+    try {
+      const audits = db.prepare('SELECT id, score, passed, failed, skipped, total, triggered_by, created_at FROM audit_results WHERE project_id=? ORDER BY created_at DESC LIMIT 20').all(pid);
+      json(res, 200, { audits });
+    } catch (e) {
+      json(res, 200, { audits: [] });
+    }
+    return;
+  }
+
+  // ─── SINGLE AUDIT DETAIL ───
+  const auditDetailMatch = url.match(/^\/api\/projects\/(\d+)\/audits\/(\d+)$/);
+  if (auditDetailMatch && req.method === 'GET') {
+    const pid = parseInt(auditDetailMatch[1]);
+    const aid = parseInt(auditDetailMatch[2]);
+    const p = db.prepare('SELECT * FROM projects WHERE id=?').get(pid);
+    if (!p || (user.role !== 'admin' && p.user_id !== user.id)) { json(res, 403, { error: 'Accès refusé' }); return; }
+    try {
+      const audit = db.prepare('SELECT * FROM audit_results WHERE id=? AND project_id=?').get(aid, pid);
+      if (!audit) { json(res, 404, { error: 'Audit non trouvé' }); return; }
+      audit.results = JSON.parse(audit.results_json || '[]');
+      json(res, 200, audit);
+    } catch (e) {
+      json(res, 500, { error: e.message });
     }
     return;
   }

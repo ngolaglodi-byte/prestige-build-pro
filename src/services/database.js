@@ -83,6 +83,25 @@ function initDatabase(ctx) {
     CREATE INDEX IF NOT EXISTS idx_error_patterns_count ON error_patterns(occurrence_count DESC);
   `);
 
+  // ─── AUDIT RESULTS TABLE ───
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      passed INTEGER DEFAULT 0,
+      failed INTEGER DEFAULT 0,
+      skipped INTEGER DEFAULT 0,
+      total INTEGER DEFAULT 0,
+      results_json TEXT,
+      report TEXT,
+      triggered_by TEXT DEFAULT 'manual',
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_results_project ON audit_results(project_id, created_at);
+  `);
+
   // ─── MIGRATIONS (backwards-compat) ───
   try { db.exec('ALTER TABLE projects ADD COLUMN github_repo TEXT'); } catch(e) {}
   try { db.exec('ALTER TABLE users ADD COLUMN daily_generation_limit INTEGER DEFAULT 50'); } catch(e) {}
