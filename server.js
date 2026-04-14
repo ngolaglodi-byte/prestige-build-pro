@@ -3046,9 +3046,18 @@ function generateViaAPI(projectId, brief, jobId) {
   const sectorProfile = ai && brief ? ai.detectSectorProfile(brief) : null;
   const baseSystemPrompt = ai ? ai.SYSTEM_PROMPT : 'Tu es un expert en développement professionnel.';
 
+  // Inject contextual prompt modules based on the brief content
+  let fullSystemPrompt = baseSystemPrompt;
+  if (ai && ai.getContextualPromptModules) {
+    const contextModules = ai.getContextualPromptModules(brief || '', {});
+    if (contextModules.length > 0) {
+      fullSystemPrompt += '\n\n' + contextModules.join('\n\n');
+    }
+  }
+
   // Cached system prompt blocks (reused across all turns)
   const systemBlocks = [
-    { type: 'text', text: baseSystemPrompt, cache_control: { type: 'ephemeral' } }
+    { type: 'text', text: fullSystemPrompt, cache_control: { type: 'ephemeral' } }
   ];
   if (sectorProfile) {
     systemBlocks.push({ type: 'text', text: sectorProfile });
@@ -5562,7 +5571,12 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           const effectiveBrief = brief || (messages[messages.length - 1]?.content || '');
           const sectorProfile = ai ? ai.detectSectorProfile(effectiveBrief) : null;
-          const basePrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Expert React.';
+          let basePrompt = ai ? (ABSOLUTE_BROWSER_RULE + ai.CHAT_SYSTEM_PROMPT) : 'Expert React.';
+          // Inject contextual modules based on the user's message
+          if (ai && ai.getContextualPromptModules) {
+            const ctxMods = ai.getContextualPromptModules(effectiveBrief, {});
+            if (ctxMods.length > 0) basePrompt += '\n\n' + ctxMods.join('\n\n');
+          }
           const systemBlocks = [{ type: 'text', text: basePrompt, cache_control: { type: 'ephemeral' } }];
           if (sectorProfile) systemBlocks.push({ type: 'text', text: sectorProfile });
 
