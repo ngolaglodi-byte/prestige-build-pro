@@ -8441,12 +8441,23 @@ async function launchTemplateContainer(projectId) {
         `${projectDir}/tailwind.config.js:/app/tailwind.config.js`,
         `${projectDir}/vite.config.js:/app/vite.config.js`
       ],
-      Memory: 512 * 1024 * 1024,
-      NanoCpus: 500000000,
+      Memory: (() => {
+        try {
+          const p = db.prepare('SELECT limit_ram_mb FROM projects WHERE id=?').get(projectId);
+          return (p?.limit_ram_mb || 256) * 1024 * 1024;
+        } catch { return 256 * 1024 * 1024; }
+      })(),
+      NanoCpus: (() => {
+        try {
+          const p = db.prepare('SELECT limit_cpu_percent FROM projects WHERE id=?').get(projectId);
+          return ((p?.limit_cpu_percent || 25) / 100) * 1000000000;
+        } catch { return 250000000; }
+      })(),
       SecurityOpt: ['no-new-privileges']
     }
   });
   await container.start();
+  console.log(`[Container] Project ${projectId} started with custom limits`);
 
   // Wait for health (should be very fast — everything is pre-installed)
   const healthy = await waitForContainerHealth(projectId, 60000);
@@ -8844,12 +8855,22 @@ CMD ["sh", "start-dev.sh"]
           `${projectDir}/server.js:/app/server.js`,
           `${projectDir}/index.html:/app/index.html`
         ],
-        Memory: 512 * 1024 * 1024,    // 512MB max
-        NanoCpus: 500000000,           // 0.5 CPU
+        Memory: (() => {
+          try {
+            const p = db.prepare('SELECT limit_ram_mb FROM projects WHERE id=?').get(projectId);
+            return (p?.limit_ram_mb || 256) * 1024 * 1024;
+          } catch { return 256 * 1024 * 1024; }
+        })(),
+        NanoCpus: (() => {
+          try {
+            const p = db.prepare('SELECT limit_cpu_percent FROM projects WHERE id=?').get(projectId);
+            return ((p?.limit_cpu_percent || 25) / 100) * 1000000000;
+          } catch { return 250000000; }
+        })(),
         SecurityOpt: ['no-new-privileges']
       }
     });
-    console.log(`[Docker Build] Container created, starting...`);
+    console.log(`[Docker Build] Container created with project limits, starting...`);
     await container.start();
     console.log(`[Docker Build] Container started`);
 
@@ -13439,7 +13460,25 @@ export default defineConfig({
       limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, limit_cpu_percent, limit_bandwidth_gb, monthly_price, projectId
     );
 
-    json(res, 200, { message: 'Limites mises à jour' });
+    // Apply RAM/CPU limits to running container (docker update)
+    if (limit_ram_mb || limit_cpu_percent) {
+      try {
+        const containerName = `pbp-project-${projectId}`;
+        const container = docker.getContainer(containerName);
+        const info = await container.inspect().catch(() => null);
+        if (info?.State?.Running) {
+          const updateOpts = {};
+          if (limit_ram_mb) updateOpts.Memory = limit_ram_mb * 1024 * 1024;
+          if (limit_cpu_percent) updateOpts.NanoCpus = (limit_cpu_percent / 100) * 1000000000;
+          await container.update(updateOpts);
+          console.log(`[Limits] Applied to running container ${containerName}: RAM=${limit_ram_mb}MB CPU=${limit_cpu_percent}%`);
+        }
+      } catch (dockerErr) {
+        console.warn(`[Limits] Could not update running container: ${dockerErr.message}`);
+      }
+    }
+
+    json(res, 200, { message: 'Limites mises à jour et appliquées' });
     return;
   }
 
