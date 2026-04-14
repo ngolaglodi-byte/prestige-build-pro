@@ -13445,7 +13445,7 @@ export default defineConfig({
   if (url.match(/^\/api\/projects\/(\d+)\/limits$/) && req.method === 'PUT') {
     if (user.role !== 'admin') { json(res, 403, { error: 'Admin requis.' }); return; }
     const projectId = url.match(/\/api\/projects\/(\d+)\/limits/)[1];
-    const body = await parseBody(req);
+    const body = await getBody(req);
     const { limit_storage_mb, limit_db_mb, limit_uploads_mb, limit_ram_mb, limit_cpu_percent, limit_bandwidth_gb, monthly_price } = body;
 
     db.prepare(`UPDATE projects SET
