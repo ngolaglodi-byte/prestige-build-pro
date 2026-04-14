@@ -3067,21 +3067,36 @@ async function generateClarificationQuestions(message, userId, projectId) {
 // Select relevant files using GPT-4 Mini (fast, cheap) before sending to Claude Sonnet
 // Returns array of file paths to include in context
 async function selectFilesWithLLM(projectStructure, userMessage) {
-  if (!OPENAI_API_KEY || !ai) {
-    // Fallback to regex-based detection
-    return null;
-  }
+  if (!ai) return null;
+  // Primary: Haiku 4.5 (same provider as Sonnet — no OPENAI_API_KEY needed)
+  // Fallback: GPT-4 Mini if Haiku fails and OPENAI_API_KEY is set
   try {
     const prompt = ai.buildFileSelectionPrompt(projectStructure, userMessage);
-    const response = await callGPT4Mini(prompt);
+    const response = await callClaudeAPI(
+      [{ type: 'text', text: 'Tu selectionnes les fichiers pertinents pour la demande. Reponds UNIQUEMENT avec la liste de fichiers.' }],
+      [{ role: 'user', content: prompt }],
+      500, null, { model: 'claude-haiku-4-5-20251001' }
+    );
     const files = ai.parseFileSelectionResponse(response);
     if (files.length > 0) {
-      console.log(`[FileSelect] GPT-4 Mini selected ${files.length} files: ${files.join(', ')}`);
+      console.log(`[FileSelect] Haiku selected ${files.length} files: ${files.join(', ')}`);
       return files;
     }
     return null;
   } catch (e) {
-    console.warn(`[FileSelect] GPT-4 Mini failed: ${e.message} — falling back to regex`);
+    console.warn(`[FileSelect] Haiku failed: ${e.message}`);
+    // Fallback to GPT-4 Mini if available
+    if (OPENAI_API_KEY) {
+      try {
+        const prompt = ai.buildFileSelectionPrompt(projectStructure, userMessage);
+        const response = await callGPT4Mini(prompt);
+        const files = ai.parseFileSelectionResponse(response);
+        if (files.length > 0) {
+          console.log(`[FileSelect] GPT-4 Mini fallback selected ${files.length} files: ${files.join(', ')}`);
+          return files;
+        }
+      } catch (e2) { console.warn(`[FileSelect] GPT-4 Mini fallback also failed: ${e2.message}`); }
+    }
     return null;
   }
 }
@@ -10537,10 +10552,10 @@ const server = http.createServer(async (req, res) => {
     const projectKeys = project_id ? db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(project_id) : [];
     let userMsg = ai ? ai.buildProfessionalPrompt(message, project, savedApis) : message;
 
-    // ── LOVABLE TWO-TIER: GPT-4 Mini selects files BEFORE Claude Sonnet generates ──
-    // This reduces context size → fewer hallucinations, faster, cheaper
+    // ── TWO-TIER FILE SELECTION: Haiku selects files BEFORE Sonnet generates ──
+    // Uses Haiku 4.5 (same provider, no extra API key needed). Falls back to GPT-4 Mini if set.
     let llmSelectedFiles = null;
-    if (OPENAI_API_KEY && project?.generated_code && ai) {
+    if (project?.generated_code && ai) {
       try {
         const files = ai.parseCodeFiles ? ai.parseCodeFiles(project.generated_code) : {};
         const fileList = Object.keys(files).map(fn => {
