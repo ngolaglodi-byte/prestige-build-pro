@@ -10505,37 +10505,228 @@ const server = http.createServer(async (req, res) => {
         job.error = e.message;
       }
     } else if (isAudit) {
-      // ─── AUDIT MODE: full project review with read-only tools ───
-      // Claude reads every important file, runs verify_project, checks routes/imports/fields,
-      // and produces a structured audit report. No code written. Cost: ~$0.05-0.10.
-      console.log(`[Audit] Full project audit for project ${project_id}: "${message.substring(0, 60)}..."`);
+      // ─── AUDIT MODE: SERVER-DRIVEN TESTING + AI REPORT ───
+      // Enterprise architecture: the SERVER runs ALL tests (guaranteed execution),
+      // then sends the results to Claude who ONLY writes the report.
+      // This is how Lovable, Vercel v0, and professional CI/CD pipelines work.
+      console.log(`[Audit] Server-driven audit for project ${project_id}`);
       const job = generationJobs.get(jobId);
-      job.progressMessage = 'Audit en cours — lecture des fichiers...';
-      try {
-        const auditPrompt = ai && ai.AUDIT_SYSTEM_PROMPT ? ai.AUDIT_SYSTEM_PROMPT : 'Fais un audit complet du projet.';
-        const auditSystemBlocks = [{ type: 'text', text: auditPrompt, cache_control: { type: 'ephemeral' } }];
 
-        // Audit gets read-only tools + higher token budget for thorough analysis.
-        // Max depth 10: enough to read ~10 files + verify + report.
-        const auditReply = await callClaudeAPI(auditSystemBlocks, messages, 16000,
-          { userId: user.id, projectId: project_id, operation: 'audit' },
-          { useTools: true, _partnerReadOnly: true });
+      (async () => {
+        try {
+          const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
+          const auditResults = [];
+          const testTable = [];
 
-        job.code = '';
-        job.chat_message = typeof auditReply === 'string' ? auditReply : auditReply;
-        job.status = 'done';
-        job.progressMessage = 'Audit terminé';
-        if (project_id) {
-          const replyText = typeof auditReply === 'string' ? auditReply : JSON.stringify(auditReply);
-          db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
-            .run(project_id, 'assistant', replyText.substring(0, 15000));
+          // ══════════════════════════════════════════════════════════
+          // PHASE 1: SERVER EXECUTES ALL TESTS (100% guaranteed)
+          // ══════════════════════════════════════════════════════════
+
+          // Test 1: Server syntax
+          job.progressMessage = 'Test 1/8 — Syntaxe serveur...';
+          try {
+            if (containerExecService) {
+              const check = await containerExecService.execInContainer(project_id, 'node --check server.cjs 2>&1', { timeout: 10000 });
+              const ok = check.exitCode === 0;
+              testTable.push({ test: 'Syntaxe server.js', ok, details: ok ? 'node --check OK' : (check.stdout || check.stderr || '').substring(0, 200) });
+            } else {
+              testTable.push({ test: 'Syntaxe server.js', ok: null, details: 'Container non disponible' });
+            }
+          } catch (e) { testTable.push({ test: 'Syntaxe server.js', ok: false, details: e.message }); }
+
+          // Test 2: Server health
+          job.progressMessage = 'Test 2/8 — Santé serveur...';
+          try {
+            if (containerExecService) {
+              const health = await containerExecService.execInContainer(project_id, 'curl -s http://localhost:3000/health', { timeout: 8000 });
+              const ok = health.stdout && (health.stdout.includes('"ok"') || health.stdout.includes('ok'));
+              testTable.push({ test: 'Santé serveur (/health)', ok, details: ok ? 'Serveur répond OK' : (health.stdout || health.stderr || 'Pas de réponse').substring(0, 200) });
+            } else {
+              testTable.push({ test: 'Santé serveur (/health)', ok: null, details: 'Container non disponible' });
+            }
+          } catch (e) { testTable.push({ test: 'Santé serveur (/health)', ok: false, details: e.message }); }
+
+          // Test 3: Login + JWT
+          job.progressMessage = 'Test 3/8 — Authentification...';
+          let authToken = null;
+          try {
+            // Extract credentials from server.js
+            const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+            const credMatch = serverCode.match(/\/\/\s*CREDENTIALS:\s*email=(\S+)\s+password=(\S+)/);
+            if (credMatch && containerExecService) {
+              const email = credMatch[1];
+              const password = credMatch[2];
+              const loginResult = await containerExecService.execInContainer(project_id,
+                `curl -s -X POST http://localhost:3000/api/login -H "Content-Type: application/json" -d '{"email":"${email}","password":"${password}"}'`,
+                { timeout: 10000 });
+              const loginBody = loginResult.stdout || '';
+              const hasToken = loginBody.includes('token');
+              if (hasToken) {
+                try { authToken = JSON.parse(loginBody).token; } catch (_) {}
+              }
+              testTable.push({ test: 'Login (' + email + ')', ok: hasToken, details: hasToken ? 'Token JWT reçu' : 'Échec login: ' + loginBody.substring(0, 200) });
+            } else {
+              testTable.push({ test: 'Login', ok: null, details: credMatch ? 'Container non disponible' : 'Pas de CREDENTIALS dans server.js' });
+            }
+          } catch (e) { testTable.push({ test: 'Login', ok: false, details: e.message }); }
+
+          // Test 4: Protected API routes
+          job.progressMessage = 'Test 4/8 — Routes API protégées...';
+          try {
+            const serverCode = fs.existsSync(path.join(projDir, 'server.js')) ? fs.readFileSync(path.join(projDir, 'server.js'), 'utf8') : '';
+            const apiRoutes = (serverCode.match(/app\.(get|post)\s*\(\s*['"`](\/api\/[^'"`]+)/g) || [])
+              .map(r => r.match(/['"`](\/api\/[^'"`]+)/)?.[1]).filter(Boolean);
+            const getRoutes = apiRoutes.filter(r => serverCode.includes(`app.get('${r}'`) || serverCode.includes(`app.get("${r}"`));
+
+            if (getRoutes.length > 0 && containerExecService) {
+              let passed = 0, failed = 0;
+              const failedRoutes = [];
+              // Test up to 5 GET routes
+              for (const route of getRoutes.slice(0, 5)) {
+                try {
+                  const authHeader = authToken ? `-H "Authorization: Bearer ${authToken}"` : '';
+                  const result = await containerExecService.execInContainer(project_id,
+                    `curl -s -o /dev/null -w "%{http_code}" ${authHeader} http://localhost:3000${route}`,
+                    { timeout: 5000 });
+                  const status = parseInt(result.stdout || '0');
+                  if (status >= 200 && status < 400) { passed++; } else { failed++; failedRoutes.push(`${route} → ${status}`); }
+                } catch (_) { failed++; failedRoutes.push(`${route} → timeout`); }
+              }
+              const total = passed + failed;
+              testTable.push({ test: `Routes API (${total} testées)`, ok: failed === 0, details: failed === 0 ? `${passed}/${total} retournent 2xx` : `${failed} en erreur: ${failedRoutes.join(', ')}` });
+            } else {
+              testTable.push({ test: 'Routes API', ok: null, details: getRoutes.length === 0 ? 'Aucune route GET détectée' : 'Container non disponible' });
+            }
+          } catch (e) { testTable.push({ test: 'Routes API', ok: false, details: e.message }); }
+
+          // Test 5: Frontend serves HTML
+          job.progressMessage = 'Test 5/8 — Frontend Vite...';
+          try {
+            if (containerExecService) {
+              const frontend = await containerExecService.execInContainer(project_id, 'curl -s http://localhost:5173/ | head -20', { timeout: 8000 });
+              const html = frontend.stdout || '';
+              const ok = html.includes('id="root"') || html.includes('id=\\"root\\"');
+              testTable.push({ test: 'Frontend Vite', ok, details: ok ? 'HTML servi avec id="root"' : 'Pas de HTML valide: ' + html.substring(0, 150) });
+            } else {
+              testTable.push({ test: 'Frontend Vite', ok: null, details: 'Container non disponible' });
+            }
+          } catch (e) { testTable.push({ test: 'Frontend Vite', ok: false, details: e.message }); }
+
+          // Test 6: verify_project (full diagnostic)
+          job.progressMessage = 'Test 6/8 — Diagnostic complet...';
+          let verifyResult = '';
+          try {
+            if (containerExecService) {
+              verifyResult = await containerExecService.verifyProject(project_id);
+              const hasErrors = verifyResult.includes('✗');
+              testTable.push({ test: 'verify_project', ok: !hasErrors, details: hasErrors ? 'Erreurs détectées (voir ci-dessous)' : 'Tout OK' });
+            } else {
+              testTable.push({ test: 'verify_project', ok: null, details: 'Container non disponible' });
+            }
+          } catch (e) { testTable.push({ test: 'verify_project', ok: false, details: e.message }); }
+
+          // Test 7: Missing imports (static analysis)
+          job.progressMessage = 'Test 7/8 — Imports manquants...';
+          try {
+            const srcDir = path.join(projDir, 'src');
+            const missingImports = [];
+            const scanDir = (dir) => {
+              if (!fs.existsSync(dir)) return;
+              for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') scanDir(path.join(dir, f.name));
+                else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+                  try {
+                    const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                    const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
+                    for (const imp of imports) {
+                      const p = imp.match(/@\/([^'"]+)/)?.[1];
+                      if (!p) continue;
+                      const resolved = path.join(srcDir, p);
+                      if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '.jsx') && !fs.existsSync(resolved))
+                        missingImports.push(`${f.name} → @/${p}`);
+                    }
+                  } catch (_) {}
+                }
+              }
+            };
+            scanDir(srcDir);
+            testTable.push({ test: 'Imports @/', ok: missingImports.length === 0,
+              details: missingImports.length === 0 ? 'Tous les imports résolus' : `${missingImports.length} manquants: ${missingImports.slice(0, 5).join(', ')}` });
+          } catch (e) { testTable.push({ test: 'Imports @/', ok: false, details: e.message }); }
+
+          // Test 8: Frontend console errors
+          job.progressMessage = 'Test 8/8 — Erreurs console...';
+          try {
+            const consoleLogs = clientLogs.get(String(project_id)) || [];
+            const errors = consoleLogs.filter(l => l.level === 'error');
+            testTable.push({ test: 'Console frontend', ok: errors.length === 0,
+              details: errors.length === 0 ? 'Aucune erreur' : `${errors.length} erreur(s): ${errors.slice(0, 3).map(e => e.message).join('; ')}` });
+          } catch (e) { testTable.push({ test: 'Console frontend', ok: false, details: e.message }); }
+
+          // ══════════════════════════════════════════════════════════
+          // PHASE 2: READ PROJECT FILES FOR CONTEXT
+          // ══════════════════════════════════════════════════════════
+          job.progressMessage = 'Analyse des fichiers...';
+          const projectFiles = readProjectFilesRecursive(projDir);
+          const fileList = Object.keys(projectFiles);
+          const filesSummary = fileList.map(fn => {
+            const lines = (projectFiles[fn] || '').split('\n').length;
+            return `  ${fn} (${lines} lignes)`;
+          }).join('\n');
+
+          // ══════════════════════════════════════════════════════════
+          // PHASE 3: CLAUDE WRITES THE REPORT (from test results)
+          // ══════════════════════════════════════════════════════════
+          job.progressMessage = 'Rédaction du rapport...';
+
+          const passCount = testTable.filter(t => t.ok === true).length;
+          const failCount = testTable.filter(t => t.ok === false).length;
+          const skipCount = testTable.filter(t => t.ok === null).length;
+
+          // Build the test results table for Claude
+          let testResultsText = 'RÉSULTATS DES TESTS AUTOMATIQUES (exécutés par le serveur) :\n\n';
+          testResultsText += '| Test | Résultat | Détails |\n|------|----------|--------|\n';
+          for (const t of testTable) {
+            const icon = t.ok === true ? '✓' : t.ok === false ? '✗' : '⚠';
+            testResultsText += `| ${t.test} | ${icon} | ${t.details} |\n`;
+          }
+          testResultsText += `\nScore brut : ${passCount} réussis, ${failCount} échoués, ${skipCount} non testés sur ${testTable.length}\n`;
+
+          if (verifyResult) {
+            testResultsText += `\nDIAGNOSTIC verify_project :\n${verifyResult}\n`;
+          }
+
+          testResultsText += `\nFICHIERS DU PROJET (${fileList.length}) :\n${filesSummary}\n`;
+
+          const auditPrompt = ai && ai.AUDIT_SYSTEM_PROMPT ? ai.AUDIT_SYSTEM_PROMPT : 'Rédige un rapport d\'audit.';
+          const auditSystemBlocks = [{ type: 'text', text: auditPrompt, cache_control: { type: 'ephemeral' } }];
+
+          // Send test results + project context to Claude for report generation
+          const auditMessages = [
+            ...messages,
+            { role: 'user', content: testResultsText + '\n\nRédige le rapport d\'audit complet basé sur ces résultats. Tu peux aussi utiliser view_file pour lire les fichiers du projet si besoin de détails supplémentaires.' }
+          ];
+
+          const auditReply = await callClaudeAPI(auditSystemBlocks, auditMessages, 16000,
+            { userId: user.id, projectId: project_id, operation: 'audit' },
+            { useTools: true, _partnerReadOnly: true });
+
+          job.code = '';
+          job.chat_message = typeof auditReply === 'string' ? auditReply : auditReply;
+          job.status = 'done';
+          job.progressMessage = 'Audit terminé';
+          if (project_id) {
+            const replyText = typeof auditReply === 'string' ? auditReply : JSON.stringify(auditReply);
+            db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
+              .run(project_id, 'assistant', replyText.substring(0, 15000));
+          }
+          console.log(`[Audit] Completed: ${passCount}✓ ${failCount}✗ ${skipCount}⚠ for project ${project_id}`);
+        } catch (e) {
+          job.status = 'error';
+          job.error = e.message;
+          console.warn(`[Audit] Failed: ${e.message}`);
         }
-        console.log(`[Audit] Completed for project ${project_id}`);
-      } catch (e) {
-        job.status = 'error';
-        job.error = e.message;
-        console.warn(`[Audit] Failed: ${e.message}`);
-      }
+      })();
     } else if (mode === 'agent') {
       // ─── AGENT MODE: autonomous plan/execute/validate/fix loop ───
       if (!agentModeService) {
