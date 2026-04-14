@@ -842,6 +842,36 @@ function autoFixMechanicalErrors(projectDir, files) {
     }
   }
 
+  // ── Fix min-h-screen in internal pages when InternalLayout exists ──
+  // When a project has an InternalLayout.tsx (which manages viewport height),
+  // pages inside src/pages/internal/ should NOT use min-h-screen (causes double scrollbars).
+  try {
+    const internalPagesDir = path.join(projectDir, 'src', 'pages', 'internal');
+    const hasInternalLayout = fs.existsSync(path.join(projectDir, 'src', 'components', 'InternalLayout.tsx'))
+      || fs.existsSync(path.join(projectDir, 'src', 'layouts', 'InternalLayout.tsx'));
+    if (hasInternalLayout && fs.existsSync(internalPagesDir)) {
+      for (const f of fs.readdirSync(internalPagesDir)) {
+        if (!f.endsWith('.tsx') && !f.endsWith('.jsx')) continue;
+        const filePath = path.join(internalPagesDir, f);
+        let content = fs.readFileSync(filePath, 'utf8');
+        if (content.includes('min-h-screen')) {
+          const original = content;
+          // Remove min-h-screen from className strings
+          content = content.replace(/min-h-screen\s+/g, '');
+          content = content.replace(/\s+min-h-screen/g, '');
+          content = content.replace(/["']min-h-screen["']/g, '""');
+          if (content !== original) {
+            fs.writeFileSync(filePath, content, 'utf8');
+            totalFixes++;
+            console.log(`[AutoFix] ✅ Removed min-h-screen from src/pages/internal/${f} (InternalLayout handles height)`);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(`[AutoFix] min-h-screen check failed: ${e.message}`);
+  }
+
   // ── Fix missing shadcn CSS variables ──
   // If the project uses shadcn (has src/components/ui/) but index.css is missing
   // the required CSS custom properties, inject the standard shadcn/ui theme.
