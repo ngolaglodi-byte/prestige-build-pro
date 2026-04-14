@@ -2416,11 +2416,12 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
     if (opts.useTools) {
       if (opts._partnerReadOnly) {
-        // Partner Mode: read-only tools only (view_file, search_files, verify_project, run_command)
-        // Claude can inspect the project but CANNOT write/edit files.
+        // Partner Mode: read-only tools + web search (view_file, search_files, verify_project, run_command, web_search)
+        // Claude can inspect the project AND search the web for references, but CANNOT write/edit files.
         apiPayload.tools = CODE_TOOLS.filter(t =>
           ['view_file', 'search_files', 'verify_project', 'read_console_logs', 'get_table_schema', 'run_command'].includes(t.name)
         );
+        apiPayload.tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 2 });
         apiPayload.tool_choice = { type: 'auto' }; // auto = can respond with text after reading
       } else {
         apiPayload.tools = [...CODE_TOOLS];
