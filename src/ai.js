@@ -816,6 +816,72 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     const components = Object.keys(files).filter(f => f.startsWith('src/components/'));
     const pages = Object.keys(files).filter(f => f.startsWith('src/pages/'));
 
+    // ── SCAN TYPESCRIPT INTERFACES & SQL SCHEMAS ──
+    // Extract interfaces from .ts/.tsx files and column definitions from CREATE TABLE
+    // so Claude knows the real field names and never invents wrong ones.
+    const tsInterfaces = [];
+    const sqlSchemas = [];
+
+    for (const [fn, content] of Object.entries(files)) {
+      if (!content) continue;
+
+      // Extract TypeScript interfaces: interface Name { ... }
+      if (fn.endsWith('.tsx') || fn.endsWith('.ts')) {
+        const ifaceRegex = /(?:export\s+)?interface\s+(\w+)\s*\{([^}]*)\}/g;
+        let match;
+        while ((match = ifaceRegex.exec(content)) !== null) {
+          const ifaceName = match[1];
+          const body = match[2];
+          // Extract field names (ignore types) — e.g. "id: number;" → "id"
+          const fields = body.match(/(\w+)\s*[?:]?\s*:/g);
+          if (fields && fields.length > 0) {
+            const fieldNames = fields.map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
+            tsInterfaces.push(`  ${ifaceName} (${fn}): { ${fieldNames.join(', ')} }`);
+          }
+        }
+
+        // Also extract type aliases with object shape: type Name = { ... }
+        const typeRegex = /(?:export\s+)?type\s+(\w+)\s*=\s*\{([^}]*)\}/g;
+        while ((match = typeRegex.exec(content)) !== null) {
+          const typeName = match[1];
+          const body = match[2];
+          const fields = body.match(/(\w+)\s*[?:]?\s*:/g);
+          if (fields && fields.length > 0) {
+            const fieldNames = fields.map(f => f.replace(/\s*[?:]?\s*:$/, '').trim()).filter(Boolean);
+            tsInterfaces.push(`  ${typeName} (${fn}): { ${fieldNames.join(', ')} }`);
+          }
+        }
+      }
+
+      // Extract SQL table schemas from CREATE TABLE statements
+      if (fn === 'server.js' || fn.endsWith('.js')) {
+        const tableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(([^)]+)\)/gi;
+        let match;
+        while ((match = tableRegex.exec(content)) !== null) {
+          const tableName = match[1];
+          const body = match[2];
+          // Extract column names (first word of each comma-separated definition)
+          const columns = body.split(',')
+            .map(col => col.trim().split(/\s+/)[0])
+            .filter(c => c && !c.match(/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX)$/i));
+          if (columns.length > 0) {
+            sqlSchemas.push(`  ${tableName}(${columns.join(', ')})`);
+          }
+        }
+      }
+    }
+
+    // Inject into structure so Claude sees exact field names
+    if (tsInterfaces.length > 0 || sqlSchemas.length > 0) {
+      structure += '\nINTERFACES ET SCHEMAS DU PROJET (noms de champs EXACTS — utilise CES noms) :\n';
+      if (tsInterfaces.length > 0) {
+        structure += 'TypeScript:\n' + tsInterfaces.join('\n') + '\n';
+      }
+      if (sqlSchemas.length > 0) {
+        structure += 'Tables SQL:\n' + sqlSchemas.join('\n') + '\n';
+      }
+    }
+
     // Build detailed file map with imports and exports for each file
     structure += '\nSTRUCTURE REACT COMPLÈTE:\n';
     const allFileNames = Object.keys(files);
