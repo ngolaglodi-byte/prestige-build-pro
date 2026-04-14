@@ -10527,6 +10527,17 @@ const server = http.createServer(async (req, res) => {
           const totalTests = 20;
           let testNum = 0;
           const progress = (label) => { testNum++; job.progressMessage = `Test ${testNum}/${totalTests} — ${label}`; };
+          // Send real-time SSE updates for each test result
+          const addTest = (t) => {
+            testTable.push(t);
+            // Push via SSE so frontend shows ✓/✗ in real-time
+            if (project_id) {
+              notifyProjectClients(project_id, 'audit_test', {
+                num: testNum, total: totalTests,
+                cat: t.cat, test: t.test, ok: t.ok, details: t.details
+              });
+            }
+          };
 
           // Helper: run command in container safely
           const exec = async (cmd, timeout = 8000) => {
@@ -10540,17 +10551,17 @@ const server = http.createServer(async (req, res) => {
           progress('Syntaxe serveur...');
           try {
             const r = await exec('node --check server.cjs 2>&1');
-            if (r.skip) testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: null, details: 'Container non disponible' });
-            else testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: r.exitCode === 0, details: r.exitCode === 0 ? 'node --check OK' : (r.stdout || r.stderr || '').substring(0, 200) });
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Syntaxe server.js', ok: false, details: e.message }); }
+            if (r.skip) addTest({ cat: 'Backend', test: 'Syntaxe server.js', ok: null, details: 'Container non disponible' });
+            else addTest({ cat: 'Backend', test: 'Syntaxe server.js', ok: r.exitCode === 0, details: r.exitCode === 0 ? 'node --check OK' : (r.stdout || r.stderr || '').substring(0, 200) });
+          } catch (e) { addTest({ cat: 'Backend', test: 'Syntaxe server.js', ok: false, details: e.message }); }
 
           // 2. Server health
           progress('Santé serveur...');
           try {
             const r = await exec('curl -s http://localhost:3000/health');
-            if (r.skip) testTable.push({ cat: 'Backend', test: 'Health endpoint', ok: null, details: 'Container non disponible' });
-            else { const ok = (r.stdout || '').includes('"ok"') || (r.stdout || '').includes('ok'); testTable.push({ cat: 'Backend', test: 'Health endpoint', ok, details: ok ? 'Serveur répond OK' : (r.stdout || 'Pas de réponse').substring(0, 200) }); }
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Health endpoint', ok: false, details: e.message }); }
+            if (r.skip) addTest({ cat: 'Backend', test: 'Health endpoint', ok: null, details: 'Container non disponible' });
+            else { const ok = (r.stdout || '').includes('"ok"') || (r.stdout || '').includes('ok'); addTest({ cat: 'Backend', test: 'Health endpoint', ok, details: ok ? 'Serveur répond OK' : (r.stdout || 'Pas de réponse').substring(0, 200) }); }
+          } catch (e) { addTest({ cat: 'Backend', test: 'Health endpoint', ok: false, details: e.message }); }
 
           // 3. Login + JWT
           progress('Authentification...');
@@ -10563,11 +10574,11 @@ const server = http.createServer(async (req, res) => {
               const body = r.stdout || '';
               const hasToken = body.includes('token');
               if (hasToken) try { authToken = JSON.parse(body).token; } catch (_) {}
-              testTable.push({ cat: 'Backend', test: `Login (${email})`, ok: hasToken, details: hasToken ? 'Token JWT reçu' : 'Échec: ' + body.substring(0, 150) });
+              addTest({ cat: 'Backend', test: `Login (${email})`, ok: hasToken, details: hasToken ? 'Token JWT reçu' : 'Échec: ' + body.substring(0, 150) });
             } else {
-              testTable.push({ cat: 'Backend', test: 'Login', ok: null, details: credMatch ? 'Container non disponible' : 'Pas de CREDENTIALS dans server.js' });
+              addTest({ cat: 'Backend', test: 'Login', ok: null, details: credMatch ? 'Container non disponible' : 'Pas de CREDENTIALS dans server.js' });
             }
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Login', ok: false, details: e.message }); }
+          } catch (e) { addTest({ cat: 'Backend', test: 'Login', ok: false, details: e.message }); }
 
           // 4. GET API routes (up to 8)
           progress('Routes GET...');
@@ -10584,9 +10595,9 @@ const server = http.createServer(async (req, res) => {
                   if (code >= 200 && code < 400) passed++; else { failed++; failedList.push(`${route}→${code}`); }
                 } catch (_) { failed++; failedList.push(`${route}→timeout`); }
               }
-              testTable.push({ cat: 'Backend', test: `Routes GET (${passed + failed} testées)`, ok: failed === 0, details: failed === 0 ? `${passed}/${passed + failed} OK` : `${failed} erreurs: ${failedList.join(', ')}` });
-            } else { testTable.push({ cat: 'Backend', test: 'Routes GET', ok: null, details: allApiRoutes.length === 0 ? 'Aucune route GET' : 'Container non disponible' }); }
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Routes GET', ok: false, details: e.message }); }
+              addTest({ cat: 'Backend', test: `Routes GET (${passed + failed} testées)`, ok: failed === 0, details: failed === 0 ? `${passed}/${passed + failed} OK` : `${failed} erreurs: ${failedList.join(', ')}` });
+            } else { addTest({ cat: 'Backend', test: 'Routes GET', ok: null, details: allApiRoutes.length === 0 ? 'Aucune route GET' : 'Container non disponible' }); }
+          } catch (e) { addTest({ cat: 'Backend', test: 'Routes GET', ok: false, details: e.message }); }
 
           // 5. POST API routes (test that they don't crash with empty body)
           progress('Routes POST...');
@@ -10603,9 +10614,9 @@ const server = http.createServer(async (req, res) => {
                   if (code < 500) passed++; else { crashed++; crashedList.push(`${route}→${code}`); }
                 } catch (_) { crashed++; crashedList.push(`${route}→timeout`); }
               }
-              testTable.push({ cat: 'Backend', test: `Routes POST (${passed + crashed} testées)`, ok: crashed === 0, details: crashed === 0 ? `${passed} ne crashent pas (4xx attendu avec body vide)` : `${crashed} crash 500: ${crashedList.join(', ')}` });
-            } else { testTable.push({ cat: 'Backend', test: 'Routes POST', ok: null, details: 'Aucune route POST (hors login)' }); }
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Routes POST', ok: false, details: e.message }); }
+              addTest({ cat: 'Backend', test: `Routes POST (${passed + crashed} testées)`, ok: crashed === 0, details: crashed === 0 ? `${passed} ne crashent pas (4xx attendu avec body vide)` : `${crashed} crash 500: ${crashedList.join(', ')}` });
+            } else { addTest({ cat: 'Backend', test: 'Routes POST', ok: null, details: 'Aucune route POST (hors login)' }); }
+          } catch (e) { addTest({ cat: 'Backend', test: 'Routes POST', ok: false, details: e.message }); }
 
           // 6. API response time
           progress('Temps de réponse API...');
@@ -10614,9 +10625,9 @@ const server = http.createServer(async (req, res) => {
               const r = await exec('curl -s -w "%{time_total}" -o /dev/null http://localhost:3000/health');
               const time = parseFloat(r.stdout || '0');
               const ok = time < 2.0;
-              testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok, details: `${(time * 1000).toFixed(0)}ms${ok ? '' : ' (> 2s = lent)'}` });
-            } else { testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok: null, details: 'Container non disponible' }); }
-          } catch (e) { testTable.push({ cat: 'Backend', test: 'Temps de réponse', ok: false, details: e.message }); }
+              addTest({ cat: 'Backend', test: 'Temps de réponse', ok, details: `${(time * 1000).toFixed(0)}ms${ok ? '' : ' (> 2s = lent)'}` });
+            } else { addTest({ cat: 'Backend', test: 'Temps de réponse', ok: null, details: 'Container non disponible' }); }
+          } catch (e) { addTest({ cat: 'Backend', test: 'Temps de réponse', ok: false, details: e.message }); }
 
           // ── FRONTEND (5 tests) ──
 
@@ -10624,9 +10635,9 @@ const server = http.createServer(async (req, res) => {
           progress('Frontend Vite...');
           try {
             const r = await exec('curl -s http://localhost:5173/ | head -20');
-            if (r.skip) testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok: null, details: 'Container non disponible' });
-            else { const ok = (r.stdout || '').includes('id="root"'); testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok, details: ok ? 'HTML avec id="root" servi' : 'Pas de HTML valide' }); }
-          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Vite HTML', ok: false, details: e.message }); }
+            if (r.skip) addTest({ cat: 'Frontend', test: 'Vite HTML', ok: null, details: 'Container non disponible' });
+            else { const ok = (r.stdout || '').includes('id="root"'); addTest({ cat: 'Frontend', test: 'Vite HTML', ok, details: ok ? 'HTML avec id="root" servi' : 'Pas de HTML valide' }); }
+          } catch (e) { addTest({ cat: 'Frontend', test: 'Vite HTML', ok: false, details: e.message }); }
 
           // 8. All React routes have components
           progress('Routes React...');
@@ -10638,8 +10649,8 @@ const server = http.createServer(async (req, res) => {
               const m = imp.match(/from\s+['"]@\/([^'"]+)['"]/);
               if (m) { const p = path.join(srcDir, m[1]); if (!fs.existsSync(p + '.tsx') && !fs.existsSync(p + '.ts') && !fs.existsSync(p + '.jsx') && !fs.existsSync(p)) missing.push(m[1]); }
             }
-            testTable.push({ cat: 'Frontend', test: 'Routes → composants', ok: missing.length === 0, details: missing.length === 0 ? `${routeImports.length} imports résolus` : `Manquants: ${missing.join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Routes → composants', ok: false, details: e.message }); }
+            addTest({ cat: 'Frontend', test: 'Routes → composants', ok: missing.length === 0, details: missing.length === 0 ? `${routeImports.length} imports résolus` : `Manquants: ${missing.join(', ')}` });
+          } catch (e) { addTest({ cat: 'Frontend', test: 'Routes → composants', ok: false, details: e.message }); }
 
           // 9. Missing imports @/
           progress('Imports manquants...');
@@ -10663,8 +10674,8 @@ const server = http.createServer(async (req, res) => {
               }
             };
             scanDir(srcDir);
-            testTable.push({ cat: 'Frontend', test: 'Imports @/', ok: missingImports.length === 0, details: missingImports.length === 0 ? 'Tous résolus' : `${missingImports.length} manquants: ${missingImports.slice(0, 5).join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Imports @/', ok: false, details: e.message }); }
+            addTest({ cat: 'Frontend', test: 'Imports @/', ok: missingImports.length === 0, details: missingImports.length === 0 ? 'Tous résolus' : `${missingImports.length} manquants: ${missingImports.slice(0, 5).join(', ')}` });
+          } catch (e) { addTest({ cat: 'Frontend', test: 'Imports @/', ok: false, details: e.message }); }
 
           // 10. Export default in all components/pages
           progress('Export default...');
@@ -10680,16 +10691,16 @@ const server = http.createServer(async (req, res) => {
               }
             };
             checkExports(path.join(srcDir, 'pages')); checkExports(path.join(srcDir, 'components'));
-            testTable.push({ cat: 'Frontend', test: 'Export default', ok: noExport.length === 0, details: noExport.length === 0 ? 'Tous les composants exportent' : `Sans export: ${noExport.slice(0, 5).join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Export default', ok: false, details: e.message }); }
+            addTest({ cat: 'Frontend', test: 'Export default', ok: noExport.length === 0, details: noExport.length === 0 ? 'Tous les composants exportent' : `Sans export: ${noExport.slice(0, 5).join(', ')}` });
+          } catch (e) { addTest({ cat: 'Frontend', test: 'Export default', ok: false, details: e.message }); }
 
           // 11. Console errors
           progress('Erreurs console...');
           try {
             const consoleLogs = clientLogs.get(String(project_id)) || [];
             const errors = consoleLogs.filter(l => l.level === 'error');
-            testTable.push({ cat: 'Frontend', test: 'Console errors', ok: errors.length === 0, details: errors.length === 0 ? 'Aucune erreur' : `${errors.length} erreur(s): ${errors.slice(0, 3).map(e => e.message?.substring(0, 60)).join('; ')}` });
-          } catch (e) { testTable.push({ cat: 'Frontend', test: 'Console errors', ok: false, details: e.message }); }
+            addTest({ cat: 'Frontend', test: 'Console errors', ok: errors.length === 0, details: errors.length === 0 ? 'Aucune erreur' : `${errors.length} erreur(s): ${errors.slice(0, 3).map(e => e.message?.substring(0, 60)).join('; ')}` });
+          } catch (e) { addTest({ cat: 'Frontend', test: 'Console errors', ok: false, details: e.message }); }
 
           // ── DATA (4 tests) ──
 
@@ -10714,8 +10725,8 @@ const server = http.createServer(async (req, res) => {
               }
             };
             scanFetch(srcDir);
-            testTable.push({ cat: 'Données', test: 'Fetch ↔ routes', ok: mismatches.length === 0, details: mismatches.length === 0 ? 'Tous les fetch ont une route' : `${mismatches.length} sans route: ${mismatches.slice(0, 3).join('; ')}` });
-          } catch (e) { testTable.push({ cat: 'Données', test: 'Fetch ↔ routes', ok: false, details: e.message }); }
+            addTest({ cat: 'Données', test: 'Fetch ↔ routes', ok: mismatches.length === 0, details: mismatches.length === 0 ? 'Tous les fetch ont une route' : `${mismatches.length} sans route: ${mismatches.slice(0, 3).join('; ')}` });
+          } catch (e) { addTest({ cat: 'Données', test: 'Fetch ↔ routes', ok: false, details: e.message }); }
 
           // 13. Tables have demo data (INSERT INTO)
           progress('Données de demo...');
@@ -10723,8 +10734,8 @@ const server = http.createServer(async (req, res) => {
             const tables = (serverCode.match(/CREATE TABLE IF NOT EXISTS (\w+)/g) || []).map(t => t.replace('CREATE TABLE IF NOT EXISTS ', ''));
             const tablesWithData = tables.filter(t => serverCode.includes(`INSERT INTO ${t}`) || serverCode.includes(`INSERT OR IGNORE INTO ${t}`) || serverCode.includes(`insert into ${t}`));
             const empty = tables.filter(t => !tablesWithData.includes(t));
-            testTable.push({ cat: 'Données', test: `Tables avec données (${tablesWithData.length}/${tables.length})`, ok: empty.length === 0, details: empty.length === 0 ? 'Toutes les tables ont des INSERT' : `Sans données: ${empty.join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Données', test: 'Tables avec données', ok: false, details: e.message }); }
+            addTest({ cat: 'Données', test: `Tables avec données (${tablesWithData.length}/${tables.length})`, ok: empty.length === 0, details: empty.length === 0 ? 'Toutes les tables ont des INSERT' : `Sans données: ${empty.join(', ')}` });
+          } catch (e) { addTest({ cat: 'Données', test: 'Tables avec données', ok: false, details: e.message }); }
 
           // 14. Field name coherence (frontend body vs backend req.body)
           progress('Cohérence champs...');
@@ -10758,8 +10769,8 @@ const server = http.createServer(async (req, res) => {
               }
             };
             scanFields(srcDir);
-            testTable.push({ cat: 'Données', test: 'Cohérence champs', ok: fieldIssues.length === 0, details: fieldIssues.length === 0 ? 'Frontend/backend alignés' : `${fieldIssues.length} incohérence(s): ${fieldIssues.slice(0, 3).join('; ')}` });
-          } catch (e) { testTable.push({ cat: 'Données', test: 'Cohérence champs', ok: false, details: e.message }); }
+            addTest({ cat: 'Données', test: 'Cohérence champs', ok: fieldIssues.length === 0, details: fieldIssues.length === 0 ? 'Frontend/backend alignés' : `${fieldIssues.length} incohérence(s): ${fieldIssues.slice(0, 3).join('; ')}` });
+          } catch (e) { addTest({ cat: 'Données', test: 'Cohérence champs', ok: false, details: e.message }); }
 
           // 15. Dead links in navigation
           progress('Liens navigation...');
@@ -10787,8 +10798,8 @@ const server = http.createServer(async (req, res) => {
               }
             };
             scanLinks(path.join(srcDir, 'components')); scanLinks(path.join(srcDir, 'pages'));
-            testTable.push({ cat: 'Données', test: 'Liens navigation', ok: deadLinks.length === 0, details: deadLinks.length === 0 ? 'Tous les liens pointent vers des routes' : `${deadLinks.length} lien(s) mort(s): ${deadLinks.slice(0, 5).join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Données', test: 'Liens navigation', ok: false, details: e.message }); }
+            addTest({ cat: 'Données', test: 'Liens navigation', ok: deadLinks.length === 0, details: deadLinks.length === 0 ? 'Tous les liens pointent vers des routes' : `${deadLinks.length} lien(s) mort(s): ${deadLinks.slice(0, 5).join(', ')}` });
+          } catch (e) { addTest({ cat: 'Données', test: 'Liens navigation', ok: false, details: e.message }); }
 
           // ── SÉCURITÉ (3 tests) ──
 
@@ -10806,8 +10817,8 @@ const server = http.createServer(async (req, res) => {
                   unprotected.push(m[0].match(/['"`]([^'"`]+)/)?.[1] || pattern);
               }
             }
-            testTable.push({ cat: 'Sécurité', test: 'Routes protégées', ok: unprotected.length === 0, details: unprotected.length === 0 ? 'Routes sensibles ont auth/token check' : `Sans protection: ${[...new Set(unprotected)].join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'Routes protégées', ok: false, details: e.message }); }
+            addTest({ cat: 'Sécurité', test: 'Routes protégées', ok: unprotected.length === 0, details: unprotected.length === 0 ? 'Routes sensibles ont auth/token check' : `Sans protection: ${[...new Set(unprotected)].join(', ')}` });
+          } catch (e) { addTest({ cat: 'Sécurité', test: 'Routes protégées', ok: false, details: e.message }); }
 
           // 17. Password hashing
           progress('Hachage mots de passe...');
@@ -10815,16 +10826,16 @@ const server = http.createServer(async (req, res) => {
             const hasBcrypt = serverCode.includes('bcrypt');
             const hasPlainPassword = serverCode.match(/password\s*===?\s*['"`]/g);
             const ok = hasBcrypt && !hasPlainPassword;
-            testTable.push({ cat: 'Sécurité', test: 'Hachage passwords', ok, details: ok ? 'bcrypt utilisé' : (!hasBcrypt ? 'bcrypt non détecté' : 'Comparaison en clair détectée') });
-          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'Hachage passwords', ok: false, details: e.message }); }
+            addTest({ cat: 'Sécurité', test: 'Hachage passwords', ok, details: ok ? 'bcrypt utilisé' : (!hasBcrypt ? 'bcrypt non détecté' : 'Comparaison en clair détectée') });
+          } catch (e) { addTest({ cat: 'Sécurité', test: 'Hachage passwords', ok: false, details: e.message }); }
 
           // 18. SQL injection check (string concatenation in queries)
           progress('Injection SQL...');
           try {
             const unsafePatterns = serverCode.match(/\.(run|get|all|prepare)\s*\(\s*[`'"]\s*(?:SELECT|INSERT|UPDATE|DELETE).*\$\{/gi) || [];
             const ok = unsafePatterns.length === 0;
-            testTable.push({ cat: 'Sécurité', test: 'SQL injection', ok, details: ok ? 'Prepared statements utilisés' : unsafePatterns.length + ' requête(s) avec interpolation de variables' });
-          } catch (e) { testTable.push({ cat: 'Sécurité', test: 'SQL injection', ok: false, details: e.message }); }
+            addTest({ cat: 'Sécurité', test: 'SQL injection', ok, details: ok ? 'Prepared statements utilisés' : unsafePatterns.length + ' requête(s) avec interpolation de variables' });
+          } catch (e) { addTest({ cat: 'Sécurité', test: 'SQL injection', ok: false, details: e.message }); }
 
           // ── QUALITÉ (2 tests) ──
 
@@ -10835,9 +10846,9 @@ const server = http.createServer(async (req, res) => {
             if (containerExecService) {
               verifyResult = await containerExecService.verifyProject(project_id);
               const hasErrors = verifyResult.includes('✗');
-              testTable.push({ cat: 'Qualité', test: 'verify_project', ok: !hasErrors, details: hasErrors ? 'Erreurs détectées' : 'Tout OK' });
-            } else { testTable.push({ cat: 'Qualité', test: 'verify_project', ok: null, details: 'Container non disponible' }); }
-          } catch (e) { testTable.push({ cat: 'Qualité', test: 'verify_project', ok: false, details: e.message }); }
+              addTest({ cat: 'Qualité', test: 'verify_project', ok: !hasErrors, details: hasErrors ? 'Erreurs détectées' : 'Tout OK' });
+            } else { addTest({ cat: 'Qualité', test: 'verify_project', ok: null, details: 'Container non disponible' }); }
+          } catch (e) { addTest({ cat: 'Qualité', test: 'verify_project', ok: false, details: e.message }); }
 
           // 20. File sizes (detect bloated files)
           progress('Taille des fichiers...');
@@ -10853,8 +10864,8 @@ const server = http.createServer(async (req, res) => {
               }
             };
             checkSizes(srcDir, 'src');
-            testTable.push({ cat: 'Qualité', test: 'Fichiers volumineux', ok: bigFiles.length === 0, details: bigFiles.length === 0 ? 'Tous < 300 lignes' : `${bigFiles.length} trop grands: ${bigFiles.slice(0, 3).join(', ')}` });
-          } catch (e) { testTable.push({ cat: 'Qualité', test: 'Fichiers volumineux', ok: false, details: e.message }); }
+            addTest({ cat: 'Qualité', test: 'Fichiers volumineux', ok: bigFiles.length === 0, details: bigFiles.length === 0 ? 'Tous < 300 lignes' : `${bigFiles.length} trop grands: ${bigFiles.slice(0, 3).join(', ')}` });
+          } catch (e) { addTest({ cat: 'Qualité', test: 'Fichiers volumineux', ok: false, details: e.message }); }
 
           // ══════════════════════════════════════════════════════════
           // PHASE 2: READ PROJECT FILES FOR CONTEXT
@@ -10913,6 +10924,13 @@ const server = http.createServer(async (req, res) => {
           job.chat_message = typeof auditReply === 'string' ? auditReply : auditReply;
           job.status = 'done';
           job.progressMessage = 'Audit terminé';
+          // Send audit completion via SSE with summary
+          if (project_id) {
+            notifyProjectClients(project_id, 'audit_complete', {
+              score: Math.round((passCount / testTable.length) * 10),
+              passed: passCount, failed: failCount, skipped: skipCount, total: testTable.length
+            });
+          }
           if (project_id) {
             const replyText = typeof auditReply === 'string' ? auditReply : JSON.stringify(auditReply);
             db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
