@@ -2415,15 +2415,24 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
     const model = opts.model || 'claude-sonnet-4-20250514';
     const apiPayload = { model, max_tokens: maxTokens, system: systemBlocks, messages };
     if (opts.useTools) {
-      apiPayload.tools = [...CODE_TOOLS];
-      // Add web_search tool when requested (Agent Mode, standard generation)
-      if (opts.webSearch !== false) {
-        apiPayload.tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+      if (opts._partnerReadOnly) {
+        // Partner Mode: read-only tools only (view_file, search_files, verify_project, run_command)
+        // Claude can inspect the project but CANNOT write/edit files.
+        apiPayload.tools = CODE_TOOLS.filter(t =>
+          ['view_file', 'search_files', 'verify_project', 'read_console_logs', 'get_table_schema', 'run_command'].includes(t.name)
+        );
+        apiPayload.tool_choice = { type: 'auto' }; // auto = can respond with text after reading
+      } else {
+        apiPayload.tools = [...CODE_TOOLS];
+        // Add web_search tool when requested (Agent Mode, standard generation)
+        if (opts.webSearch !== false) {
+          apiPayload.tools.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+        }
+        // Force tool use (type: 'any') so Claude MUST use write_file/edit_file instead of
+        // responding with text explaining what it WOULD do. Recursive calls (depth > 0)
+        // use 'auto' to allow Claude to signal completion with a text response.
+        apiPayload.tool_choice = (opts._depth || 0) > 0 ? { type: 'auto' } : { type: 'any' };
       }
-      // Force tool use (type: 'any') so Claude MUST use write_file/edit_file instead of
-      // responding with text explaining what it WOULD do. Recursive calls (depth > 0)
-      // use 'auto' to allow Claude to signal completion with a text response.
-      apiPayload.tool_choice = (opts._depth || 0) > 0 ? { type: 'auto' } : { type: 'any' };
     }
     const payload = JSON.stringify(apiPayload);
 
@@ -5624,7 +5633,7 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           // Build messages with project context
           const project = db.prepare('SELECT * FROM projects WHERE id=?').get(job.project_id);
-          const history = db.prepare('SELECT role, content FROM project_messages WHERE project_id=? ORDER BY id DESC LIMIT 10').all(job.project_id);
+          const history = db.prepare('SELECT role, content FROM project_messages WHERE project_id=? ORDER BY id DESC LIMIT 20').all(job.project_id);
           const projectKeys = db.prepare('SELECT env_name, service FROM project_api_keys WHERE project_id=?').all(job.project_id);
           let projectMemory = null;
           try { const row = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(job.project_id); if (row?.content) projectMemory = row.content; } catch {}
@@ -10446,22 +10455,35 @@ const server = http.createServer(async (req, res) => {
       }
     } else if (isPartner) {
       // ─── PARTNER MODE: Claude acts as a senior consultant ───
-      // Proposes options, asks questions, guides the user before coding.
-      // For non-developers who need help deciding WHAT to build.
+      // Like a real dev senior: reads the project FIRST, then proposes.
+      // Uses read-only tools (view_file, search_files, verify_project) to analyze
+      // but NEVER writes code. This costs ~$0.02-0.05 per consultation.
       console.log(`[Partner] Consultation mode for: "${message.substring(0, 60)}..."`);
       const job = generationJobs.get(jobId);
+      job.progressMessage = 'Analyse du projet...';
       try {
         const partnerPrompt = ai && ai.PARTNER_SYSTEM_PROMPT ? ai.PARTNER_SYSTEM_PROMPT : 'Tu es un consultant developpement. Propose des options et pose des questions.';
-        const partnerSystemBlocks = [{ type: 'text', text: partnerPrompt }];
-        const partnerReply = await callClaudeAPI(partnerSystemBlocks, messages, 4000,
-          { userId: user.id, projectId: project_id, operation: 'partner' });
+        const partnerSystemBlocks = [{ type: 'text', text: partnerPrompt, cache_control: { type: 'ephemeral' } }];
+
+        // Give Partner Mode READ-ONLY tools so it can inspect the project before proposing.
+        // Filter CODE_TOOLS to only keep inspection tools (no write_file, edit_file, line_replace, delete_file).
+        const READ_ONLY_TOOLS = CODE_TOOLS.filter(t =>
+          ['view_file', 'search_files', 'verify_project', 'read_console_logs', 'get_table_schema', 'run_command'].includes(t.name)
+        );
+
+        // 8K tokens: enough for detailed proposals, cheap (~$0.02 output)
+        const partnerReply = await callClaudeAPI(partnerSystemBlocks, messages, 8000,
+          { userId: user.id, projectId: project_id, operation: 'partner' },
+          { useTools: true, _partnerReadOnly: true });
         job.code = '';
-        job.chat_message = partnerReply;
+        // Extract text from tool-augmented response (partner may have used view_file first)
+        job.chat_message = typeof partnerReply === 'string' ? partnerReply : partnerReply;
         job.status = 'done';
         job.progressMessage = 'Proposition prête';
         if (project_id) {
+          const replyText = typeof partnerReply === 'string' ? partnerReply : JSON.stringify(partnerReply);
           db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
-            .run(project_id, 'assistant', typeof partnerReply === 'string' ? partnerReply : JSON.stringify(partnerReply));
+            .run(project_id, 'assistant', replyText.substring(0, 10000));
         }
       } catch (e) {
         job.status = 'error';
