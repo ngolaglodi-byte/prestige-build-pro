@@ -3556,6 +3556,9 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
     for (const err of jsxErrors) console.warn(`  ${err.file}: ${err.issue}`);
   }
 
+  // ── SNAPSHOT: Save state before Vite build check / auto-fix attempts ──
+  const preBuildSnapshot = saveProjectSnapshot(projectDir);
+
   // ── Vite build check (like Lovable: catch errors BEFORE deploying) ──
   // Run a test build to detect import errors, syntax errors, type errors
   // If it fails, send the EXACT Vite error to Claude for correction
@@ -3564,7 +3567,7 @@ Chaque fichier : export default function, TailwindCSS, lucide-react, contenu pro
     job.progressMessage = 'Correction d\'erreurs de build...';
     console.log(`[Gen] Vite build failed: ${viteBuildResult.error.substring(0, 200)}`);
 
-    // Send the exact Vite error to Claude for auto-fix (free, no quota)
+    // Send the exact Vite error to Claude for auto-fix
     try {
       const fixPrompt = `Le build Vite a échoué avec cette erreur :
 
@@ -3581,10 +3584,17 @@ Règle : imports avec @/ alias, fichiers UI en lowercase, TypeScript valide.`;
         savePartialToDb();
         console.log(`[Gen] Vite build error auto-fixed`);
 
-        // Re-test after fix
+        // Re-test after fix — if still failing, rollback to pre-build state
         const retest = testViteBuild(projectDir);
-        if (retest.success) console.log(`[Gen] Vite build OK after fix`);
-        else console.warn(`[Gen] Vite build still failing: ${retest.error?.substring(0, 100)}`);
+        if (retest.success) {
+          console.log(`[Gen] Vite build OK after fix`);
+        } else {
+          console.warn(`[Gen] Vite build still failing after fix — rolling back`);
+          rollbackToSnapshot(projectDir, preBuildSnapshot, projectId, 'Vite build failed after auto-fix');
+          // Re-read rolled back code
+          const rolledBackFiles = readProjectFilesRecursive(projectDir);
+          allCode = formatProjectCode(rolledBackFiles);
+        }
       }
     } catch (fixErr) {
       console.warn(`[Gen] Auto-fix failed: ${fixErr.message}`);
@@ -5573,6 +5583,10 @@ function generateClaude(messages, jobId, brief, options = {}) {
 
           if (result && job.project_id) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
+
+            // ── SNAPSHOT: Save current state before applying AI changes ──
+            const preModifySnapshot = saveProjectSnapshot(projDir);
+
             writeGeneratedFiles(projDir, result, job.project_id);
 
             // ── STEP 2: Verify — does it work? ──
@@ -5740,6 +5754,56 @@ function generateClaude(messages, jobId, brief, options = {}) {
                 }
               } catch (e) {
                 console.warn(`[AgentMode] Auto-fix failed: ${e.message}`);
+              }
+
+              // ── ROLLBACK CHECK: Re-verify after auto-fix. If still broken → restore snapshot ──
+              let stillBroken = false;
+              try {
+                const postFixSrc = path.join(projDir, 'src');
+                if (fs.existsSync(postFixSrc)) {
+                  const postFixScan = (dir) => {
+                    let missing = 0;
+                    if (!fs.existsSync(dir)) return 0;
+                    for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+                      if (f.isDirectory() && f.name !== 'node_modules' && f.name !== 'ui') {
+                        missing += postFixScan(path.join(dir, f.name));
+                      } else if (f.isFile() && /\.(tsx|ts|jsx)$/.test(f.name)) {
+                        try {
+                          const content = fs.readFileSync(path.join(dir, f.name), 'utf8');
+                          const imports = content.match(/from\s+['"]@\/([^'"]+)['"]/g) || [];
+                          for (const imp of imports) {
+                            const importPath = imp.match(/@\/([^'"]+)/)?.[1];
+                            if (!importPath) continue;
+                            const resolved = path.join(postFixSrc, importPath);
+                            if (!fs.existsSync(resolved + '.tsx') && !fs.existsSync(resolved + '.ts') && !fs.existsSync(resolved + '.jsx') && !fs.existsSync(resolved)) {
+                              missing++;
+                            }
+                          }
+                        } catch (_) {}
+                      }
+                    }
+                    return missing;
+                  };
+                  const missingCount = postFixScan(postFixSrc);
+                  if (missingCount > 0) stillBroken = true;
+                }
+                // Also check server.js syntax if container is running
+                if (!stillBroken && containerExecService) {
+                  try {
+                    const isRunning = await isContainerRunningAsync(job.project_id);
+                    if (isRunning) {
+                      const postDiag = await containerExecService.verifyProject(job.project_id);
+                      if (postDiag.includes('✗') || postDiag.includes('ERREUR')) stillBroken = true;
+                    }
+                  } catch (_) {}
+                }
+              } catch (_) {}
+
+              if (stillBroken && preModifySnapshot && Object.keys(preModifySnapshot).length > 0) {
+                console.log(`[AgentMode] Auto-fix failed to resolve issues — rolling back to snapshot`);
+                job.progressMessage = '↩ Restauration de la version précédente...';
+                rollbackToSnapshot(projDir, preModifySnapshot, job.project_id, 'Auto-fix STEP 3 failed, project still broken');
+                appendProjectRule(projDir, 'La dernière modification IA a cassé le projet et a été annulée automatiquement');
               }
             } else {
               console.log(`[AgentMode] Project ${job.project_id} verified OK`);
@@ -6993,6 +7057,71 @@ function saveProjectVersion(projectId, code, userId, message) {
     db.prepare('INSERT INTO project_versions (project_id, version_number, generated_code, created_by, message) VALUES (?,?,?,?,?)').run(projectId, versionNumber, code, userId, message || `Version ${versionNumber}`);
     return versionNumber;
   } catch(e) { console.error('Version save error:', e.message); return null; }
+}
+
+// ─── AUTOMATIC ROLLBACK SYSTEM ───
+// Save a full disk snapshot before any AI modification. If auto-fix fails,
+// restore the snapshot so the user never sees a broken project (écran blanc).
+
+// Save all project files to an in-memory snapshot. Returns the snapshot object.
+function saveProjectSnapshot(projectDir) {
+  const snapshot = {};
+  try {
+    const readDir = (dir, prefix) => {
+      if (!fs.existsSync(dir)) return;
+      for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (f.name === 'node_modules' || f.name === '.git' || f.name === 'dist' || f.name === 'data' || f.name === '.prestige') continue;
+        const fullPath = path.join(dir, f.name);
+        const relPath = prefix ? `${prefix}/${f.name}` : f.name;
+        if (f.isDirectory()) {
+          readDir(fullPath, relPath);
+        } else if (/\.(tsx|ts|jsx|js|css|json|html)$/.test(f.name) && f.name !== 'package-lock.json') {
+          try {
+            snapshot[relPath] = fs.readFileSync(fullPath, 'utf8');
+          } catch (_) {}
+        }
+      }
+    };
+    readDir(projectDir, '');
+    console.log(`[Snapshot] Saved ${Object.keys(snapshot).length} files from ${projectDir}`);
+  } catch (e) {
+    console.warn(`[Snapshot] Failed to save: ${e.message}`);
+  }
+  return snapshot;
+}
+
+// Restore a previously saved snapshot to disk. Also updates the DB.
+function rollbackToSnapshot(projectDir, snapshot, projectId, reason) {
+  if (!snapshot || Object.keys(snapshot).length === 0) {
+    console.warn(`[Rollback] No snapshot to restore for project ${projectId}`);
+    return false;
+  }
+  try {
+    let restored = 0;
+    for (const [relPath, content] of Object.entries(snapshot)) {
+      const fullPath = path.join(projectDir, relPath);
+      const dir = path.dirname(fullPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf8');
+      restored++;
+    }
+    // Also update DB with the restored code
+    if (projectId) {
+      const restoredCode = formatProjectCode(snapshot);
+      db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now') WHERE id=?")
+        .run(restoredCode, projectId);
+    }
+    console.log(`[Rollback] Restored ${restored} files for project ${projectId} — reason: ${reason}`);
+    // Track the rollback in error_history
+    try {
+      db.prepare('INSERT INTO error_history (project_id, error_type, error_message, created_at) VALUES (?,?,?,datetime(\'now\'))')
+        .run(projectId, 'ROLLBACK', `Auto-rollback: ${reason}`.substring(0, 500));
+    } catch (_) {}
+    return true;
+  } catch (e) {
+    console.error(`[Rollback] Failed to restore: ${e.message}`);
+    return false;
+  }
 }
 
 // ─── NOTIFY SSE CLIENTS — delegated to src/services/sse.js (imported above) ───
@@ -10903,9 +11032,22 @@ Plan validé par l'utilisateur :\n\n${planRow.content}`;
           );
           if (fixCode) {
             const projDir = path.join(DOCKER_PROJECTS_DIR, String(project_id));
+            // Snapshot before HMR fix write
+            const hmrSnapshot = saveProjectSnapshot(projDir);
             writeGeneratedFiles(projDir, fixCode, project_id);
-            // bind mount — no docker cp needed for src/
             console.log(`[HMR] Auto-fixed Vite errors and re-applied`);
+
+            // Re-check after fix — rollback if still broken
+            await new Promise(r => setTimeout(r, 1500));
+            const recheckLogs = await getContainerLogsAsync(project_id, 15);
+            const recheckErrors = recheckLogs.split('\n').filter(l =>
+              /Failed to resolve|SyntaxError|Cannot find module|ReferenceError/i.test(l) &&
+              !/ECONNREFUSED|health/i.test(l)
+            );
+            if (recheckErrors.length > 0) {
+              console.warn(`[HMR] Fix introduced new errors — rolling back`);
+              rollbackToSnapshot(projDir, hmrSnapshot, project_id, 'HMR auto-fix introduced new errors');
+            }
           }
         } catch (fixErr) {
           console.warn(`[HMR] Auto-fix failed: ${fixErr.message}`);
