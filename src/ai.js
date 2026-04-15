@@ -964,35 +964,71 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     context.push({ role: 'assistant', content: `Je connais votre projet. Dites-moi ce que vous souhaitez.` });
   }
 
-  // Last 4 chat messages — NORMALIZED for Anthropic API requirements:
-  //   1. Only 'user' and 'assistant' roles are accepted ('plan', 'system', etc. are dropped)
-  //   2. Consecutive same-role messages MUST be merged (API rejects user→user or assistant→assistant)
-  //   3. Empty content is rejected
-  // Without this normalization, approving a plan (which inserts 'plan' + 'user' markers
-  // in history) produces an invalid message sequence → Anthropic 400 Bad Request.
+  // ── INTELLIGENT CONVERSATION HISTORY (enterprise token-aware) ──
+  // Normalized for Anthropic API: user/assistant only, no consecutive same-role, no empty.
+  // Token budget: ~4000 tokens max for history (~16K chars). Prioritizes recent + long messages.
   if (messages && messages.length > 0) {
+    const MAX_HISTORY_CHARS = 16000; // ~4000 tokens
+    const MAX_MESSAGE_CHARS = 3000;  // Per-message cap (~750 tokens) — enough for detailed requests
+    const MAX_MESSAGES = 6;
+
     const validMessages = messages
       .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
       .filter(m => m.content && typeof m.content === 'string' && !m.content.startsWith('### '))
       .filter(m => m.content.trim().length > 0);
 
-    // Take more than 4 — we may collapse after merging consecutive same-role
-    const candidates = validMessages.slice(-8);
+    // Take last N, prioritizing recent messages
+    const candidates = validMessages.slice(-10);
 
-    // Merge consecutive same-role messages (preserves content, ensures strict alternation)
+    // Merge consecutive same-role messages
     const merged = [];
     for (const m of candidates) {
       const last = merged[merged.length - 1];
-      const truncated = m.content.substring(0, 1000);
       if (last && last.role === m.role) {
-        last.content = last.content + '\n\n' + truncated;
+        last.content = last.content + '\n\n' + m.content;
       } else {
-        merged.push({ role: m.role, content: truncated });
+        merged.push({ role: m.role, content: m.content });
       }
     }
 
-    // Keep only the last 4 after merging, and push to context
-    for (const m of merged.slice(-4)) {
+    // ── DEFENSIVE VALIDATION (prevents Anthropic 400 errors) ──
+    // 1. Must start with 'user'
+    if (merged.length > 0 && merged[0].role !== 'user') {
+      merged.unshift({ role: 'user', content: 'Continue.' });
+    }
+    // 2. Remove any remaining consecutive same-role (shouldn't happen, but defensive)
+    for (let i = merged.length - 1; i > 0; i--) {
+      if (merged[i].role === merged[i - 1].role) {
+        merged[i - 1].content += '\n\n' + merged[i].content;
+        merged.splice(i, 1);
+      }
+    }
+
+    // ── SMART TRIMMING: budget-aware, preserves recent messages fully ──
+    // Keep last MAX_MESSAGES. Trim older messages more aggressively than recent.
+    const selected = merged.slice(-MAX_MESSAGES);
+    let totalChars = 0;
+    for (let i = selected.length - 1; i >= 0; i--) {
+      const isRecent = i >= selected.length - 2; // Last 2 messages get full content
+      const maxChars = isRecent ? MAX_MESSAGE_CHARS : Math.min(MAX_MESSAGE_CHARS, 800);
+      if (selected[i].content.length > maxChars) {
+        // Trim from the BEGINNING (keep the end which has the most recent context)
+        selected[i].content = '...\n' + selected[i].content.slice(-maxChars);
+      }
+      totalChars += selected[i].content.length;
+    }
+    // If total still exceeds budget, remove oldest messages
+    while (totalChars > MAX_HISTORY_CHARS && selected.length > 2) {
+      totalChars -= selected[0].content.length;
+      selected.shift();
+      // Re-validate: must start with user
+      if (selected.length > 0 && selected[0].role !== 'user') {
+        selected.unshift({ role: 'user', content: 'Continue.' });
+        totalChars += 10;
+      }
+    }
+
+    for (const m of selected) {
       context.push(m);
     }
   }
