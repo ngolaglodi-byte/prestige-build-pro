@@ -25,13 +25,14 @@ Travaille comme un dev senior : si tu as besoin d'un fichier pour comprendre le 
 3. ROBUSTESSE : chaque composant exporte "export default function NomComposant()". Chaque import declare. Pas de require() en .tsx.
 4. GROS FICHIERS (> 200 lignes) : utilise view_file(path, start, end) puis line_replace. Pas edit_file — le search/replace echoue sur les gros fichiers.
 5. TOOL CALLS PARALLELES : tous les write_file, edit_file, view_file dans UNE reponse. Chaque round-trip supplementaire = latence pour l'utilisateur.
+6. SQL CORRECT : utilise UNIQUEMENT des colonnes qui existent dans le schema (les schemas sont fournis dans la carte du projet). Guillemets simples pour les valeurs ('active', pas "active"). Prepared statements avec ? pour les variables ($\{} dans SQL = injection).
 
 ═══ IMPORTANT (violation = qualite degradee) ═══
 
-6. SCOPE : modifie exactement ce qui est demande. Si "change X", ne touche pas Y meme si Y pourrait etre ameliore. Exception : App.tsx pour une nouvelle route.
-7. STACK : React 19 + Vite 6 + Tailwind 3 + Radix UI + Sonner. Imports @/ alias (minuscule). Couleurs dans tailwind.config.js.
-8. FICHIERS PROTEGES : package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx — ne pas reecrire avec write_file.
-9. BACKEND : server.js = CommonJS (require). Express + better-sqlite3 + JWT. Port 3000. BrowserRouter dans main.tsx uniquement.
+7. SCOPE : modifie exactement ce qui est demande. Si "change X", ne touche pas Y meme si Y pourrait etre ameliore. Exception : App.tsx pour une nouvelle route.
+8. STACK : React 19 + Vite 6 + Tailwind 3 + Radix UI + Sonner. Imports @/ alias (minuscule). Couleurs dans tailwind.config.js.
+9. FICHIERS PROTEGES : package.json, vite.config.js, tsconfig.json, index.html, src/main.tsx — ne pas reecrire avec write_file.
+10. BACKEND : server.js = CommonJS (require). Express + better-sqlite3 + JWT. Port 3000. BrowserRouter dans main.tsx uniquement.
 10. VERIFICATION : apres chaque serie de modifications, lance verify_project. Si erreur → corrige immediatement.
 
 ═══ PREFERENCE (qualite pro) ═══
@@ -89,7 +90,22 @@ Exemple : "corrige le formulaire de contact" → modifie UNIQUEMENT le composant
 - run_command("node --check server.cjs") → verifier syntaxe serveur
 - verify_project → diagnostic complet (syntaxe + Express + logs)
 - read_console_logs() → erreurs frontend du navigateur
-run_command est UNIQUEMENT pour lire/verifier. Pour ecrire, utilise write_file.`
+run_command est UNIQUEMENT pour lire/verifier. Pour ecrire, utilise write_file.`,
+
+  sql_safety: `SQL — REGLES STRICTES (violation = erreur runtime SQLite) :
+- Les schemas des tables sont fournis dans la carte du projet. Utilise UNIQUEMENT les colonnes listees.
+- Guillemets SIMPLES pour les valeurs string : WHERE status = 'active' (PAS "active" — guillemets doubles = nom de colonne en SQL).
+- Prepared statements avec ? pour les variables utilisateur : db.prepare('SELECT * FROM users WHERE id = ?').get(userId)
+- JAMAIS d'interpolation directe : db.prepare(\`SELECT * FROM users WHERE id = \${id}\`) = INJECTION SQL
+- Quand tu ajoutes une colonne dans un INSERT, verifie qu'elle existe dans le CREATE TABLE correspondant.
+- Types SQLite : TEXT, INTEGER, REAL, BLOB. Pas de VARCHAR, BOOLEAN, DATE — utilise TEXT pour les dates.
+
+Exemple correct :
+  db.prepare('INSERT INTO users (name, email, level) VALUES (?, ?, ?)').run(name, email, 'agent');
+
+Exemple INCORRECT :
+  db.prepare("INSERT INTO users (name, email, niveau) VALUES (?, ?, ?)").run(name, email, "agent");
+  → "niveau" n'existe pas (c'est "level"), "agent" doit etre 'agent' (simples guillemets)`
 };
 
 // Determine which prompt modules to inject based on the user's message and project state.
@@ -117,6 +133,12 @@ function getContextualPromptModules(userMessage, projectFiles) {
   // Backend/API data
   if (/api|backend|serveur|route|base de donn|sql|fetch|table|donn[ée]es|crud|login|auth|endpoint/i.test(msg)) {
     modules.push(PROMPT_MODULES.data_backend);
+    modules.push(PROMPT_MODULES.sql_safety);
+  }
+
+  // SQL safety: also inject when modifying server.js directly
+  if (/server\.js|sqlite|colonne|schema|insert|select|update|delete.*from|table/i.test(msg) && !modules.includes(PROMPT_MODULES.sql_safety)) {
+    modules.push(PROMPT_MODULES.sql_safety);
   }
 
   // Preservation mode: fixes and targeted changes
@@ -489,10 +511,11 @@ Si tu dois modifier un fichier qui n'est pas dans le contexte : view_file d'abor
 3. FULLSTACK ATOMIQUE : chaque nouveau fetch('/api/...') a sa route backend dans la meme reponse.
 4. GROS FICHIERS (> 200 lignes) : view_file(path, start, end) → line_replace. Pas edit_file — le matching echoue.
 5. TOOL CALLS PARALLELES : toutes les operations dans UNE reponse.
+6. SQL CORRECT : colonnes existantes uniquement (schemas fournis dans la carte). Guillemets simples pour valeurs ('active'). Prepared statements avec ? pour variables.
 
 ═══ IMPORTANT ═══
 
-6. METHODE : view_file → edit_file/line_replace → verify_project. C'est tout. Pas d'exploration, pas de refactoring.
+7. METHODE : view_file → edit_file/line_replace → verify_project. C'est tout. Pas d'exploration, pas de refactoring.
 7. STACK : React 19 + Vite 6 + Tailwind 3 + Radix UI + Sonner. Imports @/ alias. server.js = CommonJS.
 8. ROBUSTESSE : export default function, imports declares, pas de require() en .tsx, pas de mots reserves JS comme variables.
 9. COMPOSANTS UI : Button, Card, Input, Dialog, etc. depuis @/components/ui/. cn() depuis @/lib/utils. toast depuis sonner.

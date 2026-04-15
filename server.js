@@ -1015,6 +1015,106 @@ function autoFixMechanicalErrors(projectDir, files) {
     console.warn(`[AutoFix] min-h-screen check failed: ${e.message}`);
   }
 
+  // ── SQL LINT: Fix common SQL errors in server.js ──
+  // Deterministic fixes that prevent runtime SQLite errors:
+  // 1. Double quotes around string values → single quotes ("active" → 'active')
+  // 2. Column references that don't exist in the table schema
+  // 3. Missing quotes around string literals in WHERE/INSERT/UPDATE
+  try {
+    const serverJsPath = path.join(projectDir, 'server.js');
+    if (fs.existsSync(serverJsPath)) {
+      let serverContent = fs.readFileSync(serverJsPath, 'utf8');
+      let serverFixed = serverContent;
+
+      // Extract known table schemas: { tableName: [col1, col2, ...] }
+      const tableSchemas = {};
+      const createRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s*\(([^)]+)\)/gi;
+      let schemaMatch;
+      while ((schemaMatch = createRegex.exec(serverContent)) !== null) {
+        const tableName = schemaMatch[1];
+        const cols = schemaMatch[2].split(',')
+          .map(c => c.trim().split(/\s+/)[0])
+          .filter(c => c && !c.match(/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT|INDEX)$/i));
+        tableSchemas[tableName] = cols;
+      }
+
+      // Fix 1: Double-quoted string values in SQL → single quotes
+      // Pattern: WHERE column = "value" or SET column = "value" or VALUES("value")
+      // But NOT: JavaScript template literals or JSON strings
+      // Only fix inside db.prepare(), db.exec(), .run(), .get(), .all() contexts
+      const sqlContextRegex = /(db\.\w+\s*\(\s*['"`])([^'"`]*?)(['"`]\s*\))/g;
+      // Simpler approach: fix "value" inside SQL string literals specifically
+      // WHERE status = "active" → WHERE status = 'active'
+      // INSERT INTO ... VALUES ("text") → VALUES ('text')
+      serverFixed = serverFixed.replace(
+        /((?:WHERE|SET|VALUES\s*\(|DEFAULT)\s+(?:\w+\s*=\s*)?)"([^"]{1,50})"/gi,
+        (match, prefix, value) => {
+          // Don't fix if it looks like a JS variable or expression
+          if (value.includes('${') || value.includes('?') || value.match(/^\d+$/)) return match;
+          console.log(`[SQLLint] Fixed double-quoted SQL value: "${value}" → '${value}'`);
+          totalFixes++;
+          return `${prefix}'${value}'`;
+        }
+      );
+
+      // Fix 2: Detect columns used in queries that don't exist in the schema
+      // Generate warnings (logged + appended to rules.md), not auto-fixed
+      for (const [tableName, columns] of Object.entries(tableSchemas)) {
+        // Find SELECT/INSERT/UPDATE referencing this table
+        const selectRegex = new RegExp(`SELECT\\s+([\\w,\\s.*]+?)\\s+FROM\\s+${tableName}\\b`, 'gi');
+        let selMatch;
+        while ((selMatch = selectRegex.exec(serverContent)) !== null) {
+          if (selMatch[1].trim() === '*') continue; // SELECT * is always valid
+          const selectedCols = selMatch[1].split(',').map(c => c.trim().split(/\s+/)[0]).filter(c => c && c !== '*');
+          for (const col of selectedCols) {
+            if (col && !columns.includes(col) && !col.includes('(') && !col.includes('.') && col !== 'DISTINCT') {
+              console.log(`[SQLLint] Warning: SELECT references column "${col}" not in ${tableName}(${columns.join(',')})`);
+              appendProjectRule(projectDir, `Table ${tableName} n'a PAS de colonne "${col}" — colonnes existantes : ${columns.join(', ')}`);
+            }
+          }
+        }
+
+        // Check WHERE clauses for non-existent columns
+        const whereRegex = new RegExp(`(?:FROM|UPDATE|INTO)\\s+${tableName}\\b[\\s\\S]{0,500}?WHERE\\s+([\\w.]+)\\s*[=<>!]`, 'gi');
+        let whereMatch;
+        while ((whereMatch = whereRegex.exec(serverContent)) !== null) {
+          const whereCol = whereMatch[1].split('.').pop();
+          if (whereCol && !columns.includes(whereCol) && whereCol !== 'rowid') {
+            console.log(`[SQLLint] Warning: WHERE references column "${whereCol}" not in ${tableName}(${columns.join(',')})`);
+            appendProjectRule(projectDir, `Table ${tableName} n'a PAS de colonne "${whereCol}" dans WHERE — colonnes existantes : ${columns.join(', ')}`);
+          }
+        }
+      }
+
+      // Fix 3: Ensure consistent quote style in SQL INSERT VALUES
+      // VALUES("text", "text2") → VALUES('text', 'text2')
+      serverFixed = serverFixed.replace(
+        /VALUES\s*\(([^)]*)\)/gi,
+        (match, values) => {
+          if (!values.includes('"')) return match;
+          // Replace double quotes with single quotes for string values
+          const fixed = values.replace(/"([^"]{1,100})"/g, (m, v) => {
+            if (v.includes('${') || v === '?' || v.match(/^\d+$/)) return m;
+            return `'${v}'`;
+          });
+          if (fixed !== values) {
+            console.log(`[SQLLint] Fixed VALUES double quotes`);
+            totalFixes++;
+            return `VALUES(${fixed})`;
+          }
+          return match;
+        }
+      );
+
+      if (serverFixed !== serverContent) {
+        fs.writeFileSync(serverJsPath, serverFixed, 'utf8');
+        console.log(`[SQLLint] ✅ Fixed SQL issues in server.js`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[SQLLint] Failed: ${e.message}`);
+  }
+
   // ── Fix missing shadcn CSS variables ──
   // If the project uses shadcn (has src/components/ui/) but index.css is missing
   // the required CSS custom properties, inject the standard shadcn/ui theme.
