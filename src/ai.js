@@ -994,14 +994,20 @@ function buildConversationContext(project, messages, userMessage, configuredKeys
     // ── DEFENSIVE VALIDATION (prevents Anthropic 400 errors) ──
     // 1. Must start with 'user'
     if (merged.length > 0 && merged[0].role !== 'user') {
+      console.log(`[MessageValidation] Prepending 'user' message — history started with '${merged[0].role}'`);
       merged.unshift({ role: 'user', content: 'Continue.' });
     }
     // 2. Remove any remaining consecutive same-role (shouldn't happen, but defensive)
+    let consecutiveMerges = 0;
     for (let i = merged.length - 1; i > 0; i--) {
       if (merged[i].role === merged[i - 1].role) {
         merged[i - 1].content += '\n\n' + merged[i].content;
         merged.splice(i, 1);
+        consecutiveMerges++;
       }
+    }
+    if (consecutiveMerges > 0) {
+      console.log(`[MessageValidation] Merged ${consecutiveMerges} consecutive same-role message(s)`);
     }
 
     // ── SMART TRIMMING: budget-aware, preserves recent messages fully ──
