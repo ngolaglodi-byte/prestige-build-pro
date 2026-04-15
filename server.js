@@ -10914,6 +10914,19 @@ const server = http.createServer(async (req, res) => {
       json(res, 400, { error: 'Message requis (min 3 caractères).' }); return;
     }
 
+    // ── REQUEST DEDUP: prevent double-click / network stutter duplicates ──
+    if (!global._recentGenerations) global._recentGenerations = new Map();
+    const dedupeKey = `${project_id || 'new'}:${crypto.createHash('sha256').update(message.trim()).digest('hex').substring(0, 16)}`;
+    const existingJobId = global._recentGenerations.get(dedupeKey);
+    if (existingJobId) {
+      const existingJob = generationJobs.get(existingJobId);
+      if (existingJob && (existingJob.status === 'pending' || existingJob.status === 'running')) {
+        console.log(`[Dedup] Duplicate request detected — returning existing job ${existingJobId}`);
+        json(res, 200, { job_id: existingJobId, status: existingJob.status, deduplicated: true });
+        return;
+      }
+    }
+
     // ─── CLARIFICATION PROTOCOL ───
     // Brief too vague + new project → ask 3 questions before consuming a full generation.
     // Power users can bypass with skip_clarification=true. Existing projects (modifications)
@@ -10957,6 +10970,10 @@ const server = http.createServer(async (req, res) => {
     log('info', 'intent', 'classified', { intent: intentResult.intent, confidence: intentResult.confidence, source: intentResult.source });
 
     const jobId = crypto.randomUUID();
+
+    // Store in dedup map (expires after 10s)
+    global._recentGenerations.set(dedupeKey, jobId);
+    setTimeout(() => global._recentGenerations.delete(dedupeKey), 10000);
 
     // Initialize job in Map (with AbortController for user-initiated stop)
     generationJobs.set(jobId, {
