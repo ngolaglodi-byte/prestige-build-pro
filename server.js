@@ -6447,15 +6447,25 @@ Règles d'intégration automatique :
     let currentToolName = null;
     let currentToolJson = '';
 
-    // Streaming timeout: if no data for 3 minutes, abort (prevents infinite hangs)
+    // Granular streaming timeout:
+    // - 30s for first chunk (fast fail if API unresponsive)
+    // - 60s between subsequent chunks
+    // - 180s overall maximum
     let streamTimeout = null;
+    let streamChunkCount = 0;
+    const streamStartTime = Date.now();
+    const abortStream = (reason) => {
+      console.error(`[Stream] Timeout — ${reason}, aborting job ${jobId}`);
+      if (job.abortController) job.abortController.abort();
+      else { apiRes.destroy(); job.status = 'error'; job.error = `Timeout: ${reason}`; }
+    };
+    let overallTimeout = setTimeout(() => abortStream('overall 180s limit reached'), 180000);
     const resetStreamTimeout = () => {
       if (streamTimeout) clearTimeout(streamTimeout);
-      streamTimeout = setTimeout(() => {
-        console.error(`[Stream] Timeout — no data for 3 minutes, aborting job ${jobId}`);
-        if (job.abortController) job.abortController.abort();
-        else { apiRes.destroy(); job.status = 'error'; job.error = 'Timeout: pas de réponse du service IA depuis 3 minutes.'; }
-      }, 180000);
+      const delay = streamChunkCount === 0 ? 30000 : 60000;
+      const label = streamChunkCount === 0 ? 'no first chunk in 30s' : 'no data for 60s between chunks';
+      streamTimeout = setTimeout(() => abortStream(label), delay);
+      streamChunkCount++;
     };
     resetStreamTimeout();
 
@@ -6713,7 +6723,8 @@ Règles d'intégration automatique :
       job.status = 'error'; job.error = e.message;
     });
     apiRes.on('end', async () => {
-      if (streamTimeout) clearTimeout(streamTimeout); // clean up timeout
+      if (streamTimeout) clearTimeout(streamTimeout); // clean up chunk timeout
+      if (overallTimeout) clearTimeout(overallTimeout); // clean up overall timeout
       // If tool_use blocks were received, process them into code
       if (toolBlocks.length > 0) {
         console.log(`[Stream] Processing ${toolBlocks.length} tool calls`);
