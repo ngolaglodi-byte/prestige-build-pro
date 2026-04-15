@@ -12677,8 +12677,8 @@ export default defineConfig({
           Image: readyImage,
           name: containerName,
           Env: envVars,
-          // PRODUCTION: only Express (serves dist/ + API), NO Vite
-          Cmd: ['sh', '-c', 'cp server.js server.cjs 2>/dev/null; node server.cjs'],
+          // PRODUCTION: build dist/ if missing, then Express (serves dist/ + API)
+          Cmd: ['sh', '-c', 'cp server.js server.cjs 2>/dev/null; if [ ! -f dist/index.html ]; then echo "[PROD] dist/ missing, running vite build..."; NODE_OPTIONS="--max-old-space-size=384" ./node_modules/.bin/vite build 2>&1; echo "[PROD] Build done"; fi; node server.cjs'],
           HostConfig: {
             NetworkMode: DOCKER_NETWORK,
             RestartPolicy: { Name: 'always' }, // always restart in production
@@ -12689,21 +12689,20 @@ export default defineConfig({
               `${projectDir}/index.html:/app/index.html`,
               `${localDist}:/app/dist`
             ],
-            Memory: ramMb * 1024 * 1024,
+            Memory: 512 * 1024 * 1024, // Start with 512MB for vite build
             NanoCpus: cpuPercent * 10000000, // 25% → 250000000
             SecurityOpt: ['no-new-privileges']
           }
         });
         await prodContainer.start();
-        console.log(`[Publish] Production container started for project ${id} (${ramMb}MB, ${cpuPercent}% CPU)`);
+        console.log(`[Publish] Production container started for project ${id} (512MB build mode)`);
 
-        // Wait for container health before adding to Caddy
-        for (let attempt = 0; attempt < 10; attempt++) {
-          await new Promise(r => setTimeout(r, 1500));
+        // Wait for container health (vite build + express start can take up to 2 min)
+        for (let attempt = 0; attempt < 40; attempt++) {
+          await new Promise(r => setTimeout(r, 3000));
           try {
             const info = await docker.getContainer(containerName).inspect();
             if (info.State.Running) {
-              // Check Express is responding
               const healthOk = await new Promise((resolve) => {
                 const hReq = http.request({ hostname: containerName, port: 3000, path: '/health', method: 'GET', timeout: 3000 }, (hRes) => {
                   resolve(hRes.statusCode === 200);
@@ -12714,14 +12713,22 @@ export default defineConfig({
               });
               if (healthOk) {
                 prodContainerHealthy = true;
-                console.log(`[Publish] Container ${containerName} healthy after ${(attempt + 1) * 1.5}s`);
+                console.log(`[Publish] Container ${containerName} healthy after ${(attempt + 1) * 3}s`);
                 break;
               }
             }
           } catch {}
         }
+
+        // Reduce memory to admin-configured limit after build is done
+        try {
+          const container = docker.getContainer(containerName);
+          await container.update({ Memory: ramMb * 1024 * 1024, MemorySwap: ramMb * 1024 * 1024 });
+          console.log(`[Publish] RAM reduced to ${ramMb}MB (production mode)`);
+        } catch {}
+
         if (!prodContainerHealthy) {
-          console.warn(`[Publish] Container ${containerName} not healthy after 15s — adding to Caddy anyway`);
+          console.warn(`[Publish] Container ${containerName} not healthy after 120s — adding to Caddy anyway`);
         }
       } catch (prodErr) {
         console.warn(`[Publish] Production container failed: ${prodErr.message} — site still serves static files via server.js fallback`);
