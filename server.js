@@ -3052,8 +3052,14 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                       const input = { ...tc.input };
                       if (projDir) input._projectDir = projDir;
                       if (trackingInfo?.projectId) input.project_id = input.project_id || trackingInfo.projectId;
-                      const result = await executeServerTool(tc.name, input);
-                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || 'OK' });
+                      let result;
+                      try {
+                        result = await executeServerTool(tc.name, input);
+                      } catch (toolErr) {
+                        result = `✗ ${tc.name} a échoué : ${toolErr.message}`;
+                        console.error(`[ServerTool] ${tc.name} threw: ${toolErr.message}`);
+                      }
+                      toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result || `✗ ${tc.name} n'a retourné aucun résultat` });
                       console.log(`[ServerTool] ${tc.name}: ${(result || '').substring(0, 100)}`);
                     }
                   }
