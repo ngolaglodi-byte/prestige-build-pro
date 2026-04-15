@@ -105,8 +105,48 @@ Exemple correct :
 
 Exemple INCORRECT :
   db.prepare("INSERT INTO users (name, email, niveau) VALUES (?, ?, ?)").run(name, email, "agent");
-  → "niveau" n'existe pas (c'est "level"), "agent" doit etre 'agent' (simples guillemets)`
+  → "niveau" n'existe pas (c'est "level"), "agent" doit etre 'agent' (simples guillemets)`,
+
+  // ── REQUEST-TYPE MODULES (injected based on detected intent) ──
+  add_feature: `AJOUT DE FONCTIONNALITE — regles :
+- Cree les NOUVEAUX fichiers necessaires (composants, pages, routes API).
+- Ajoute la route dans App.tsx (view_file d'abord pour voir les routes existantes).
+- Si la feature a des donnees : cree la table SQL + route GET + donnees demo.
+- N'oublie pas les imports dans les fichiers existants qui referent le nouveau composant.
+- Verifie que le nom du composant n'entre pas en conflit avec un existant.`,
+
+  modify_existing: `MODIFICATION DE L'EXISTANT — regles :
+- view_file OBLIGATOIRE avant toute modification. Ne devine jamais le contenu actuel.
+- Utilise edit_file (search/replace) pour les petites modifications. write_file seulement si > 50% du fichier change.
+- Pour les gros fichiers (> 200 lignes), utilise view_file(path, start, end) + line_replace.
+- Preserve le style, les couleurs, le layout des parties non modifiees.
+- Un seul objectif par modification : ne pas "ameliorer" ce qui n'est pas demande.`,
+
+  bugfix: `CORRECTION DE BUG — regles :
+- DIAGNOSTIC D'ABORD : view_file + read_console_logs + verify_project AVANT de modifier quoi que ce soit.
+- Identifie la CAUSE RACINE, pas juste le symptome. Un import manquant peut venir d'un rename en amont.
+- Modification MINIMALE : touche uniquement le code casse. Pas de refactoring opportuniste.
+- Apres correction : lance verify_project pour confirmer que le bug est resolu.
+- Si ecran blanc : verifie 1) les imports 2) export default 3) les routes dans App.tsx 4) les routes API dans server.js.`
 };
+
+// Detect the type of request: 'add_feature', 'modify_existing', 'bugfix', or null
+function detectRequestType(userMessage) {
+  const msg = (userMessage || '').toLowerCase();
+  // Bugfix patterns (highest priority — user is frustrated)
+  if (/corrige|fix|bug|erreur|crash|ecran blanc|marche pas|fonctionne pas|cass[ée]|broken|404|500|ne s.affiche pas|ne charge pas/i.test(msg)) {
+    return 'bugfix';
+  }
+  // Add feature patterns
+  if (/ajoute|cree|genere|nouvelle? page|nouveau composant|add|create|implement|build|construis|mets en place/i.test(msg)) {
+    return 'add_feature';
+  }
+  // Modify existing patterns
+  if (/modifie|change|remplace|met[s]? [àa] jour|update|deplace|rename|refactor|ameliore|optimise|reorganise|redesign/i.test(msg)) {
+    return 'modify_existing';
+  }
+  return null;
+}
 
 // Determine which prompt modules to inject based on the user's message and project state.
 function getContextualPromptModules(userMessage, projectFiles) {
@@ -149,6 +189,12 @@ function getContextualPromptModules(userMessage, projectFiles) {
   // Agent tools: debugging, errors, inspection
   if (/erreur|bug|marche pas|fonctionne pas|charg|ecran blanc|console|log|debug|verifi/i.test(msg)) {
     modules.push(PROMPT_MODULES.agent_tools);
+  }
+
+  // Request-type specific module (add_feature, modify_existing, bugfix)
+  const requestType = detectRequestType(userMessage);
+  if (requestType && PROMPT_MODULES[requestType]) {
+    modules.push(PROMPT_MODULES[requestType]);
   }
 
   return modules;
@@ -2055,6 +2101,7 @@ module.exports = {
   AUDIT_SYSTEM_PROMPT,
   PROMPT_MODULES,
   getContextualPromptModules,
+  detectRequestType,
   buildPlanContext,
   SECTOR_PROFILES,
   detectSectorProfile,
