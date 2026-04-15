@@ -2734,6 +2734,25 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
     }
     const payload = JSON.stringify(apiPayload);
 
+    // ── PRE-FLIGHT TOKEN BUDGET CHECK ──
+    // Estimate input tokens before sending. Warn if approaching user quota.
+    // Rough estimate: 1 token ≈ 4 chars (Claude tokenizer average).
+    if (trackingInfo?.userId && (opts._depth || 0) === 0) {
+      const estimatedInputTokens = Math.ceil(payload.length / 4);
+      const estimatedTotalTokens = estimatedInputTokens + maxTokens;
+      try {
+        const quota = checkUserQuota(trackingInfo.userId);
+        if (quota && !quota.allowed) {
+          reject(new Error(`Quota atteint : ${quota.reason}`));
+          return;
+        }
+        // Warn in logs if > 80% of daily quota used
+        if (quota && quota.daily && quota.dailyLimit && quota.daily > quota.dailyLimit * 0.8) {
+          console.warn(`[Budget] User ${trackingInfo.userId}: ${quota.daily}/${quota.dailyLimit} daily (${Math.round(quota.daily/quota.dailyLimit*100)}%) — approaching limit`);
+        }
+      } catch (_) { /* quota check is non-blocking */ }
+    }
+
     // ── Job abort signal propagation ──
     let abortSignal = opts.signal || null;
     const linkedJobId = opts.jobId || trackingInfo?.jobId;
