@@ -10891,6 +10891,46 @@ const server = http.createServer(async (req, res) => {
       } catch(e) {
         console.error('Preview save error:', e.message);
       }
+      // ── AUTO-LEARN: Extract style preferences from user message and save to project_memory ──
+      // Like a dev who remembers "client doesn't like blue" across sessions.
+      if (job.message && job.project_id) {
+        try {
+          const msg = job.message.toLowerCase();
+          const prefs = [];
+          // Detect color preferences
+          if (/pas de (bleu|rouge|vert|jaune|violet|rose|orange|noir|blanc)/i.test(job.message)) {
+            const color = job.message.match(/pas de (\w+)/i)?.[1];
+            if (color) prefs.push(`Client n'aime pas le ${color}`);
+          }
+          // Detect style preferences
+          if (/professionnel|sobre|minimaliste|élégant|luxe|moderne|classique|fun|coloré|sombre|clair/i.test(msg)) {
+            const style = msg.match(/(professionnel|sobre|minimaliste|élégant|luxe|moderne|classique|fun|coloré|sombre|clair)/i)?.[1];
+            if (style) prefs.push(`Style demandé : ${style}`);
+          }
+          // Detect explicit rules
+          if (/toujours|jamais|interdis|obligatoire|important/i.test(msg)) {
+            const rule = job.message.match(/(toujours|jamais|interdis|obligatoire|important)[^.!?]{3,60}/i)?.[0];
+            if (rule) prefs.push(rule.trim());
+          }
+          // Save to project_memory (deduped)
+          if (prefs.length > 0) {
+            const existing = db.prepare('SELECT content FROM project_memory WHERE project_id=?').get(job.project_id);
+            let memory = existing?.content || '';
+            for (const pref of prefs) {
+              if (!memory.includes(pref)) {
+                memory += (memory ? '\n' : '') + '- ' + pref;
+              }
+            }
+            if (existing) {
+              db.prepare('UPDATE project_memory SET content=?, updated_at=datetime(\'now\') WHERE project_id=?').run(memory, job.project_id);
+            } else {
+              db.prepare('INSERT OR REPLACE INTO project_memory (project_id, content, updated_at) VALUES (?, ?, datetime(\'now\'))').run(job.project_id, memory);
+            }
+            console.log(`[AutoLearn] Saved ${prefs.length} preference(s) for project ${job.project_id}: ${prefs.join(', ')}`);
+          }
+        } catch (e) { /* auto-learn is non-blocking */ }
+      }
+
       // Extract admin credentials from generated code
       const creds = extractCredentials(fullCode);
       if (creds) {
