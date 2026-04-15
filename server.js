@@ -664,23 +664,16 @@ async function reloadCaddy(caddyfileContent) {
     console.warn(`[Caddy] Admin API reload failed: ${apiErr.message} — trying docker exec...`);
   }
 
-  // Method 2: docker exec caddy reload
+  // Method 2: docker restart (most reliable — reload can silently fail)
   try {
     const container = docker.getContainer(CADDY_CONTAINER_NAME);
-    const exec = await container.exec({
-      Cmd: ['caddy', 'reload', '--config', '/etc/caddy/Caddyfile'],
-      AttachStdout: true, AttachStderr: true
-    });
-    const stream = await exec.start({ hijack: true, stdin: false });
-    await new Promise((resolve) => {
-      stream.on('end', resolve);
-      stream.on('error', resolve);
-      setTimeout(resolve, 5000);
-    });
-    console.log('[Caddy] Config reloaded via docker exec');
+    await container.restart({ t: 5 }); // 5s graceful stop
+    // Wait for Caddy to be ready
+    await new Promise(r => setTimeout(r, 3000));
+    console.log('[Caddy] Config applied via container restart');
     return true;
   } catch (dockerErr) {
-    console.error(`[Caddy] Docker exec reload also failed: ${dockerErr.message}`);
+    console.error(`[Caddy] Container restart also failed: ${dockerErr.message}`);
     return false;
   }
 }
