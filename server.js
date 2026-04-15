@@ -11252,16 +11252,26 @@ const server = http.createServer(async (req, res) => {
 
     if (isQuestion) {
       // Discussion mode: lightweight chat, no code generation, no tools
-      // Responds fast, doesn't consume generation quota
-      console.log(`[Chat] Discussion mode for: "${message.substring(0, 60)}..."`);
+      // Discussion mode: Claude answers technical questions like a senior tech lead.
+      // Uses DISCUSS_SYSTEM_PROMPT (not CHAT). Has read-only tools to check the real code.
+      console.log(`[Discuss] Technical question: "${message.substring(0, 60)}..."`);
       const job = generationJobs.get(jobId);
       try {
-        const chatSystemBlocks = [{ type: 'text', text: ai ? ai.CHAT_SYSTEM_PROMPT : 'Réponds en français.' }];
-        const chatReply = await callClaudeAPI(chatSystemBlocks, messages, 2000, { userId: user.id, projectId: project_id, operation: 'chat' });
-        job.code = ''; // no code for discussion
+        const discussPrompt = ai && ai.DISCUSS_SYSTEM_PROMPT ? ai.DISCUSS_SYSTEM_PROMPT : 'Réponds en français comme un expert technique.';
+        const discussSystemBlocks = [{ type: 'text', text: discussPrompt }];
+        // 4K tokens + read-only tools so Claude can check the code before answering
+        const chatReply = await callClaudeAPI(discussSystemBlocks, messages, 4000,
+          { userId: user.id, projectId: project_id, operation: 'discuss' },
+          { useTools: true, _partnerReadOnly: true });
+        job.code = '';
         job.chat_message = chatReply;
         job.status = 'done';
         job.progressMessage = 'Réponse prête';
+        if (project_id) {
+          const replyText = typeof chatReply === 'string' ? chatReply : JSON.stringify(chatReply);
+          db.prepare('INSERT INTO project_messages (project_id,role,content) VALUES (?,?,?)')
+            .run(project_id, 'assistant', replyText.substring(0, 5000));
+        }
       } catch (e) {
         job.status = 'error';
         job.error = e.message;
