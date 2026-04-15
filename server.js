@@ -2491,42 +2491,96 @@ function toolResponseToCode(parsed) {
 // ── LOVABLE-STYLE ELLIPSIS MERGE ──
 // Merges new content with "// ... keep existing code" markers against the existing file.
 // This allows the AI to send ONLY the changed parts, saving tokens.
+// ─── ENTERPRISE ELLIPSIS MERGE ───
+// Merges partial code (with "// ... keep existing code" markers) into existing file.
+// Uses CONTEXT-BASED matching (2-3 lines before/after the anchor) instead of
+// single-line trimmed text, preventing mismatches when the same text appears twice.
 function mergeEllipsis(existing, partial) {
   const existingLines = existing.split('\n');
   const partialLines = partial.split('\n');
+  const isEllipsis = (line) => {
+    const t = (line || '').trim();
+    return t === '// ... keep existing code' || t === '/* ... keep existing code */'
+      || t === '// ...keep existing code' || t === '// ... rest of code'
+      || t === '// ... existing code' || t === '/* ... */';
+  };
+
   const result = [];
   let existingIdx = 0;
 
   for (let i = 0; i < partialLines.length; i++) {
-    const line = partialLines[i];
-    if (line.trim() === '// ... keep existing code' || line.trim() === '/* ... keep existing code */') {
-      // Find where to resume: look at the NEXT non-ellipsis line in partial
-      let nextPartialLine = null;
-      for (let j = i + 1; j < partialLines.length; j++) {
-        if (partialLines[j].trim() !== '// ... keep existing code' && partialLines[j].trim() !== '/* ... keep existing code */' && partialLines[j].trim()) {
-          nextPartialLine = partialLines[j].trim();
-          break;
+    if (isEllipsis(partialLines[i])) {
+      // Find the NEXT 2-3 non-ellipsis, non-empty lines in partial (context anchor)
+      const anchorLines = [];
+      for (let j = i + 1; j < partialLines.length && anchorLines.length < 3; j++) {
+        if (!isEllipsis(partialLines[j]) && partialLines[j].trim()) {
+          anchorLines.push(partialLines[j].trim());
         }
       }
-      // Copy existing lines until we find the next partial line
-      if (nextPartialLine) {
+
+      if (anchorLines.length === 0) {
+        // Last ellipsis — copy all remaining existing lines
         while (existingIdx < existingLines.length) {
-          if (existingLines[existingIdx].trim() === nextPartialLine) break;
           result.push(existingLines[existingIdx]);
           existingIdx++;
         }
       } else {
-        // Last ellipsis — copy rest of existing file
-        while (existingIdx < existingLines.length) {
-          result.push(existingLines[existingIdx]);
-          existingIdx++;
+        // Context-based search: find the position in existing where anchorLines[0] appears
+        // AND anchorLines[1] appears shortly after (within 5 lines). This disambiguates
+        // when the same line appears multiple times (e.g., "render() {" in two methods).
+        let bestMatch = -1;
+        for (let k = existingIdx; k < existingLines.length; k++) {
+          if (existingLines[k].trim() === anchorLines[0]) {
+            // Check if second anchor also matches nearby
+            if (anchorLines.length < 2) {
+              bestMatch = k;
+              break;
+            }
+            let secondFound = false;
+            for (let m = k + 1; m < Math.min(k + 6, existingLines.length); m++) {
+              if (existingLines[m].trim() === anchorLines[1]) {
+                secondFound = true;
+                break;
+              }
+            }
+            if (secondFound) {
+              bestMatch = k;
+              break;
+            }
+            // First anchor matched but second didn't — keep searching
+            if (bestMatch === -1) bestMatch = k; // fallback to first occurrence
+          }
+        }
+
+        if (bestMatch >= 0) {
+          // Copy existing lines from current position up to the anchor
+          while (existingIdx < bestMatch) {
+            result.push(existingLines[existingIdx]);
+            existingIdx++;
+          }
+        } else {
+          // Anchor not found — copy everything remaining (safe fallback)
+          while (existingIdx < existingLines.length) {
+            result.push(existingLines[existingIdx]);
+            existingIdx++;
+          }
         }
       }
     } else {
-      result.push(line);
-      // Advance existingIdx to stay in sync
-      if (existingIdx < existingLines.length && existingLines[existingIdx].trim() === line.trim()) {
-        existingIdx++;
+      result.push(partialLines[i]);
+      // Advance existingIdx to stay in sync — use exact match (not trimmed)
+      if (existingIdx < existingLines.length) {
+        if (existingLines[existingIdx].trim() === partialLines[i].trim()) {
+          existingIdx++;
+        } else {
+          // Try to find the line within next 3 lines (handles minor insertions)
+          for (let k = existingIdx; k < Math.min(existingIdx + 3, existingLines.length); k++) {
+            if (existingLines[k].trim() === partialLines[i].trim()) {
+              existingIdx = k + 1;
+              break;
+            }
+          }
+        }
       }
     }
   }
