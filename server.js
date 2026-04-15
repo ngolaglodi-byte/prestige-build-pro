@@ -3127,6 +3127,10 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                   // ── AGENT MODE: Capture Docker errors after file writes/edits ──
                   // If we wrote or edited files, check container for runtime errors
                   // and inject them as context so Claude can self-correct.
+                  // ── AUTO-VERIFY after file changes (like a senior dev who checks after each save) ──
+                  // Run verify_project + health check AUTOMATICALLY after writes.
+                  // Inject results into the last tool_result so Claude sees errors IMMEDIATELY
+                  // without needing an extra round (saves 1 API call per error).
                   const hasFileChanges = allToolCalls.some(tc => ['write_file', 'edit_file', 'line_replace'].includes(tc.name));
                   if (hasFileChanges && containerExecService && trackingInfo?.projectId) {
                     try {
@@ -3135,15 +3139,36 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                       if (container) {
                         const info = await container.inspect().catch(() => null);
                         if (info?.State?.Running) {
-                          // Check server.js syntax
-                          const syntaxCheck = await containerExecService.execInContainer(trackingInfo.projectId, 'node --check server.cjs 2>&1', { timeout: 5000 }).catch(() => null);
-                          if (syntaxCheck && syntaxCheck.exitCode !== 0) {
-                            const errMsg = (syntaxCheck.stderr || syntaxCheck.stdout || '').substring(0, 500);
-                            // Append syntax error to last tool_result (can't create fake tool_use_id)
-                            if (toolResults.length > 0) {
-                              toolResults[toolResults.length - 1].content += `\n\n⚠ ERREUR DÉTECTÉE — server.js a une erreur de syntaxe:\n${errMsg}\nCorrige cette erreur MAINTENANT.`;
+                          const diagParts = [];
+
+                          // 1. Full verify_project (syntax + Express health + Vite compilation)
+                          try {
+                            const verifyResult = await containerExecService.verifyProject(trackingInfo.projectId);
+                            if (verifyResult.includes('✗')) {
+                              diagParts.push(verifyResult);
+                              console.log(`[AutoVerify] Errors after file changes in project ${trackingInfo.projectId}`);
                             }
-                            console.log(`[AgentMode] Syntax error detected in project ${trackingInfo.projectId}`);
+                          } catch (_) {}
+
+                          // 2. Server health check (catches runtime errors that syntax check misses)
+                          try {
+                            const health = await containerExecService.execInContainer(trackingInfo.projectId, 'curl -sf http://localhost:3000/health 2>&1', { timeout: 5000 });
+                            if (!health.stdout || !health.stdout.includes('ok')) {
+                              diagParts.push('✗ Express ne répond pas sur /health — le serveur a peut-être crashé.');
+                            }
+                          } catch (_) {}
+
+                          // 3. Check Vite for frontend errors (compilation)
+                          try {
+                            const viteCheck = await containerExecService.execInContainer(trackingInfo.projectId, 'curl -sf http://localhost:5173/ 2>&1 | head -5', { timeout: 5000 });
+                            if (viteCheck.stdout && (viteCheck.stdout.includes('Internal Server Error') || viteCheck.stdout.includes('500'))) {
+                              diagParts.push('✗ Vite retourne une erreur 500 — vérifie les imports et la syntaxe JSX.');
+                            }
+                          } catch (_) {}
+
+                          // Inject ALL diagnostic results into the last tool_result
+                          if (diagParts.length > 0 && toolResults.length > 0) {
+                            toolResults[toolResults.length - 1].content += '\n\n⚠ VÉRIFICATION AUTOMATIQUE APRÈS MODIFICATION :\n' + diagParts.join('\n') + '\n\nCorrige ces erreurs MAINTENANT avec edit_file ou line_replace.';
                           }
                         }
                       }
