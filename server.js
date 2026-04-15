@@ -2995,16 +2995,35 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                             const searchFirst = tc.input.search.split('\n')[0].trim();
                             const matchIdx = lines.findIndex(l => l.includes(searchFirst) || l.trim() === searchFirst);
                             if (matchIdx >= 0) {
-                              // Show generous context around the match (30 lines before/after)
-                              const start = Math.max(0, matchIdx - 15);
-                              const end = Math.min(lines.length, matchIdx + 15);
-                              hint = `\n\nVoici les lignes ${start+1}-${end} du fichier (le texte exact à chercher est ici):\n` + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
+                              // ── SMART FALLBACK: suggest line_replace with exact line numbers ──
+                              const searchLineCount = tc.input.search.split('\n').length;
+                              const startLine = matchIdx + 1;
+                              const endLine = matchIdx + searchLineCount;
+                              const start = Math.max(0, matchIdx - 5);
+                              const end = Math.min(lines.length, matchIdx + searchLineCount + 5);
+                              hint = `\n\nTexte SIMILAIRE trouvé aux lignes ${startLine}-${endLine}. Utilise line_replace :`;
+                              hint += `\nline_replace({ path: "${tc.input.path}", start_line: ${startLine}, end_line: ${endLine}, new_content: "..." })`;
+                              hint += `\n\nContexte (lignes ${start+1}-${end}):\n` + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
                             } else {
-                              // Text not found at all — send full file (truncated) so AI can see reality
-                              const numbered = lines.map((l,i) => (i+1) + '| ' + l).join('\n');
-                              const maxLen = 6000;
-                              hint = `\n\nLe texte recherché N'EXISTE PAS dans le fichier. Voici le contenu COMPLET (${lines.length} lignes):\n` + (numbered.length > maxLen ? numbered.substring(0, maxLen) + '\n... (tronqué)' : numbered);
-                              hint += '\n\nUtilise write_file avec "// ... keep existing code" ou retente edit_file avec le texte EXACT ci-dessus.';
+                              // ── FUZZY SEARCH: try trimmed/normalized matching ──
+                              const normalizedSearch = tc.input.search.replace(/\s+/g, ' ').trim();
+                              let fuzzyIdx = -1;
+                              for (let li = 0; li < lines.length; li++) {
+                                if (lines[li].replace(/\s+/g, ' ').trim().includes(normalizedSearch.substring(0, 40))) {
+                                  fuzzyIdx = li; break;
+                                }
+                              }
+                              if (fuzzyIdx >= 0) {
+                                const start = Math.max(0, fuzzyIdx - 3);
+                                const end = Math.min(lines.length, fuzzyIdx + 10);
+                                hint = `\n\nMatch approximatif trouvé ligne ${fuzzyIdx+1}. Utilise line_replace :`;
+                                hint += `\nline_replace({ path: "${tc.input.path}", start_line: ${fuzzyIdx+1}, end_line: ${fuzzyIdx+3}, new_content: "..." })`;
+                                hint += `\n\nContexte:\n` + lines.slice(start, end).map((l,i) => (start+i+1) + '| ' + l).join('\n');
+                              } else {
+                                const numbered = lines.map((l,i) => (i+1) + '| ' + l).join('\n');
+                                const maxLen = 4000;
+                                hint = `\n\nTexte introuvable. Voici le fichier (${lines.length} lignes) — utilise line_replace avec les numeros de ligne :\n` + (numbered.length > maxLen ? numbered.substring(0, maxLen) + '\n... (tronqué)' : numbered);
+                              }
                             }
                           } catch {}
                           editResult = `✗ ECHEC dans ${tc.input.path} — le texte recherché ne correspond pas exactement.` + hint;
