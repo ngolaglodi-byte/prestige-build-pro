@@ -12540,7 +12540,12 @@ export default defineConfig({
         try {
           const { execSync } = require('child_process');
           console.log(`[Publish] Building production dist/ in ${containerName}...`);
-          execSync(`docker exec ${containerName} ./node_modules/.bin/vite build`, { timeout: 60000, encoding: 'utf8' });
+          // Temporarily increase RAM for Vite build (dev containers may have low RAM)
+          try {
+            const buildContainer = docker.getContainer(containerName);
+            await buildContainer.update({ Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024 });
+          } catch {}
+          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=384" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
           // Copy dist/ out of the container to the project dir
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           sourceDir = distDir;
@@ -12831,16 +12836,36 @@ export default defineConfig({
         const isRunning = await isContainerRunningAsync(id);
         if (isRunning) {
           const distDir = path.join(projectDir, 'dist');
-          // Build production dist/ inside container, then copy to host
-          // (container filesystem may differ from bind mount for new dirs)
-          execSync(`docker exec ${containerName} ./node_modules/.bin/vite build`, { timeout: 120000, encoding: 'utf8' });
+          // Temporarily increase memory for Vite build (production containers have low RAM)
+          try {
+            const container = docker.getContainer(containerName);
+            await container.update({ Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024 });
+            console.log(`[PublishUpdate] Temporarily increased RAM to 512MB for build`);
+          } catch (memErr) {
+            console.warn(`[PublishUpdate] Could not increase RAM: ${memErr.message}`);
+          }
+          // Build production dist/ inside container with enough memory for Vite
+          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=384" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
           if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           builtDist = true;
           console.log(`[PublishUpdate] Vite build + docker cp succeeded for project ${id}`);
+          // Restore original memory limit
+          try {
+            const limits = db.prepare('SELECT limit_ram_mb FROM projects WHERE id=?').get(id) || {};
+            const ramMb = limits.limit_ram_mb || 256;
+            const container = docker.getContainer(containerName);
+            await container.update({ Memory: ramMb * 1024 * 1024, MemorySwap: ramMb * 1024 * 1024 });
+          } catch {}
         }
       } catch (e) {
-        console.warn(`[PublishUpdate] Vite build failed (will use preview files): ${e.message}`);
+        console.warn(`[PublishUpdate] Vite build failed: ${e.message}`);
+        // Restore memory even on failure
+        try {
+          const limits = db.prepare('SELECT limit_ram_mb FROM projects WHERE id=?').get(id) || {};
+          const container = docker.getContainer(getContainerName(id));
+          await container.update({ Memory: (limits.limit_ram_mb || 256) * 1024 * 1024 });
+        } catch {}
       }
 
       // 2. Copy files to site directory (same logic as publish)
