@@ -12840,7 +12840,7 @@ export default defineConfig({
           try {
             const container = docker.getContainer(containerName);
             await container.update({ Memory: 1024 * 1024 * 1024, MemorySwap: 1024 * 1024 * 1024 });
-            console.log(`[PublishUpdate] Temporarily increased RAM to 512MB for build`);
+            console.log(`[PublishUpdate] Temporarily increased RAM to 1GB for build`);
           } catch (memErr) {
             console.warn(`[PublishUpdate] Could not increase RAM: ${memErr.message}`);
           }
@@ -12850,13 +12850,16 @@ export default defineConfig({
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           builtDist = true;
           console.log(`[PublishUpdate] Vite build + docker cp succeeded for project ${id}`);
-          // Restore original memory limit
+          // Restore admin-configured memory limit
           try {
             const limits = db.prepare('SELECT limit_ram_mb FROM projects WHERE id=?').get(id) || {};
             const ramMb = limits.limit_ram_mb || 256;
             const container = docker.getContainer(containerName);
             await container.update({ Memory: ramMb * 1024 * 1024, MemorySwap: ramMb * 1024 * 1024 });
-          } catch {}
+            console.log(`[PublishUpdate] RAM restored to ${ramMb}MB (admin limit)`);
+          } catch (restoreErr) {
+            console.warn(`[PublishUpdate] Could not restore RAM: ${restoreErr.message}`);
+          }
         }
       } catch (e) {
         console.warn(`[PublishUpdate] Vite build failed: ${e.message}`);
