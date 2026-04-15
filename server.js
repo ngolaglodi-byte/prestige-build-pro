@@ -5550,6 +5550,20 @@ function writeGeneratedFiles(projectDir, code, projectId) {
       content = safeFixServerJs(content);
     }
 
+    // ── GUARD: Pre-write validation for TSX/JSX (ESM compliance) ──
+    if (filename.endsWith('.tsx') || filename.endsWith('.jsx')) {
+      const validationWarnings = [];
+      if (!content.includes('export default') && !content.includes('export {')) {
+        validationWarnings.push('missing export default/export {}');
+      }
+      if (/\brequire\s*\(/.test(content)) {
+        validationWarnings.push('contains require() — should be ESM import');
+      }
+      if (validationWarnings.length > 0) {
+        console.warn(`[PreWriteValidation] ${filename}: ${validationWarnings.join(', ')} — writing anyway (may need auto-fix)`);
+      }
+    }
+
     // ── GUARD: Validate syntax before writing (rollback if broken) ──
     const backup = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
     if (filePath.endsWith(".tsx") || filePath.endsWith(".ts") || filePath.endsWith(".jsx")) safeWriteTsx(filePath, content); else fs.writeFileSync(filePath, content);
