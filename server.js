@@ -2794,7 +2794,26 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
             // Normal modifications: 50 rounds (read → plan → edit → verify → fix — enterprise level)
             // Plan execution / complex: 100 rounds (full autonomy for multi-file architecture)
             // Lovable uses ~20 rounds. More = wasted tokens, not better results.
-            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 30 : 20;
+            const maxDepth = (opts.jobId && generationJobs.get(opts.jobId)?.type === 'plan_execution') ? 20 : 12;
+
+            // ── LOOP DETECTION: bail if same files modified twice without progress ──
+            if (!opts._modifiedFilesHistory) opts._modifiedFilesHistory = [];
+            const currentModifiedFiles = allToolCalls
+              .filter(tc => ['write_file', 'edit_file', 'line_replace'].includes(tc.name) && tc.input?.path)
+              .map(tc => tc.name + ':' + tc.input.path).sort().join(',');
+            if (currentModifiedFiles && opts._modifiedFilesHistory.length >= 2) {
+              const last = opts._modifiedFilesHistory[opts._modifiedFilesHistory.length - 1];
+              const prev = opts._modifiedFilesHistory[opts._modifiedFilesHistory.length - 2];
+              if (currentModifiedFiles === last && last === prev) {
+                console.warn(`[LoopDetect] Same files modified 3x in a row at depth ${opts._depth || 0} — bailing: ${currentModifiedFiles.substring(0, 100)}`);
+                // Break the loop: resolve with what we have
+                const code = toolResponseToCode(parsed);
+                if (code) resolve(code); else resolve('');
+                return;
+              }
+            }
+            if (currentModifiedFiles) opts._modifiedFilesHistory.push(currentModifiedFiles);
+
             if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
                 try {
