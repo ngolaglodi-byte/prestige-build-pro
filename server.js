@@ -10136,13 +10136,17 @@ const server = http.createServer(async (req, res) => {
       // Track access for auto-sleep
       containerLastAccess.set(projectId, Date.now());
 
-      // Direct proxy to Vite dev server — NO URL rewriting needed
+      // Determine port: published projects run Express on 3000, dev uses Vite on 5173
+      const projectInfo = db ? db.prepare('SELECT is_published FROM projects WHERE id=?').get(projectId) : null;
+      const proxyPort = (projectInfo && projectInfo.is_published) ? 3000 : 5173;
+
+      // Direct proxy to container
       const proxyOpts = {
         hostname: containerHost,
-        port: 5173,
+        port: proxyPort,
         path: req.url,
         method: req.method,
-        headers: { ...req.headers, host: `${containerHost}:5173` }
+        headers: { ...req.headers, host: `${containerHost}:${proxyPort}` }
       };
       delete proxyOpts.headers['authorization'];
 
