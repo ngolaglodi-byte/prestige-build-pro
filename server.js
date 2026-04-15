@@ -12536,9 +12536,9 @@ export default defineConfig({
           // Temporarily increase RAM for Vite build (dev containers may have low RAM)
           try {
             const buildContainer = docker.getContainer(containerName);
-            await buildContainer.update({ Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024 });
+            await buildContainer.update({ Memory: 1024 * 1024 * 1024, MemorySwap: 1024 * 1024 * 1024 });
           } catch {}
-          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=384" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
+          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=800" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
           // Copy dist/ out of the container to the project dir
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           sourceDir = distDir;
@@ -12678,7 +12678,7 @@ export default defineConfig({
           name: containerName,
           Env: envVars,
           // PRODUCTION: build dist/ if missing, then Express (serves dist/ + API)
-          Cmd: ['sh', '-c', 'cp server.js server.cjs 2>/dev/null; if [ ! -f dist/index.html ]; then echo "[PROD] dist/ missing, running vite build..."; NODE_OPTIONS="--max-old-space-size=384" ./node_modules/.bin/vite build 2>&1; echo "[PROD] Build done"; fi; node server.cjs'],
+          Cmd: ['sh', '-c', 'cp server.js server.cjs 2>/dev/null; if [ ! -f dist/index.html ]; then echo "[PROD] dist/ missing, running vite build..."; NODE_OPTIONS="--max-old-space-size=800" ./node_modules/.bin/vite build 2>&1; echo "[PROD] Build done"; fi; node server.cjs'],
           HostConfig: {
             NetworkMode: DOCKER_NETWORK,
             RestartPolicy: { Name: 'always' }, // always restart in production
@@ -12689,7 +12689,7 @@ export default defineConfig({
               `${projectDir}/index.html:/app/index.html`,
               `${localDist}:/app/dist`
             ],
-            Memory: 512 * 1024 * 1024, // Start with 512MB for vite build
+            Memory: 1024 * 1024 * 1024, // Start with 1GB for vite build (large projects need it)
             NanoCpus: cpuPercent * 10000000, // 25% → 250000000
             SecurityOpt: ['no-new-privileges']
           }
@@ -12839,13 +12839,13 @@ export default defineConfig({
           // Temporarily increase memory for Vite build (production containers have low RAM)
           try {
             const container = docker.getContainer(containerName);
-            await container.update({ Memory: 512 * 1024 * 1024, MemorySwap: 512 * 1024 * 1024 });
+            await container.update({ Memory: 1024 * 1024 * 1024, MemorySwap: 1024 * 1024 * 1024 });
             console.log(`[PublishUpdate] Temporarily increased RAM to 512MB for build`);
           } catch (memErr) {
             console.warn(`[PublishUpdate] Could not increase RAM: ${memErr.message}`);
           }
           // Build production dist/ inside container with enough memory for Vite
-          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=384" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
+          execSync(`docker exec -e NODE_OPTIONS="--max-old-space-size=800" ${containerName} ./node_modules/.bin/vite build`, { timeout: 180000, encoding: 'utf8' });
           if (!fs.existsSync(distDir)) fs.mkdirSync(distDir, { recursive: true });
           execSync(`docker cp ${containerName}:/app/dist/. ${distDir}/`, { timeout: 15000 });
           builtDist = true;
