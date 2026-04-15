@@ -6556,10 +6556,25 @@ Règles d'intégration automatique :
                 // UI components, lib/, hooks/ are now TRUSTED to the AI (Lovable model).
                 const isInfraProtected = PROTECTED_FILES.has(input.path);
 
-                // ALWAYS send via SSE for live preview
+                // ALWAYS send via SSE for live preview (batched: flush every 3 files or 200ms idle)
                 if (cleanContent) {
-                  notifyProjectClients(job.project_id, 'file_written', { path: input.path, content: cleanContent });
-                  console.log(`[Stream] SSE push: ${input.path}`);
+                  if (!job._sseBatch) job._sseBatch = [];
+                  if (!job._sseBatchTimer) job._sseBatchTimer = null;
+                  job._sseBatch.push({ path: input.path, content: cleanContent });
+                  const flushSSEBatch = () => {
+                    if (job._sseBatchTimer) { clearTimeout(job._sseBatchTimer); job._sseBatchTimer = null; }
+                    const batch = job._sseBatch.splice(0);
+                    for (const item of batch) {
+                      notifyProjectClients(job.project_id, 'file_written', { path: item.path, content: item.content });
+                      console.log(`[Stream] SSE push: ${item.path}`);
+                    }
+                  };
+                  if (job._sseBatch.length >= 3) {
+                    flushSSEBatch();
+                  } else {
+                    if (job._sseBatchTimer) clearTimeout(job._sseBatchTimer);
+                    job._sseBatchTimer = setTimeout(flushSSEBatch, 200);
+                  }
                 }
 
                 // Write to disk (Vite HMR picks up changes via bind mount)
