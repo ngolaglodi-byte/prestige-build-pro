@@ -5057,7 +5057,15 @@ function safeWriteTsx(filePath, content) {
       if (funcMatch) content = content.replace(`function ${funcMatch[1]}`, `export default function ${funcMatch[1]}`);
     }
 
-    // 4. Remove BrowserRouter from App.tsx (it's in main.tsx)
+    // 4. Convert require() to import in TSX/JSX (ESM only)
+    if (content.includes('require(')) {
+      content = content.replace(/(?:const|let|var)\s+(\w+)\s*=\s*require\s*\(\s*['"]([^'"]+)['"]\s*\)/g, (match, varName, mod) => {
+        console.log(`[SafeWrite] Converted require('${mod}') → import in ${filename}`);
+        return `import ${varName} from '${mod}'`;
+      });
+    }
+
+    // 5. Remove BrowserRouter from App.tsx (it's in main.tsx)
     if (filename === 'App.tsx' && content.includes('BrowserRouter')) {
       content = content.replace(/import\s*\{[^}]*BrowserRouter,?\s*/g, (match) => {
         const others = match.match(/\{([^}]*)\}/)?.[1]?.split(',').map(s => s.trim()).filter(s => s && s !== 'BrowserRouter');
