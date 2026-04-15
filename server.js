@@ -6449,11 +6449,17 @@ Règles d'intégration automatique :
               const input = JSON.parse(currentToolJson);
               toolBlocks.push({ name: currentToolName, id: currentToolId, input });
 
-              // Track files modified during streaming for potential rollback
+              // Track files modified during streaming for potential rollback + dedup
               if (!job._streamBackups) job._streamBackups = {};
+              if (!job._streamWriteCount) job._streamWriteCount = {};
 
               // REAL-TIME: Write file to container IMMEDIATELY as each tool call completes
               if (currentToolName === 'write_file' && input.path && input.content && job.project_id) {
+                // ── DEDUP: Track how many times each file is written during this stream ──
+                job._streamWriteCount[input.path] = (job._streamWriteCount[input.path] || 0) + 1;
+                if (job._streamWriteCount[input.path] > 1) {
+                  console.log(`[Stream:Dedup] ${input.path} written ${job._streamWriteCount[input.path]}x — using latest version`);
+                }
                 job.progressMessage = `📝 Écriture de ${input.path}`;
                 const projDir = path.join(DOCKER_PROJECTS_DIR, String(job.project_id));
                 // Backup existing file for rollback if stream fails
