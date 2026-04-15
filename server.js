@@ -2002,6 +2002,18 @@ JAMAIS inventer le texte de recherche — copie-le du fichier existant.`,
       required: []
     }
   },
+  {
+    name: 'undo_changes',
+    description: 'Revert the project to its state BEFORE the current modification. Use when you detect that your changes broke the project and auto-fix failed. This restores all files to their pre-modification state. Use as last resort only.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        project_id: { type: 'number', description: 'Project ID (auto-filled)' },
+        reason: { type: 'string', description: 'Why you are reverting (e.g., "my edit broke the server syntax")' }
+      },
+      required: ['reason']
+    }
+  },
 ];
 
 // ─── TOOL EXECUTION HANDLERS ───
@@ -2298,6 +2310,45 @@ function executeServerTool(toolName, toolInput) {
     if (!vpId) return Promise.resolve('Erreur: project_id manquant');
     if (!containerExecService || !containerExecService.verifyProject) return Promise.resolve('Service de vérification non disponible');
     return containerExecService.verifyProject(vpId);
+  }
+
+  // ── UNDO CHANGES: Revert project to pre-modification state ──
+  if (toolName === 'undo_changes') {
+    const undoId = toolInput.project_id || toolInput._projectId;
+    if (!undoId) return Promise.resolve('Erreur: project_id manquant');
+    const projDir = path.join(DOCKER_PROJECTS_DIR, String(undoId));
+    try {
+      // Find the last version in DB
+      const lastVersion = db.prepare('SELECT * FROM project_versions WHERE project_id=? ORDER BY version_number DESC LIMIT 1').get(undoId);
+      if (!lastVersion || !lastVersion.generated_code) {
+        return Promise.resolve('✗ Aucune version précédente trouvée pour ce projet. Impossible de revenir en arrière.');
+      }
+      // Restore files from version (parse ### markers)
+      const sections = lastVersion.generated_code.split(/^### /m).filter(s => s.trim());
+      const files = {};
+      for (const s of sections) {
+        const nl = s.indexOf('\n');
+        if (nl === -1) continue;
+        const fn = s.substring(0, nl).trim();
+        const content = s.substring(nl + 1).trim();
+        if (fn && content) files[fn] = content;
+      }
+      let restored = 0;
+      for (const [fn, content] of Object.entries(files)) {
+        const fp = path.join(projDir, fn);
+        const dir = path.dirname(fp);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(fp, content, 'utf8');
+        restored++;
+      }
+      // Update DB
+      db.prepare("UPDATE projects SET generated_code=?,updated_at=datetime('now') WHERE id=?").run(lastVersion.generated_code, undoId);
+      console.log(`[Undo] Restored ${restored} files for project ${undoId} — reason: ${toolInput.reason || 'user request'}`);
+      appendProjectRule(projDir, `Dernière modification annulée : ${(toolInput.reason || '').substring(0, 100)}`);
+      return Promise.resolve(`✓ Projet restauré à la version ${lastVersion.version_number} (${restored} fichiers). Raison : ${toolInput.reason || '-'}`);
+    } catch (e) {
+      return Promise.resolve(`✗ Échec de la restauration : ${e.message}`);
+    }
   }
 
   if (toolName === 'enable_stripe' && toolInput.project_id && db) {
