@@ -2831,7 +2831,20 @@ function callClaudeAPI(systemBlocks, messages, maxTokens = 32000, trackingInfo =
                 return;
               }
             }
-            if (currentModifiedFiles) opts._modifiedFilesHistory.push(currentModifiedFiles);
+            // Track ALL rounds (including empty ones where Claude only reads)
+            opts._modifiedFilesHistory.push(currentModifiedFiles || '');
+
+            // ── ADAPTIVE DEPTH: bail if exploring without writing ──
+            // If depth > 5 and no write_file/edit_file in the last 2 rounds, Claude is just reading — bail
+            if ((opts._depth || 0) > 5 && opts._modifiedFilesHistory.length >= 2) {
+              const lastTwo = opts._modifiedFilesHistory.slice(-2);
+              if (lastTwo.every(entry => entry === '')) {
+                console.warn(`[AdaptiveDepth] Depth ${opts._depth} with no writes in last 2 rounds — bailing (Claude is exploring, not making progress)`);
+                const code = toolResponseToCode(parsed);
+                if (code) resolve(code); else resolve('');
+                return;
+              }
+            }
 
             if (allToolCalls.length > 0 && (opts._depth || 0) < maxDepth) {
               (async () => {
